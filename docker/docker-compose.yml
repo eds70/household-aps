@@ -1,0 +1,20 @@
+﻿version: "3.9"
+services:
+  postgres:
+    image: postgres:17
+    container_name: aps_postgres
+    environment:
+      POSTGRES_USER: aps
+      POSTGRES_PASSWORD: aps_secret
+      POSTGRES_DB: household
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aps"]
+      interval: 5s
+      retries: 5
+
+volumes:
+  pgdata:

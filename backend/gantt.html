@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>APS Диаграмма Ганта</title>
+    <script type="text/javascript" src="https://unpkg.com/vis-timeline/standalone/umd/vis-timeline-graph2d.min.js"></script>
+    <link href="https://unpkg.com/vis-timeline/styles/vis-timeline-graph2d.min.css" rel="stylesheet" type="text/css" />
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background: #f0f2f5; }
+        .header { background: #2c3e50; color: white; padding: 15px 25px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .stats { display: flex; gap: 20px; }
+        .stat-box { background: #34495e; padding: 10px 20px; border-radius: 6px; text-align: center; }
+        .stat-value { font-size: 1.6em; font-weight: bold; color: #3498db; }
+        .stat-label { font-size: 0.85em; color: #bdc3c7; text-transform: uppercase; letter-spacing: 1px; }
+        #visualization { background: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); padding: 20px; height: 75vh; }
+        .vis-item { border-radius: 4px; font-size: 12px; border-width: 2px; }
+        .vis-item.vis-selected { border-color: #2980b9 !important; box-shadow: 0 0 5px rgba(52, 152, 219, 0.5); }
+        .vis-label { font-weight: 600; color: #2c3e50; padding: 10px !important; }
+        .loading { text-align: center; padding: 50px; font-size: 1.2em; color: #7f8c8d; }
+        .btn { background: #3498db; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; transition: background 0.2s; }
+        .btn:hover { background: #2980b9; }
+        .legend { display: flex; gap: 15px; margin-top: 10px; font-size: 12px; }
+        .legend-item { display: flex; align-items: center; gap: 5px; }
+        .legend-color { width: 12px; height: 12px; border-radius: 2px; }
+        .btn-excel { background: #27ae60; }
+        .btn-excel:hover { background: #219150; }
+    </style>
+</head>
+<body>
+<div class="header">
+    <div>
+        <h2 style="margin: 0;">🏭 APS Production Scheduler</h2>
+        <div class="legend">
+            <div class="legend-item"><div class="legend-color" style="background:#e74c3c"></div>Нагрев</div>
+            <div class="legend-item"><div class="legend-color" style="background:#3498db"></div>Охлаждение</div>
+            <div class="legend-item"><div class="legend-color" style="background:#9b59b6"></div>Перемешивание</div>
+            <div class="legend-item"><div class="legend-color" style="background:#95a5a6"></div>Промывка</div>
+            <div class="legend-item"><div class="legend-color" style="background:#f1c40f"></div>Лаборатория</div>
+        </div>
+    </div>
+    <div class="stats">
+        <div class="stat-box">
+            <div class="stat-value" id="totalTasks">-</div>
+            <div class="stat-label">Задач</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value" id="makespan">-</div>
+            <div class="stat-label">Makespan (ч)</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value" id="equipCount">-</div>
+            <div class="stat-label">Оборудования</div>
+        </div>
+    </div>
+    <div style="display: flex; gap: 10px;">
+        <button class="btn btn-excel" onclick="exportExcel()">📥 Экспорт в Excel</button>
+        <button class="btn" onclick="loadData()">🔄 Обновить</button>
+    </div>
+</div>
+
+<div id="visualization">
+    <div class="loading">⏳ Загрузка данных из API...</div>
+</div>
+
+<script>
+    let timeline = null;
+
+    async function loadData() {
+        document.getElementById('visualization').innerHTML = '<div class="loading">⏳ Загрузка данных из API...</div>';
+
+        try {
+            // Запрашиваем данные у нашего FastAPI сервера
+            const response = await fetch('http://localhost:8000/api/v1/gantt/');
+            if (!response.ok) throw new Error('Ошибка загрузки данных. Сначала постройте план через POST /api/v1/schedule/build');
+            const data = await response.json();
+
+            // Обновляем статистику
+            document.getElementById('totalTasks').textContent = data.total_tasks;
+            document.getElementById('makespan').textContent = data.makespan_hours.toFixed(1);
+            document.getElementById('equipCount').textContent = data.equipment_list.length;
+
+            // Формируем группы (строки диаграммы = оборудование)
+            const groups = new vis.DataSet(
+                data.equipment_list.map(eq => ({
+                    id: eq,
+                    content: `<b>${eq.substring(0, 8)}</b><br><small style="color:#7f8c8d">Оборудование</small>`
+                }))
+            );
+
+            // Формируем элементы (задачи)
+            const items = new vis.DataSet(
+                data.tasks.map(task => {
+                    let color = '#3498db'; // default
+                    if (task.operation_name.includes('Нагрев')) color = '#e74c3c';
+                    else if (task.operation_name.includes('Охлаждение')) color = '#3498db';
+                    else if (task.operation_name.includes('Перемешивание')) color = '#9b59b6';
+                    else if (task.operation_name.includes('Промывка') || task.operation_name.includes('Замывка')) color = '#95a5a6';
+                    else if (task.operation_name.includes('Лабораторный')) color = '#f1c40f';
+                    else if (task.operation_name.includes('Загрузка')) color = '#2ecc71';
+
+                    return {
+                        id: task.id,
+                        group: task.equipment_id,
+                        content: `<b>${task.operation_name}</b><br><small>${task.duration_minutes} мин</small>`,
+                        start: task.start,
+                        end: task.end,
+                        style: `background-color: ${color}25; border-color: ${color}; color: #2c3e50;`,
+                        title: `Партия: ${task.batch_id.substring(0,8)}\nПродукт: ${task.product_id.substring(0,8)}\nДлительность: ${task.duration_minutes} мин`
+                    };
+                })
+            );
+
+            // Настройки визуализации
+            const options = {
+                groupOrder: 'content',
+                editable: false,
+                margin: { item: 4, axis: 5 },
+                orientation: 'top',
+                stack: true,
+                showCurrentTime: true,
+                zoomMin: 1000 * 60 * 60 * 4, // мин. зум 4 часа
+                zoomMax: 1000 * 60 * 60 * 24 * 14, // макс. зум 14 дней
+                format: {
+                    minorLabels: { hour: 'HH:mm', weekday: 'D MMM' },
+                    majorLabels: { day: 'D MMMM YYYY' }
+                }
+            };
+
+            // Рендерим диаграмму
+            const container = document.getElementById('visualization');
+            container.innerHTML = '';
+            timeline = new vis.Timeline(container, items, groups, options);
+
+        } catch (error) {
+            document.getElementById('visualization').innerHTML = `<div class="loading" style="color:#e74c3c">❌ Ошибка: ${error.message}<br><br>1. Убедитесь, что сервер запущен (python run_server.py)<br>2. Сначала постройте план через Swagger UI: http://localhost:8000/docs</div>`;
+        }
+    }
+
+    function exportExcel() {
+        // Открываем endpoint экспорта в новой вкладке, что инициирует скачивание файла
+        window.open('http://localhost:8000/api/v1/gantt/export', '_blank');
+    }
+
+    // Автозагрузка при открытии страницы
+    window.onload = loadData;
+</script>
+</body>
+</html>
