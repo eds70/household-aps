@@ -9,51 +9,49 @@ from .material_models import (
     RecipeUpdate,
     RecipeResponse,
 )
-from .materials import get_db
+from app.auth.dependencies import get_current_org_id, get_db_session
 
 router = APIRouter(prefix="/api/v1/recipes", tags=["Рецептуры"])
-
-ORG_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 
 @router.get("/", response_model=List[RecipeResponse])
 async def get_all_recipes(
         product_id: Optional[UUID] = Query(default=None),
-        db: AsyncSession = Depends(get_db),
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
 ):
     """Получить все рецепты с компонентами"""
     if product_id:
         query = text("""
             SELECT r.id, r.organization_id, r.product_id,
-                   r.base_volume_kg, r.comment,
-                   p.name as product_name, p.code as product_code
+            r.base_volume_kg, r.comment,
+            p.name as product_name, p.code as product_code
             FROM recipe r
             LEFT JOIN product p ON p.id = r.product_id
             WHERE r.organization_id = :org_id AND r.product_id = :product_id
             ORDER BY p.name
         """)
-        params = {"org_id": ORG_ID, "product_id": product_id}
+        params = {"org_id": org_id, "product_id": product_id}
     else:
         query = text("""
             SELECT r.id, r.organization_id, r.product_id,
-                   r.base_volume_kg, r.comment,
-                   p.name as product_name, p.code as product_code
+            r.base_volume_kg, r.comment,
+            p.name as product_name, p.code as product_code
             FROM recipe r
             LEFT JOIN product p ON p.id = r.product_id
             WHERE r.organization_id = :org_id
             ORDER BY p.name
         """)
-        params = {"org_id": ORG_ID}
+        params = {"org_id": org_id}
 
     result = await db.execute(query, params)
-
     recipes = []
     for row in result.fetchall():
         items_result = await db.execute(
             text("""
                 SELECT ri.id, ri.recipe_id, ri.material_id, ri.qty_per_base,
-                       m.name as material_name, m.code as material_code,
-                       m.unit as material_unit
+                m.name as material_name, m.code as material_code,
+                m.unit as material_unit
                 FROM recipe_item ri
                 LEFT JOIN material m ON m.id = ri.material_id
                 WHERE ri.recipe_id = :recipe_id
@@ -61,7 +59,6 @@ async def get_all_recipes(
             """),
             {"recipe_id": row.id},
         )
-
         items = [
             {
                 "id": item.id,
@@ -74,7 +71,6 @@ async def get_all_recipes(
             }
             for item in items_result.fetchall()
         ]
-
         recipes.append(
             {
                 "id": row.id,
@@ -87,17 +83,17 @@ async def get_all_recipes(
                 "items": items,
             }
         )
-
     return recipes
 
 
 @router.post("/", response_model=RecipeResponse, status_code=201)
 async def create_recipe(
-        recipe: RecipeCreate, db: AsyncSession = Depends(get_db)
+        recipe: RecipeCreate,
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
 ):
     """Создать рецепт с компонентами"""
     new_id = uuid4()
-
     result = await db.execute(
         text("""
             INSERT INTO recipe
@@ -108,7 +104,7 @@ async def create_recipe(
         """),
         {
             "id": new_id,
-            "org_id": recipe.organization_id,
+            "org_id": org_id,
             "product_id": recipe.product_id,
             "base_volume": recipe.base_volume_kg,
             "comment": recipe.comment,
@@ -134,8 +130,6 @@ async def create_recipe(
         )
 
     await db.commit()
-
-    # Возвращаем полный рецепт
     return await _get_recipe_by_id(db, new_id)
 
 
@@ -143,7 +137,8 @@ async def create_recipe(
 async def update_recipe(
         recipe_id: UUID,
         recipe: RecipeUpdate,
-        db: AsyncSession = Depends(get_db),
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
 ):
     """Обновить рецепт (только базовые поля)"""
     update_data = recipe.model_dump(exclude_unset=True)
@@ -159,20 +154,20 @@ async def update_recipe(
             RETURNING id, organization_id, product_id, base_volume_kg, comment
         """
     )
-    params = {"recipe_id": recipe_id, "org_id": ORG_ID, **update_data}
+    params = {"recipe_id": recipe_id, "org_id": org_id, **update_data}
     result = await db.execute(query, params)
     row = result.fetchone()
-
     if not row:
         raise HTTPException(status_code=404, detail="Рецепт не найден")
-
     await db.commit()
     return await _get_recipe_by_id(db, recipe_id)
 
 
 @router.delete("/{recipe_id}")
 async def delete_recipe(
-        recipe_id: UUID, db: AsyncSession = Depends(get_db)
+        recipe_id: UUID,
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
 ):
     """Удалить рецепт (компоненты удалятся по CASCADE)"""
     result = await db.execute(
@@ -182,7 +177,7 @@ async def delete_recipe(
                 WHERE id = :recipe_id AND organization_id = :org_id
             """
         ),
-        {"recipe_id": recipe_id, "org_id": ORG_ID},
+        {"recipe_id": recipe_id, "org_id": org_id},
     )
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="Рецепт не найден")
@@ -195,7 +190,8 @@ async def add_recipe_item(
         recipe_id: UUID,
         material_id: UUID,
         qty_per_base: float,
-        db: AsyncSession = Depends(get_db),
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
 ):
     """Добавить компонент к рецепту"""
     new_id = uuid4()
@@ -218,7 +214,10 @@ async def add_recipe_item(
 
 @router.delete("/{recipe_id}/items/{item_id}")
 async def delete_recipe_item(
-        recipe_id: UUID, item_id: UUID, db: AsyncSession = Depends(get_db)
+        recipe_id: UUID,
+        item_id: UUID,
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
 ):
     """Удалить компонент из рецепта"""
     result = await db.execute(
@@ -241,8 +240,8 @@ async def _get_recipe_by_id(db: AsyncSession, recipe_id: UUID) -> dict:
     result = await db.execute(
         text("""
             SELECT r.id, r.organization_id, r.product_id,
-                   r.base_volume_kg, r.comment,
-                   p.name as product_name, p.code as product_code
+            r.base_volume_kg, r.comment,
+            p.name as product_name, p.code as product_code
             FROM recipe r
             LEFT JOIN product p ON p.id = r.product_id
             WHERE r.id = :recipe_id
@@ -256,8 +255,8 @@ async def _get_recipe_by_id(db: AsyncSession, recipe_id: UUID) -> dict:
     items_result = await db.execute(
         text("""
             SELECT ri.id, ri.recipe_id, ri.material_id, ri.qty_per_base,
-                   m.name as material_name, m.code as material_code,
-                   m.unit as material_unit
+            m.name as material_name, m.code as material_code,
+            m.unit as material_unit
             FROM recipe_item ri
             LEFT JOIN material m ON m.id = ri.material_id
             WHERE ri.recipe_id = :recipe_id
@@ -277,7 +276,6 @@ async def _get_recipe_by_id(db: AsyncSession, recipe_id: UUID) -> dict:
         }
         for item in items_result.fetchall()
     ]
-
     return {
         "id": row.id,
         "organization_id": row.organization_id,

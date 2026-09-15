@@ -13,26 +13,25 @@ from .material_models import (
     BatchUpdate,
     BatchResponse,
 )
-from .materials import get_db
+from app.auth.dependencies import get_current_org_id, get_db_session
 
 router = APIRouter(prefix="/api/v1/orders", tags=["Производственные заказы"])
-
-ORG_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 
 @router.get("/", response_model=List[ProductionOrderResponse])
 async def get_all_orders(
         status: Optional[str] = Query(default=None),
-        db: AsyncSession = Depends(get_db),
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
 ):
     """Получить список заказов с количеством партий"""
     if status:
         query = text("""
             SELECT o.id, o.organization_id, o.product_id,
-                   o.target_qty, o.due_date, o.priority,
-                   o.status, o.created_at, o.comment,
-                   p.name as product_name, p.code as product_code,
-                   COUNT(b.id) as batches_count
+            o.target_qty, o.due_date, o.priority,
+            o.status, o.created_at, o.comment,
+            p.name as product_name, p.code as product_code,
+            COUNT(b.id) as batches_count
             FROM production_order o
             LEFT JOIN product p ON p.id = o.product_id
             LEFT JOIN batch b ON b.order_id = o.id
@@ -40,14 +39,14 @@ async def get_all_orders(
             GROUP BY o.id, p.name, p.code
             ORDER BY o.priority, o.due_date
         """)
-        params = {"org_id": ORG_ID, "status": status}
+        params = {"org_id": org_id, "status": status}
     else:
         query = text("""
             SELECT o.id, o.organization_id, o.product_id,
-                   o.target_qty, o.due_date, o.priority,
-                   o.status, o.created_at, o.comment,
-                   p.name as product_name, p.code as product_code,
-                   COUNT(b.id) as batches_count
+            o.target_qty, o.due_date, o.priority,
+            o.status, o.created_at, o.comment,
+            p.name as product_name, p.code as product_code,
+            COUNT(b.id) as batches_count
             FROM production_order o
             LEFT JOIN product p ON p.id = o.product_id
             LEFT JOIN batch b ON b.order_id = o.id
@@ -55,7 +54,7 @@ async def get_all_orders(
             GROUP BY o.id, p.name, p.code
             ORDER BY o.priority, o.due_date
         """)
-        params = {"org_id": ORG_ID}
+        params = {"org_id": org_id}
 
     result = await db.execute(query, params)
     return [
@@ -79,7 +78,9 @@ async def get_all_orders(
 
 @router.post("/", response_model=ProductionOrderResponse, status_code=201)
 async def create_order(
-        order: ProductionOrderCreate, db: AsyncSession = Depends(get_db)
+        order: ProductionOrderCreate,
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
 ):
     """Создать производственный заказ"""
     new_id = uuid4()
@@ -90,11 +91,11 @@ async def create_order(
             VALUES
             (:id, :org_id, :product_id, :target_qty, :due_date, :priority, :comment)
             RETURNING id, organization_id, product_id, target_qty, due_date,
-                      priority, status, created_at, comment
+            priority, status, created_at, comment
         """),
         {
             "id": new_id,
-            "org_id": order.organization_id,
+            "org_id": org_id,
             "product_id": order.product_id,
             "target_qty": order.target_qty,
             "due_date": order.due_date,
@@ -105,16 +106,16 @@ async def create_order(
     row = result.fetchone()
     if not row:
         raise HTTPException(status_code=500, detail="Не удалось создать заказ")
-
     await db.commit()
-    return await _get_order_by_id(db, new_id)
+    return await _get_order_by_id(db, new_id, org_id)
 
 
 @router.put("/{order_id}", response_model=ProductionOrderResponse)
 async def update_order(
         order_id: UUID,
         order: ProductionOrderUpdate,
-        db: AsyncSession = Depends(get_db),
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
 ):
     """Обновить заказ"""
     update_data = order.model_dump(exclude_unset=True)
@@ -128,23 +129,23 @@ async def update_order(
             SET {set_clause}
             WHERE id = :order_id AND organization_id = :org_id
             RETURNING id, organization_id, product_id, target_qty, due_date,
-                      priority, status, created_at, comment
+            priority, status, created_at, comment
         """
     )
-    params = {"order_id": order_id, "org_id": ORG_ID, **update_data}
+    params = {"order_id": order_id, "org_id": org_id, **update_data}
     result = await db.execute(query, params)
     row = result.fetchone()
-
     if not row:
         raise HTTPException(status_code=404, detail="Заказ не найден")
-
     await db.commit()
-    return await _get_order_by_id(db, order_id)
+    return await _get_order_by_id(db, order_id, org_id)
 
 
 @router.delete("/{order_id}")
 async def delete_order(
-        order_id: UUID, db: AsyncSession = Depends(get_db)
+        order_id: UUID,
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
 ):
     """Удалить заказ (партии удалятся по CASCADE)"""
     result = await db.execute(
@@ -154,7 +155,7 @@ async def delete_order(
                 WHERE id = :order_id AND organization_id = :org_id
             """
         ),
-        {"order_id": order_id, "org_id": ORG_ID},
+        {"order_id": order_id, "org_id": org_id},
     )
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="Заказ не найден")
@@ -164,23 +165,25 @@ async def delete_order(
 
 @router.get("/{order_id}/batches", response_model=List[BatchResponse])
 async def get_order_batches(
-        order_id: UUID, db: AsyncSession = Depends(get_db)
+        order_id: UUID,
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
 ):
     """Получить партии заказа"""
     result = await db.execute(
         text("""
             SELECT b.id, b.organization_id, b.order_id, b.product_id,
-                   b.volume_kg, b.assigned_equipment_id,
-                   b.planned_start, b.planned_end, b.status, b.comment,
-                   p.name as product_name, p.code as product_code,
-                   e.name as equipment_name
+            b.volume_kg, b.assigned_equipment_id,
+            b.planned_start, b.planned_end, b.status, b.comment,
+            p.name as product_name, p.code as product_code,
+            e.name as equipment_name
             FROM batch b
             LEFT JOIN product p ON p.id = b.product_id
             LEFT JOIN equipment e ON e.id = b.assigned_equipment_id
             WHERE b.order_id = :order_id AND b.organization_id = :org_id
             ORDER BY b.planned_start
         """),
-        {"order_id": order_id, "org_id": ORG_ID},
+        {"order_id": order_id, "org_id": org_id},
     )
     return [
         {
@@ -206,7 +209,8 @@ async def get_order_batches(
 async def create_batch(
         order_id: UUID,
         batch: BatchCreate,
-        db: AsyncSession = Depends(get_db),
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
 ):
     """Создать партию для заказа"""
     new_id = uuid4()
@@ -214,17 +218,17 @@ async def create_batch(
         text("""
             INSERT INTO batch
             (id, organization_id, order_id, product_id, volume_kg,
-             assigned_equipment_id, comment)
+            assigned_equipment_id, comment)
             VALUES
             (:id, :org_id, :order_id, :product_id, :volume_kg,
-             :eq_id, :comment)
+            :eq_id, :comment)
             RETURNING id, organization_id, order_id, product_id, volume_kg,
-                      assigned_equipment_id, planned_start, planned_end,
-                      status, comment
+            assigned_equipment_id, planned_start, planned_end,
+            status, comment
         """),
         {
             "id": new_id,
-            "org_id": batch.organization_id,
+            "org_id": org_id,
             "order_id": order_id,
             "product_id": batch.product_id,
             "volume_kg": batch.volume_kg,
@@ -235,7 +239,6 @@ async def create_batch(
     row = result.fetchone()
     if not row:
         raise HTTPException(status_code=500, detail="Не удалось создать партию")
-
     await db.commit()
     return await _get_batch_by_id(db, new_id)
 
@@ -245,7 +248,8 @@ async def update_batch(
         order_id: UUID,
         batch_id: UUID,
         batch: BatchUpdate,
-        db: AsyncSession = Depends(get_db),
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
 ):
     """Обновить партию"""
     update_data = batch.model_dump(exclude_unset=True)
@@ -258,31 +262,32 @@ async def update_batch(
             UPDATE batch
             SET {set_clause}
             WHERE id = :batch_id AND order_id = :order_id
-                  AND organization_id = :org_id
+            AND organization_id = :org_id
             RETURNING id, organization_id, order_id, product_id, volume_kg,
-                      assigned_equipment_id, planned_start, planned_end,
-                      status, comment
+            assigned_equipment_id, planned_start, planned_end,
+            status, comment
         """
     )
     params = {
         "batch_id": batch_id,
         "order_id": order_id,
-        "org_id": ORG_ID,
+        "org_id": org_id,
         **update_data,
     }
     result = await db.execute(query, params)
     row = result.fetchone()
-
     if not row:
         raise HTTPException(status_code=404, detail="Партия не найдена")
-
     await db.commit()
     return await _get_batch_by_id(db, batch_id)
 
 
 @router.delete("/{order_id}/batches/{batch_id}")
 async def delete_batch(
-        order_id: UUID, batch_id: UUID, db: AsyncSession = Depends(get_db)
+        order_id: UUID,
+        batch_id: UUID,
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
 ):
     """Удалить партию"""
     result = await db.execute(
@@ -290,10 +295,10 @@ async def delete_batch(
             """
                 DELETE FROM batch
                 WHERE id = :batch_id AND order_id = :order_id
-                      AND organization_id = :org_id
+                AND organization_id = :org_id
             """
         ),
-        {"batch_id": batch_id, "order_id": order_id, "org_id": ORG_ID},
+        {"batch_id": batch_id, "order_id": order_id, "org_id": org_id},
     )
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="Партия не найдена")
@@ -306,17 +311,11 @@ async def auto_split_order(
         order_id: UUID,
         equipment_id: UUID,
         max_fill_percent: float = 0.70,
-        db: AsyncSession = Depends(get_db),
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
 ):
     """
     Автоматически разбить заказ на партии по объёму оборудования.
-
-    Логика:
-    1. Берём target_qty заказа
-    2. Берём volume_kg оборудования
-    3. Считаем max_batch = volume_kg * max_fill_percent
-    4. Делим target_qty на max_batch с округлением вверх
-    5. Создаём N-1 полных партий и 1 остаточную
     """
     # Получаем заказ
     order_result = await db.execute(
@@ -325,7 +324,7 @@ async def auto_split_order(
             FROM production_order
             WHERE id = :order_id AND organization_id = :org_id
         """),
-        {"order_id": order_id, "org_id": ORG_ID},
+        {"order_id": order_id, "org_id": org_id},
     )
     order_row = order_result.fetchone()
     if not order_row:
@@ -338,7 +337,7 @@ async def auto_split_order(
             FROM equipment
             WHERE id = :eq_id AND organization_id = :org_id
         """),
-        {"eq_id": equipment_id, "org_id": ORG_ID},
+        {"eq_id": equipment_id, "org_id": org_id},
     )
     eq_row = eq_result.fetchone()
     if not eq_row:
@@ -367,15 +366,15 @@ async def auto_split_order(
             text("""
                 INSERT INTO batch
                 (id, organization_id, order_id, product_id, volume_kg,
-                 assigned_equipment_id, status)
+                assigned_equipment_id, status)
                 VALUES
                 (:id, :org_id, :order_id, :product_id, :volume_kg,
-                 :eq_id, 'NOT_STARTED')
+                :eq_id, 'NOT_STARTED')
                 RETURNING id
             """),
             {
                 "id": batch_id,
-                "org_id": ORG_ID,
+                "org_id": org_id,
                 "order_id": order_id,
                 "product_id": order_row.product_id,
                 "volume_kg": batch_volume,
@@ -403,27 +402,26 @@ async def auto_split_order(
     }
 
 
-async def _get_order_by_id(db: AsyncSession, order_id: UUID) -> dict:
+async def _get_order_by_id(db: AsyncSession, order_id: UUID, org_id: UUID) -> dict:
     """Вспомогательная функция для получения заказа с количеством партий"""
     result = await db.execute(
         text("""
             SELECT o.id, o.organization_id, o.product_id,
-                   o.target_qty, o.due_date, o.priority,
-                   o.status, o.created_at, o.comment,
-                   p.name as product_name, p.code as product_code,
-                   COUNT(b.id) as batches_count
+            o.target_qty, o.due_date, o.priority,
+            o.status, o.created_at, o.comment,
+            p.name as product_name, p.code as product_code,
+            COUNT(b.id) as batches_count
             FROM production_order o
             LEFT JOIN product p ON p.id = o.product_id
             LEFT JOIN batch b ON b.order_id = o.id
             WHERE o.id = :order_id AND o.organization_id = :org_id
             GROUP BY o.id, p.name, p.code
         """),
-        {"order_id": order_id, "org_id": ORG_ID},
+        {"order_id": order_id, "org_id": org_id},
     )
     row = result.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Заказ не найден")
-
     return {
         "id": row.id,
         "organization_id": row.organization_id,
@@ -445,10 +443,10 @@ async def _get_batch_by_id(db: AsyncSession, batch_id: UUID) -> dict:
     result = await db.execute(
         text("""
             SELECT b.id, b.organization_id, b.order_id, b.product_id,
-                   b.volume_kg, b.assigned_equipment_id,
-                   b.planned_start, b.planned_end, b.status, b.comment,
-                   p.name as product_name, p.code as product_code,
-                   e.name as equipment_name
+            b.volume_kg, b.assigned_equipment_id,
+            b.planned_start, b.planned_end, b.status, b.comment,
+            p.name as product_name, p.code as product_code,
+            e.name as equipment_name
             FROM batch b
             LEFT JOIN product p ON p.id = b.product_id
             LEFT JOIN equipment e ON e.id = b.assigned_equipment_id
@@ -459,7 +457,6 @@ async def _get_batch_by_id(db: AsyncSession, batch_id: UUID) -> dict:
     row = result.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Партия не найдена")
-
     return {
         "id": row.id,
         "organization_id": row.organization_id,

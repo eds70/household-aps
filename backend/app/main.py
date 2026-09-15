@@ -2,6 +2,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
+from app.core.config import settings
+from app.api.v1.auth import router as auth_router
 from app.api.v1.schedule import router as schedule_router
 from app.api.v1.gantt import router as gantt_router
 from app.api.v1.equipment import router as equipment_router
@@ -15,19 +17,22 @@ from app.api.v1.orders import router as orders_router
 app = FastAPI(
     title="APS Production Scheduler",
     description="REST API для построения оптимальных планов производства с использованием OR-Tools CP-SAT.",
-    version="1.1.0",
+    version="1.2.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
 
+# ✅ ИСПРАВЛЕНИЕ: используем явный список из настроек вместо ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.allowed_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Регистрируем роутеры
+app.include_router(auth_router)
 app.include_router(schedule_router)
 app.include_router(gantt_router)
 app.include_router(equipment_router)
@@ -43,11 +48,15 @@ app.include_router(orders_router)
 async def health_check():
     return {
         "status": "healthy",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "timestamp": datetime.now().isoformat(),
     }
 
 
 @app.get("/", tags=["Система"])
 async def root():
-    return {"message": "APS Production Scheduler API", "docs": "/docs"}
+    return {
+        "message": "APS Production Scheduler API",
+        "docs": "/docs",
+        "auth": "/api/v1/auth/login",
+    }

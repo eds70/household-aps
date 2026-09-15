@@ -1,8 +1,7 @@
 # backend/app/api/v1/materials.py
 from fastapi import APIRouter, HTTPException, Depends, Query
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
-from sqlalchemy.orm import sessionmaker
 from typing import List, Optional
 from uuid import UUID, uuid4
 from .material_models import (
@@ -12,26 +11,16 @@ from .material_models import (
     MaterialStockUpdate,
     MaterialStockResponse,
 )
+from app.auth.dependencies import get_current_org_id, get_db_session
 
 router = APIRouter(prefix="/api/v1/materials", tags=["Материалы"])
-
-ORG_ID = UUID("00000000-0000-0000-0000-000000000001")
-DATABASE_URL = "postgresql+asyncpg://aps:aps_secret@localhost:5432/household"
-engine = create_async_engine(DATABASE_URL, echo=False)
-async_session = sessionmaker(
-    engine, class_=AsyncSession, expire_on_commit=False
-)
-
-
-async def get_db():
-    async with async_session() as session:
-        yield session
 
 
 @router.get("/", response_model=List[MaterialResponse])
 async def get_all_materials(
         category: Optional[str] = Query(default=None),
-        db: AsyncSession = Depends(get_db),
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
 ):
     """Получить список материалов с фильтрацией по категории"""
     if category:
@@ -41,7 +30,7 @@ async def get_all_materials(
             WHERE organization_id = :org_id AND category = :category
             ORDER BY name
         """)
-        params = {"org_id": ORG_ID, "category": category}
+        params = {"org_id": org_id, "category": category}
     else:
         query = text("""
             SELECT id, organization_id, code, name, unit, category, comment
@@ -49,7 +38,7 @@ async def get_all_materials(
             WHERE organization_id = :org_id
             ORDER BY name
         """)
-        params = {"org_id": ORG_ID}
+        params = {"org_id": org_id}
 
     result = await db.execute(query, params)
     return [
@@ -68,7 +57,9 @@ async def get_all_materials(
 
 @router.post("/", response_model=MaterialResponse, status_code=201)
 async def create_material(
-        material: MaterialCreate, db: AsyncSession = Depends(get_db)
+        material: MaterialCreate,
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
 ):
     """Создать новый материал"""
     new_id = uuid4()
@@ -82,7 +73,7 @@ async def create_material(
         """),
         {
             "id": new_id,
-            "org_id": material.organization_id,
+            "org_id": org_id,
             "code": material.code,
             "name": material.name,
             "unit": material.unit,
@@ -101,7 +92,7 @@ async def create_material(
             (organization_id, material_id, qty, reserved_qty)
             VALUES (:org_id, :mat_id, 0, 0)
         """),
-        {"org_id": material.organization_id, "mat_id": new_id},
+        {"org_id": org_id, "mat_id": new_id},
     )
 
     await db.commit()
@@ -120,7 +111,8 @@ async def create_material(
 async def update_material(
         material_id: UUID,
         material: MaterialUpdate,
-        db: AsyncSession = Depends(get_db),
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
 ):
     """Обновить материал"""
     update_data = material.model_dump(exclude_unset=True)
@@ -136,13 +128,11 @@ async def update_material(
             RETURNING id, organization_id, code, name, unit, category, comment
         """
     )
-    params = {"material_id": material_id, "org_id": ORG_ID, **update_data}
+    params = {"material_id": material_id, "org_id": org_id, **update_data}
     result = await db.execute(query, params)
     row = result.fetchone()
-
     if not row:
         raise HTTPException(status_code=404, detail="Материал не найден")
-
     await db.commit()
     return {
         "id": row.id,
@@ -157,7 +147,9 @@ async def update_material(
 
 @router.delete("/{material_id}")
 async def delete_material(
-        material_id: UUID, db: AsyncSession = Depends(get_db)
+        material_id: UUID,
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
 ):
     """Удалить материал"""
     result = await db.execute(
@@ -167,7 +159,7 @@ async def delete_material(
                 WHERE id = :material_id AND organization_id = :org_id
             """
         ),
-        {"material_id": material_id, "org_id": ORG_ID},
+        {"material_id": material_id, "org_id": org_id},
     )
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="Материал не найден")
@@ -178,7 +170,8 @@ async def delete_material(
 @router.get("/stock", response_model=List[MaterialStockResponse])
 async def get_all_stock(
         material_id: Optional[UUID] = Query(default=None),
-        db: AsyncSession = Depends(get_db),
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
 ):
     """Получить остатки (все или по конкретному материалу)"""
     if material_id:
@@ -187,7 +180,7 @@ async def get_all_stock(
             FROM material_stock
             WHERE organization_id = :org_id AND material_id = :mat_id
         """)
-        params = {"org_id": ORG_ID, "mat_id": material_id}
+        params = {"org_id": org_id, "mat_id": material_id}
     else:
         query = text("""
             SELECT s.id, s.organization_id, s.material_id,
@@ -197,7 +190,7 @@ async def get_all_stock(
             WHERE s.organization_id = :org_id
             ORDER BY m.name
         """)
-        params = {"org_id": ORG_ID}
+        params = {"org_id": org_id}
 
     result = await db.execute(query, params)
     return [
@@ -217,7 +210,8 @@ async def get_all_stock(
 async def update_material_stock(
         material_id: UUID,
         stock: MaterialStockUpdate,
-        db: AsyncSession = Depends(get_db),
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
 ):
     """Обновить остатки материала"""
     update_data = stock.model_dump(exclude_unset=True)
@@ -233,13 +227,11 @@ async def update_material_stock(
             RETURNING id, organization_id, material_id, qty, reserved_qty, updated_at
         """
     )
-    params = {"material_id": material_id, "org_id": ORG_ID, **update_data}
+    params = {"material_id": material_id, "org_id": org_id, **update_data}
     result = await db.execute(query, params)
     row = result.fetchone()
-
     if not row:
         raise HTTPException(status_code=404, detail="Остатки не найдены")
-
     await db.commit()
     return {
         "id": row.id,

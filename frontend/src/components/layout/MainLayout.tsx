@@ -1,6 +1,6 @@
 // frontend/src/components/layout/MainLayout.tsx
 import React, { useState } from 'react';
-import { Outlet } from 'react-router-dom';
+import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
     AppBar,
     Box,
@@ -16,7 +16,10 @@ import {
     Toolbar,
     Typography,
     Tooltip,
-    Chip,
+    Avatar,
+    Menu,
+    MenuItem,
+    Button,
 } from '@mui/material';
 import {
     Menu as MenuIcon,
@@ -24,151 +27,191 @@ import {
     Inventory as InventoryIcon,
     Settings as SettingsIcon,
     Timeline as TimelineIcon,
-    Build as BuildIcon,
-    ChevronLeft as ChevronLeftIcon,
-    ChevronRight as ChevronRightIcon,
-    EventNote as EventNoteIcon,
-    Edit as EditIcon,
+    Schedule as ScheduleIcon,
+    AccountTree as AccountTreeIcon,
+    ShoppingCart as ShoppingCartIcon,
     Science as ScienceIcon,
-    ShoppingCart as CartIcon,
+    Logout as LogoutIcon,
+    Person as PersonIcon,
 } from '@mui/icons-material';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { usePlan } from '../../context/PlainContext';
+import { useAuth } from '../../context/AuthContext';
 
-const drawerWidth = 240;
-const drawerCollapsedWidth = 64;
+const DRAWER_WIDTH = 260;
 
-const menuItems = [
-    { text: 'Оборудование', icon: <BuildIcon />, path: '/equipment' },
-    { text: 'Продукты', icon: <InventoryIcon />, path: '/products' },
-    { text: 'Материалы', icon: <ScienceIcon />, path: '/materials' },
-    { text: 'Рецептуры', icon: <ScienceIcon />, path: '/recipes' },
-    { text: 'Тех. карты', icon: <SettingsIcon />, path: '/operations' },
-    { text: 'Заказы', icon: <CartIcon />, path: '/orders' },
-    { text: 'Планирование', icon: <FactoryIcon />, path: '/schedule' },
-    { text: 'Диаграмма Ганта', icon: <TimelineIcon />, path: '/gantt' },
+const MENU_ITEMS = [
+    { path: '/equipment', label: 'Оборудование', icon: <SettingsIcon /> },
+    { path: '/products', label: 'Продукты', icon: <InventoryIcon /> },
+    { path: '/materials', label: 'Материалы', icon: <InventoryIcon /> },
+    { path: '/recipes', label: 'Рецептуры', icon: <ScienceIcon /> },
+    { path: '/operations', label: 'Тех. карты', icon: <AccountTreeIcon /> },
+    { path: '/orders', label: 'Заказы', icon: <ShoppingCartIcon /> },
+    { path: '/schedule', label: 'Планирование', icon: <ScheduleIcon /> },
+    { path: '/gantt', label: 'Диаграмма Ганта', icon: <TimelineIcon /> },
 ];
 
+const ROLE_LABELS: Record<string, string> = {
+    ADMIN: 'Администратор',
+    PLANNER: 'Планировщик',
+    MASTER: 'Мастер',
+    LAB: 'Лаборант',
+    VIEWER: 'Наблюдатель',
+};
+
 const MainLayout: React.FC = () => {
-    const [mobileOpen, setMobileOpen] = useState(false);
-    const [collapsed, setCollapsed] = useState(false);
+    const { user, logout } = useAuth();
     const navigate = useNavigate();
     const location = useLocation();
-
-    const { currentVersionId, currentPlanName } = usePlan();
+    const [mobileOpen, setMobileOpen] = useState(false);
+    const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
 
     const handleDrawerToggle = () => setMobileOpen(!mobileOpen);
-    const handleCollapseToggle = () => setCollapsed(!collapsed);
 
-    const currentDrawerWidth = collapsed ? drawerCollapsedWidth : drawerWidth;
+    const handleProfileClick = (event: React.MouseEvent<HTMLElement>) => {
+        setAnchorEl(event.currentTarget);
+    };
+
+    const handleProfileClose = () => {
+        setAnchorEl(null);
+    };
+
+    const handleLogout = () => {
+        handleProfileClose();
+        logout();
+        navigate('/login');
+    };
 
     const drawer = (
-        <div>
-            <Toolbar sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                {!collapsed && (
-                    <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                        <FactoryIcon sx={{ mr: 1 }} />
-                        <Typography variant="h6" noWrap component="div">APS Scheduler</Typography>
-                    </Box>
-                )}
-                <IconButton onClick={handleCollapseToggle} sx={{ display: { xs: 'none', sm: 'flex' } }}>
-                    {collapsed ? <ChevronRightIcon /> : <ChevronLeftIcon />}
-                </IconButton>
+        <Box>
+            <Toolbar sx={{ bgcolor: '#2c3e50', color: 'white' }}>
+                <FactoryIcon sx={{ mr: 1 }} />
+                <Typography variant="h6" noWrap sx={{ fontWeight: 700 }}>
+                    APS Scheduler
+                </Typography>
             </Toolbar>
             <Divider />
             <List>
-                {menuItems.map((item) => (
-                    <ListItem key={item.text} disablePadding>
-                        <Tooltip title={collapsed ? item.text : ''} placement="right">
+                {MENU_ITEMS.map((item) => {
+                    const isActive = location.pathname === item.path;
+                    return (
+                        <ListItem key={item.path} disablePadding>
                             <ListItemButton
-                                selected={location.pathname === item.path}
-                                onClick={() => navigate(item.path)}
-                                sx={{ minHeight: 48, justifyContent: collapsed ? 'center' : 'initial', px: 2.5 }}
+                                selected={isActive}
+                                onClick={() => {
+                                    navigate(item.path);
+                                    setMobileOpen(false);
+                                }}
+                                sx={{
+                                    '&.Mui-selected': {
+                                        backgroundColor: '#3498db',
+                                        color: 'white',
+                                        '& .MuiListItemIcon-root': { color: 'white' },
+                                        '&:hover': { backgroundColor: '#2980b9' },
+                                    },
+                                }}
                             >
-                                <ListItemIcon sx={{ minWidth: 0, mr: collapsed ? 'auto' : 3, justifyContent: 'center' }}>
-                                    {item.icon}
-                                </ListItemIcon>
-                                {!collapsed && <ListItemText primary={item.text} />}
+                                <ListItemIcon>{item.icon}</ListItemIcon>
+                                <ListItemText primary={item.label} />
                             </ListItemButton>
-                        </Tooltip>
-                    </ListItem>
-                ))}
+                        </ListItem>
+                    );
+                })}
             </List>
-        </div>
+        </Box>
     );
 
     return (
-        <Box sx={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
+        <Box sx={{ display: 'flex', minHeight: '100vh' }}>
             <CssBaseline />
+
+            {/* AppBar */}
             <AppBar
                 position="fixed"
                 sx={{
-                    width: { sm: `calc(100% - ${currentDrawerWidth}px)` },
-                    ml: { sm: `${currentDrawerWidth}px` },
-                    transition: 'width 0.3s, margin-left 0.3s',
+                    width: { md: `calc(100% - ${DRAWER_WIDTH}px)` },
+                    ml: { md: `${DRAWER_WIDTH}px` },
+                    bgcolor: '#2c3e50',
                 }}
             >
                 <Toolbar>
                     <IconButton
                         color="inherit"
-                        aria-label="open drawer"
                         edge="start"
                         onClick={handleDrawerToggle}
-                        sx={{ mr: 2, display: { sm: 'none' } }}
+                        sx={{ mr: 2, display: { md: 'none' } }}
                     >
                         <MenuIcon />
                     </IconButton>
 
-                    <Box sx={{ display: 'flex', flexDirection: 'column', lineHeight: 1.2 }}>
-                        <Typography variant="h6" component="div" sx={{ fontWeight: 600 }}>
-                            Система планирования производства
-                        </Typography>
-                        {currentVersionId ? (
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.25 }}>
-                                <EventNoteIcon sx={{ fontSize: 14, opacity: 0.9 }} />
-                                <Typography variant="caption" sx={{ color: '#90caf9', fontWeight: 500, fontSize: '0.75rem' }}>
-                                    {currentPlanName}
-                                </Typography>
-                            </Box>
-                        ) : (
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.25 }}>
-                                <EditIcon sx={{ fontSize: 14, opacity: 0.7 }} />
-                                <Typography variant="caption" sx={{ color: '#ffcc80', fontWeight: 500, fontSize: '0.75rem' }}>
-                                    {currentPlanName}
-                                </Typography>
-                            </Box>
-                        )}
-                    </Box>
+                    <Typography variant="h6" noWrap sx={{ flexGrow: 1 }}>
+                        {MENU_ITEMS.find((item) => item.path === location.pathname)?.label || 'APS Scheduler'}
+                    </Typography>
 
-                    <Box sx={{ ml: 'auto', display: 'flex', alignItems: 'center' }}>
-                        <Chip
-                            label={currentVersionId ? 'ПРОСМОТР' : 'РЕДАКТИРОВАНИЕ'}
-                            size="small"
-                            sx={{
-                                bgcolor: currentVersionId ? 'rgba(33, 150, 243, 0.2)' : 'rgba(255, 152, 0, 0.2)',
-                                color: 'white',
-                                fontWeight: 600,
-                            }}
-                        />
-                    </Box>
+                    {/* Профиль пользователя */}
+                    {user && (
+                        <>
+                            <Tooltip title="Профиль">
+                                <Button
+                                    color="inherit"
+                                    onClick={handleProfileClick}
+                                    startIcon={
+                                        <Avatar sx={{ width: 32, height: 32, bgcolor: '#3498db', fontSize: '0.9rem' }}>
+                                            {user.email.charAt(0).toUpperCase()}
+                                        </Avatar>
+                                    }
+                                    sx={{ textTransform: 'none' }}
+                                >
+                                    <Box sx={{ textAlign: 'left', display: { xs: 'none', sm: 'block' } }}>
+                                        <Typography variant="body2" sx={{ lineHeight: 1.2, fontWeight: 600 }}>
+                                            {user.full_name || user.email}
+                                        </Typography>
+                                        <Typography variant="caption" sx={{ lineHeight: 1, opacity: 0.8 }}>
+                                            {ROLE_LABELS[user.role] || user.role}
+                                        </Typography>
+                                    </Box>
+                                </Button>
+                            </Tooltip>
+
+                            <Menu
+                                anchorEl={anchorEl}
+                                open={Boolean(anchorEl)}
+                                onClose={handleProfileClose}
+                                transformOrigin={{ horizontal: 'right', vertical: 'top' }}
+                                anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
+                            >
+                                <MenuItem disabled>
+                                    <PersonIcon sx={{ mr: 1 }} />
+                                    {user.email}
+                                </MenuItem>
+                                <Divider />
+                                <MenuItem onClick={handleLogout}>
+                                    <LogoutIcon sx={{ mr: 1 }} />
+                                    Выйти
+                                </MenuItem>
+                            </Menu>
+                        </>
+                    )}
                 </Toolbar>
             </AppBar>
 
-            <Box component="nav" sx={{ width: { sm: currentDrawerWidth }, flexShrink: { sm: 0 }, transition: 'width 0.3s' }}>
+            {/* Drawer */}
+            <Box component="nav" sx={{ width: { md: DRAWER_WIDTH }, flexShrink: { md: 0 } }}>
                 <Drawer
                     variant="temporary"
                     open={mobileOpen}
                     onClose={handleDrawerToggle}
                     ModalProps={{ keepMounted: true }}
-                    sx={{ display: { xs: 'block', sm: 'none' }, '& .MuiDrawer-paper': { boxSizing: 'border-box', width: drawerWidth } }}
+                    sx={{
+                        display: { xs: 'block', md: 'none' },
+                        '& .MuiDrawer-paper': { boxSizing: 'border-box', width: DRAWER_WIDTH },
+                    }}
                 >
                     {drawer}
                 </Drawer>
                 <Drawer
                     variant="permanent"
                     sx={{
-                        display: { xs: 'none', sm: 'block' },
-                        '& .MuiDrawer-paper': { boxSizing: 'border-box', width: currentDrawerWidth, transition: 'width 0.3s', overflowX: 'hidden' },
+                        display: { xs: 'none', md: 'block' },
+                        '& .MuiDrawer-paper': { boxSizing: 'border-box', width: DRAWER_WIDTH },
                     }}
                     open
                 >
@@ -176,23 +219,19 @@ const MainLayout: React.FC = () => {
                 </Drawer>
             </Box>
 
+            {/* Main content */}
             <Box
                 component="main"
                 sx={{
                     flexGrow: 1,
                     p: 3,
-                    width: { sm: `calc(100% - ${currentDrawerWidth}px)` },
-                    transition: 'width 0.3s',
-                    overflow: 'auto',
-                    height: '100vh',
-                    display: 'flex',
-                    flexDirection: 'column',
+                    width: { md: `calc(100% - ${DRAWER_WIDTH}px)` },
+                    minHeight: '100vh',
+                    bgcolor: '#f5f6fa',
                 }}
             >
                 <Toolbar />
-                <Box sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                    <Outlet />
-                </Box>
+                <Outlet />
             </Box>
         </Box>
     );

@@ -1,39 +1,40 @@
 ﻿# backend/app/api/v1/schedule.py
 from fastapi import APIRouter, HTTPException, Depends
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
-from sqlalchemy.orm import sessionmaker
 from typing import List, Dict, Any
 from uuid import UUID
 from datetime import datetime
 from .models import ScheduleBuildRequest, ScheduleBuildResponse
+from app.auth.dependencies import get_current_org_id, get_db_session
 
 router = APIRouter(prefix="/api/v1/schedule", tags=["Планирование"])
 
 _last_schedule_result: Dict[str, Any] = {}
 
-# Настройка БД для эндпоинтов версий (можно вынести в зависимости, но для простоты оставим здесь)
-DATABASE_URL = "postgresql+asyncpg://aps:aps_secret@localhost:5432/household"
-engine = create_async_engine(DATABASE_URL, echo=False)
-async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-async def get_db():
-    async with async_session() as session:
-        yield session
 
 @router.post("/build", response_model=ScheduleBuildResponse)
-async def build_schedule(request: ScheduleBuildRequest):
+async def build_schedule(
+        request: ScheduleBuildRequest,
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
+):
     try:
         from app.scheduler.core import ProductionScheduler
         from app.scheduler.saver import ScheduleSaver
 
-        scheduler = ProductionScheduler(horizon_hours=request.horizon_hours)
+        # Передаём org_id в планировщик
+        scheduler = ProductionScheduler(
+            horizon_hours=request.horizon_hours,
+            org_id=org_id,
+        )
         result = await scheduler.build_schedule()
 
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
 
-        saver = ScheduleSaver()
+        # Передаём org_id в сохранитель
+        saver = ScheduleSaver(org_id=org_id)
         save_stats = await saver.save_schedule(result)
 
         _last_schedule_result.update({
@@ -49,12 +50,13 @@ async def build_schedule(request: ScheduleBuildRequest):
             makespan_minutes=result["makespan_minutes"],
             makespan_hours=result["makespan_minutes"] / 60,
             version_id=save_stats["version_id"],
-            message=f"Построено {result['total_tasks']} задач"
+            message=f"Построено {result['total_tasks']} задач",
         )
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/last-result")
 async def get_last_result():
@@ -67,14 +69,22 @@ async def get_last_result():
         "version_id": str(_last_schedule_result.get("version_id")),
     }
 
+
 @router.get("/versions", response_model=List[dict])
-async def get_schedule_versions(db: AsyncSession = Depends(get_db)):
+async def get_schedule_versions(
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
+):
     """Получить список всех версий планов"""
-    result = await db.execute(text("""
-        SELECT id, name, version_type, is_active, created_at, comment
-        FROM schedule_version
-        ORDER BY created_at DESC
-    """))
+    result = await db.execute(
+        text("""
+            SELECT id, name, version_type, is_active, created_at, comment
+            FROM schedule_version
+            WHERE organization_id = :org_id
+            ORDER BY created_at DESC
+        """),
+        {"org_id": org_id},
+    )
     return [
         {
             "id": str(row.id),
@@ -87,13 +97,16 @@ async def get_schedule_versions(db: AsyncSession = Depends(get_db)):
         for row in result.fetchall()
     ]
 
+
 @router.post("/save", response_model=dict)
-async def save_current_schedule(db: AsyncSession = Depends(get_db)):
-    """Сохранить текущий рассчитанный план как версию (если он еще не сохранен)"""
+async def save_current_schedule(
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
+):
+    """Сохранить текущий рассчитанный план как версию"""
     if not _last_schedule_result:
         raise HTTPException(status_code=400, detail="Нет рассчитанного плана для сохранения")
 
-    # Проверяем, не сохранен ли он уже (по наличию version_id в результате)
     if "version_id" in _last_schedule_result and _last_schedule_result["version_id"]:
         return {
             "status": "success",
@@ -102,27 +115,28 @@ async def save_current_schedule(db: AsyncSession = Depends(get_db)):
         }
 
     from app.scheduler.saver import ScheduleSaver
-    saver = ScheduleSaver()
+
+    saver = ScheduleSaver(org_id=org_id)
     result = await saver.save_schedule(_last_schedule_result)
 
-    # Обновляем глобальную переменную, чтобы знать, что план сохранен
     _last_schedule_result["version_id"] = result["version_id"]
-
     return {
         "status": "success",
         "message": f"План '{result['name']}' успешно сохранен",
         "version_id": str(result["version_id"]),
     }
 
+
 @router.delete("/versions/{version_id}")
 async def delete_schedule_version(
         version_id: UUID,
-        db: AsyncSession = Depends(get_db)
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
 ):
-    """Удалить версию плана и все связанные данные (CASCADE сработает на уровне БД)"""
+    """Удалить версию плана и все связанные данные (CASCADE)"""
     result = await db.execute(
-        text("DELETE FROM schedule_version WHERE id = :version_id"),
-        {"version_id": version_id}
+        text("DELETE FROM schedule_version WHERE id = :version_id AND organization_id = :org_id"),
+        {"version_id": version_id, "org_id": org_id},
     )
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="Версия плана не найдена")

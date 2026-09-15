@@ -5,344 +5,332 @@
 -- ==========================================
 
 -- ==========================================
--- 1. МУЛЬТИ-ТЕНАНТНОСТЬ
+-- 1. МУЛЬТИ-ТЕНАНТНОСТЬ И АВТОРИЗАЦИЯ
 -- ==========================================
 CREATE TABLE organization (
-                              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                              name VARCHAR(200) NOT NULL,
-                              slug VARCHAR(50) UNIQUE NOT NULL,
-                              settings JSONB DEFAULT '{}',
-                              is_active BOOLEAN DEFAULT TRUE,
-                              created_at TIMESTAMPTZ DEFAULT NOW(),
-                              comment TEXT
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(200) NOT NULL,
+    slug VARCHAR(50) UNIQUE NOT NULL,
+    settings JSONB DEFAULT '{}',
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    comment TEXT
 );
-
-COMMENT ON TABLE organization IS 'Организации (тенанты). Все бизнес-данные привязаны к организации для поддержки мульти-тенантной архитектуры.';
+COMMENT ON TABLE organization IS 'Организации (тенанты). Все бизнес-данные привязаны к организации.';
 
 CREATE TABLE app_user (
-                          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                          organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
-                          email VARCHAR(200) NOT NULL,
-                          full_name VARCHAR(200),
-                          role VARCHAR(30) NOT NULL,
-                          is_active BOOLEAN DEFAULT TRUE,
-                          UNIQUE (organization_id, email)
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+    email VARCHAR(200) NOT NULL,
+    full_name VARCHAR(200),
+    role VARCHAR(30) NOT NULL, -- ADMIN, PLANNER, MASTER, LAB, VIEWER
+    password_hash VARCHAR(255),
+    last_login_at TIMESTAMPTZ,
+    is_active BOOLEAN DEFAULT TRUE,
+    UNIQUE (organization_id, email)
 );
-
 COMMENT ON TABLE app_user IS 'Пользователи системы с привязкой к организации и ролью.';
+COMMENT ON COLUMN app_user.password_hash IS 'Хешированный пароль пользователя (bcrypt)';
+
+CREATE TABLE organization_settings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+    setting_key VARCHAR(100) NOT NULL,
+    setting_value JSONB NOT NULL,
+    description TEXT,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (organization_id, setting_key)
+);
+COMMENT ON TABLE organization_settings IS 'Настройки организации. Хранит бизнес-параметры (max_operators, default_horizon_hours и т.д.).';
+CREATE INDEX idx_org_settings_org_id ON organization_settings(organization_id);
 
 -- ==========================================
 -- 2. СПРАВОЧНИКИ ОБОРУДОВАНИЯ И РЕСУРСОВ
 -- ==========================================
 CREATE TABLE equipment (
-                           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                           organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
-                           name VARCHAR(100) NOT NULL,
-                           type VARCHAR(30) NOT NULL,
-                           volume_kg NUMERIC(10,2),
-                           speed_coeff NUMERIC(6,3) DEFAULT 1.0,
-                           mixer_type VARCHAR(50),
-                           pump_power_kw NUMERIC(6,2),
-                           is_active BOOLEAN DEFAULT TRUE,
-                           metadata JSONB DEFAULT '{}',
-                           comment TEXT
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+    name VARCHAR(100) NOT NULL,
+    type VARCHAR(30) NOT NULL, -- REACTOR, TANK, FILLING_LINE, BOILER, MANUAL_STATION
+    volume_kg NUMERIC(10,2),
+    speed_coeff NUMERIC(6,3) DEFAULT 1.0,
+    mixer_type VARCHAR(50),
+    pump_power_kw NUMERIC(6,2),
+    is_active BOOLEAN DEFAULT TRUE,
+    metadata JSONB DEFAULT '{}',
+    comment TEXT
 );
-
-COMMENT ON TABLE equipment IS 'Оборудование производственной линии: реакторы, накопительные емкости, линии розлива, бойлеры, ручные посты.';
+COMMENT ON TABLE equipment IS 'Оборудование производственной линии.';
 
 CREATE TABLE equipment_link (
-                                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                                organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
-                                from_equipment_id UUID NOT NULL REFERENCES equipment(id) ON DELETE CASCADE,
-                                to_equipment_id UUID NOT NULL REFERENCES equipment(id) ON DELETE CASCADE,
-                                is_direct BOOLEAN DEFAULT TRUE,
-                                UNIQUE (from_equipment_id, to_equipment_id)
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+    from_equipment_id UUID NOT NULL REFERENCES equipment(id) ON DELETE CASCADE,
+    to_equipment_id UUID NOT NULL REFERENCES equipment(id) ON DELETE CASCADE,
+    is_direct BOOLEAN DEFAULT TRUE,
+    UNIQUE (from_equipment_id, to_equipment_id)
 );
-
-COMMENT ON TABLE equipment_link IS 'Физические связи между оборудованием (реактор -> линия, реактор -> емкость).';
+COMMENT ON TABLE equipment_link IS 'Физические связи между оборудованием (реактор -> линия).';
 
 CREATE TABLE resource_pool (
-                               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                               organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
-                               name VARCHAR(100) NOT NULL,
-                               type VARCHAR(50) NOT NULL,
-                               capacity INT NOT NULL,
-                               comment TEXT
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+    name VARCHAR(100) NOT NULL,
+    type VARCHAR(50) NOT NULL, -- OPERATOR, COOLING_ZONE, BOILER, LAB
+    capacity INT NOT NULL,
+    comment TEXT
 );
-
-COMMENT ON TABLE resource_pool IS 'Переиспользуемые ресурсы с ограничением параллельности (аппаратчики, зона охлаждения, бойлер).';
+COMMENT ON TABLE resource_pool IS 'Переиспользуемые ресурсы с ограничением параллельности.';
 
 -- ==========================================
 -- 3. МАТЕРИАЛЫ И ОСТАТКИ
 -- ==========================================
 CREATE TABLE material (
-                          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                          organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
-                          code VARCHAR(50) NOT NULL,
-                          name VARCHAR(200) NOT NULL,
-                          unit VARCHAR(20) NOT NULL DEFAULT 'kg',
-                          category VARCHAR(30) NOT NULL,
-                          comment TEXT,
-                          UNIQUE (organization_id, code)
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+    code VARCHAR(50) NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    unit VARCHAR(20) NOT NULL DEFAULT 'kg',
+    category VARCHAR(30) NOT NULL, -- RAW, PACKAGING, LABEL
+    comment TEXT,
+    UNIQUE (organization_id, code)
 );
-
 COMMENT ON TABLE material IS 'Справочник материалов: сырье, упаковка, этикетки.';
 
 CREATE TABLE material_stock (
-                                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                                organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
-                                material_id UUID NOT NULL REFERENCES material(id) ON DELETE CASCADE,
-                                qty NUMERIC(12,3) NOT NULL DEFAULT 0,
-                                reserved_qty NUMERIC(12,3) DEFAULT 0,
-                                updated_at TIMESTAMPTZ DEFAULT NOW()
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+    material_id UUID NOT NULL REFERENCES material(id) ON DELETE CASCADE,
+    qty NUMERIC(12,3) NOT NULL DEFAULT 0,
+    reserved_qty NUMERIC(12,3) DEFAULT 0,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
-
 COMMENT ON TABLE material_stock IS 'Текущие остатки материалов на складе.';
 
 CREATE TABLE material_supply (
-                                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                                 organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
-                                 material_id UUID NOT NULL REFERENCES material(id) ON DELETE CASCADE,
-                                 expected_at TIMESTAMPTZ NOT NULL,
-                                 qty NUMERIC(12,3) NOT NULL,
-                                 status VARCHAR(20) DEFAULT 'PLANNED'
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+    material_id UUID NOT NULL REFERENCES material(id) ON DELETE CASCADE,
+    expected_at TIMESTAMPTZ NOT NULL,
+    qty NUMERIC(12,3) NOT NULL,
+    status VARCHAR(20) DEFAULT 'PLANNED'
 );
-
 COMMENT ON TABLE material_supply IS 'График поставок сырья от поставщиков.';
 
 -- ==========================================
 -- 4. ПРОДУКЦИЯ (ПФ и ГП) И РЕЦЕПТУРЫ
 -- ==========================================
 CREATE TABLE product (
-                         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                         organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
-                         code VARCHAR(50) NOT NULL,
-                         name VARCHAR(200) NOT NULL,
-                         type VARCHAR(10) NOT NULL,
-                         viscosity_coeff NUMERIC(5,2) DEFAULT 1.0,
-                         requires_heating BOOLEAN DEFAULT FALSE,
-                         bottle_volume_l NUMERIC(5,2),
-                         fill_speed_per_min NUMERIC(8,2),
-                         parent_pf_id UUID REFERENCES product(id),
-                         comment TEXT,
-                         UNIQUE (organization_id, code)
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+    code VARCHAR(50) NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    type VARCHAR(10) NOT NULL, -- PF, GP
+    viscosity_coeff NUMERIC(5,2) DEFAULT 1.0,
+    requires_heating BOOLEAN DEFAULT FALSE,
+    bottle_volume_l NUMERIC(5,2),
+    fill_speed_per_min NUMERIC(8,2),
+    parent_pf_id UUID REFERENCES product(id),
+    comment TEXT,
+    UNIQUE (organization_id, code)
 );
-
 COMMENT ON TABLE product IS 'Продукция: полуфабрикаты (ПФ) и готовая продукция (ГП).';
 
 CREATE TABLE recipe (
-                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                        organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
-                        product_id UUID NOT NULL REFERENCES product(id) ON DELETE CASCADE,
-                        base_volume_kg NUMERIC(10,2) NOT NULL,
-                        comment TEXT
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+    product_id UUID NOT NULL REFERENCES product(id) ON DELETE CASCADE,
+    base_volume_kg NUMERIC(10,2) NOT NULL,
+    comment TEXT
 );
-
 COMMENT ON TABLE recipe IS 'Рецептура полуфабриката. Определяет пропорции компонентов на базовый объем.';
 
 CREATE TABLE recipe_item (
-                             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                             recipe_id UUID NOT NULL REFERENCES recipe(id) ON DELETE CASCADE,
-                             material_id UUID NOT NULL REFERENCES material(id),
-                             qty_per_base NUMERIC(10,3) NOT NULL
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    recipe_id UUID NOT NULL REFERENCES recipe(id) ON DELETE CASCADE,
+    material_id UUID NOT NULL REFERENCES material(id),
+    qty_per_base NUMERIC(10,3) NOT NULL
 );
-
-COMMENT ON TABLE recipe_item IS 'Компоненты рецептуры. Список материалов и их количество на базовый объем.';
+COMMENT ON TABLE recipe_item IS 'Компоненты рецептуры.';
 
 CREATE TABLE equipment_capability (
-                                      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                                      organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
-                                      equipment_id UUID NOT NULL REFERENCES equipment(id) ON DELETE CASCADE,
-                                      product_id UUID NOT NULL REFERENCES product(id) ON DELETE CASCADE,
-                                      max_fill_percent NUMERIC(3,2) DEFAULT 0.80,
-                                      UNIQUE (organization_id, equipment_id, product_id)
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+    equipment_id UUID NOT NULL REFERENCES equipment(id) ON DELETE CASCADE,
+    product_id UUID NOT NULL REFERENCES product(id) ON DELETE CASCADE,
+    max_fill_percent NUMERIC(3,2) DEFAULT 0.80,
+    UNIQUE (organization_id, equipment_id, product_id)
 );
-
 COMMENT ON TABLE equipment_capability IS 'Матрица совместимости оборудования и продукции.';
 
 -- ==========================================
 -- 5. ТЕХНОЛОГИЧЕСКИЕ КАРТЫ
 -- ==========================================
 CREATE TABLE operation_template (
-                                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                                    organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
-                                    product_id UUID NOT NULL REFERENCES product(id) ON DELETE CASCADE,
-                                    stage_order INT NOT NULL,
-                                    name VARCHAR(100) NOT NULL,
-                                    base_duration_mins INT NOT NULL,
-                                    is_setup BOOLEAN DEFAULT FALSE,
-                                    is_parallel_group BOOLEAN DEFAULT FALSE,
-                                    parallel_group_id VARCHAR(50),
-                                    needs_boiler BOOLEAN DEFAULT FALSE,
-                                    needs_cooling_zone BOOLEAN DEFAULT FALSE,
-                                    needs_operator BOOLEAN DEFAULT FALSE,
-                                    needs_lab BOOLEAN DEFAULT FALSE,
-                                    duration_formula VARCHAR(200),
-                                    comment TEXT
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+    product_id UUID NOT NULL REFERENCES product(id) ON DELETE CASCADE,
+    stage_order INT NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    base_duration_mins INT NOT NULL,
+    is_setup BOOLEAN DEFAULT FALSE,
+    is_parallel_group BOOLEAN DEFAULT FALSE,
+    parallel_group_id VARCHAR(50),
+    needs_boiler BOOLEAN DEFAULT FALSE,
+    needs_cooling_zone BOOLEAN DEFAULT FALSE,
+    needs_operator BOOLEAN DEFAULT FALSE,
+    needs_lab BOOLEAN DEFAULT FALSE,
+    duration_formula VARCHAR(200),
+    comment TEXT
 );
-
 COMMENT ON TABLE operation_template IS 'Технологическая карта: этапы производства полуфабриката.';
 
 CREATE TABLE setup_matrix (
-                              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                              organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
-                              from_product_id UUID NOT NULL REFERENCES product(id),
-                              to_product_id UUID NOT NULL REFERENCES product(id),
-                              setup_mins INT NOT NULL,
-                              UNIQUE (organization_id, from_product_id, to_product_id)
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+    from_product_id UUID NOT NULL REFERENCES product(id),
+    to_product_id UUID NOT NULL REFERENCES product(id),
+    setup_mins INT NOT NULL,
+    UNIQUE (organization_id, from_product_id, to_product_id)
 );
-
 COMMENT ON TABLE setup_matrix IS 'Матрица времени переналадки (замывки) при переходе между полуфабрикатами.';
 
 -- ==========================================
 -- 6. КАЛЕНДАРЬ (выходные, ремонты, аварии)
 -- ==========================================
 CREATE TABLE calendar_event (
-                                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                                organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
-                                equipment_id UUID REFERENCES equipment(id) ON DELETE CASCADE,
-                                event_type VARCHAR(30) NOT NULL,
-                                starts_at TIMESTAMPTZ NOT NULL,
-                                ends_at TIMESTAMPTZ NOT NULL,
-                                comment TEXT,
-                                CONSTRAINT chk_dates CHECK (ends_at > starts_at)
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+    equipment_id UUID REFERENCES equipment(id) ON DELETE CASCADE,
+    event_type VARCHAR(30) NOT NULL, -- WEEKEND, REPAIR, BREAKDOWN, SHIFT_END, LUNCH
+    starts_at TIMESTAMPTZ NOT NULL,
+    ends_at TIMESTAMPTZ NOT NULL,
+    comment TEXT,
+    CONSTRAINT chk_dates CHECK (ends_at > starts_at)
 );
-
-COMMENT ON TABLE calendar_event IS 'Календарь простоев оборудования: выходные, ремонты, аварии.';
+COMMENT ON TABLE calendar_event IS 'Календарь простоев оборудования.';
 
 -- ==========================================
 -- 7. ПЛАНИРОВАНИЕ: ЗАКАЗЫ, ПАРТИИ, ГАНТ
 -- ==========================================
 CREATE TABLE production_order (
-                                  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                                  organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
-                                  product_id UUID NOT NULL REFERENCES product(id),
-                                  target_qty NUMERIC(10,2) NOT NULL,
-                                  due_date TIMESTAMPTZ NOT NULL,
-                                  priority INT DEFAULT 5,
-                                  status VARCHAR(20) DEFAULT 'PLANNED',
-                                  created_at TIMESTAMPTZ DEFAULT NOW(),
-                                  comment TEXT
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+    product_id UUID NOT NULL REFERENCES product(id),
+    target_qty NUMERIC(10,2) NOT NULL,
+    due_date TIMESTAMPTZ NOT NULL,
+    priority INT DEFAULT 5,
+    status VARCHAR(20) DEFAULT 'PLANNED',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    comment TEXT
 );
-
 COMMENT ON TABLE production_order IS 'Заказ на производство готовой продукции.';
 
 CREATE TABLE batch (
-                       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                       organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
-                       order_id UUID NOT NULL REFERENCES production_order(id) ON DELETE CASCADE,
-                       product_id UUID NOT NULL REFERENCES product(id),
-                       volume_kg NUMERIC(10,2) NOT NULL,
-                       assigned_equipment_id UUID REFERENCES equipment(id),
-                       planned_start TIMESTAMPTZ,
-                       planned_end TIMESTAMPTZ,
-                       status VARCHAR(20) DEFAULT 'NOT_STARTED',
-                       comment TEXT
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+    order_id UUID NOT NULL REFERENCES production_order(id) ON DELETE CASCADE,
+    product_id UUID NOT NULL REFERENCES product(id),
+    volume_kg NUMERIC(10,2) NOT NULL,
+    assigned_equipment_id UUID REFERENCES equipment(id),
+    planned_start TIMESTAMPTZ,
+    planned_end TIMESTAMPTZ,
+    status VARCHAR(20) DEFAULT 'NOT_STARTED',
+    comment TEXT
 );
-
 COMMENT ON TABLE batch IS 'Производственная партия полуфабриката.';
 
 CREATE TABLE schedule_version (
-                                  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                                  organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
-                                  name VARCHAR(100) NOT NULL,
-                                  version_type VARCHAR(20) NOT NULL,
-                                  is_active BOOLEAN DEFAULT FALSE,
-                                  created_at TIMESTAMPTZ DEFAULT NOW(),
-                                  created_by UUID REFERENCES app_user(id),
-                                  comment TEXT
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+    name VARCHAR(100) NOT NULL,
+    version_type VARCHAR(20) NOT NULL, -- MONTHLY, SHIFT, WHAT_IF
+    is_active BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by UUID REFERENCES app_user(id),
+    comment TEXT
 );
-
-COMMENT ON TABLE schedule_version IS 'Версии производственного плана. Позволяет хранить историю планирования.';
+COMMENT ON TABLE schedule_version IS 'Версии производственного плана.';
 
 CREATE TABLE scheduled_task (
-                                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                                organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
-                                schedule_version_id UUID NOT NULL REFERENCES schedule_version(id) ON DELETE CASCADE,
-                                batch_id UUID REFERENCES batch(id) ON DELETE CASCADE,
-                                operation_template_id UUID NOT NULL REFERENCES operation_template(id),
-                                equipment_id UUID NOT NULL REFERENCES equipment(id),
-                                resource_pool_id UUID REFERENCES resource_pool(id),
-                                planned_start TIMESTAMPTZ NOT NULL,
-                                planned_end TIMESTAMPTZ NOT NULL,
-                                actual_start TIMESTAMPTZ,
-                                actual_end TIMESTAMPTZ,
-                                is_pinned BOOLEAN DEFAULT FALSE,
-                                comment TEXT
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+    schedule_version_id UUID NOT NULL REFERENCES schedule_version(id) ON DELETE CASCADE,
+    batch_id UUID REFERENCES batch(id) ON DELETE CASCADE,
+    operation_template_id UUID NOT NULL REFERENCES operation_template(id),
+    equipment_id UUID NOT NULL REFERENCES equipment(id),
+    resource_pool_id UUID REFERENCES resource_pool(id),
+    planned_start TIMESTAMPTZ NOT NULL,
+    planned_end TIMESTAMPTZ NOT NULL,
+    actual_start TIMESTAMPTZ,
+    actual_end TIMESTAMPTZ,
+    is_pinned BOOLEAN DEFAULT FALSE,
+    comment TEXT
 );
-
-COMMENT ON TABLE scheduled_task IS 'Задача на диаграмме Ганта. Конкретная операция для партии на определенном оборудовании.';
+COMMENT ON TABLE scheduled_task IS 'Задача на диаграмме Ганта.';
 
 -- ==========================================
 -- 8. SNAPSHOT-ТАБЛИЦЫ ДЛЯ ВЕРСИОНИРОВАНИЯ
 -- ==========================================
 CREATE TABLE equipment_snapshot (
-                                    id UUID NOT NULL,
-                                    organization_id UUID NOT NULL,
-                                    name VARCHAR(100) NOT NULL,
-                                    type VARCHAR(30) NOT NULL,
-                                    volume_kg NUMERIC(10,2),
-                                    speed_coeff NUMERIC(6,3),
-                                    mixer_type VARCHAR(50),
-                                    is_active BOOLEAN,
-                                    version_id UUID NOT NULL REFERENCES schedule_version(id) ON DELETE CASCADE,
-                                    PRIMARY KEY (id, version_id)
+    id UUID NOT NULL,
+    organization_id UUID NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    type VARCHAR(30) NOT NULL,
+    volume_kg NUMERIC(10,2),
+    speed_coeff NUMERIC(6,3),
+    mixer_type VARCHAR(50),
+    is_active BOOLEAN,
+    version_id UUID NOT NULL REFERENCES schedule_version(id) ON DELETE CASCADE,
+    PRIMARY KEY (id, version_id)
 );
-
-COMMENT ON TABLE equipment_snapshot IS 'Снимок оборудования на момент создания версии плана.';
 
 CREATE TABLE product_snapshot (
-                                  id UUID NOT NULL,
-                                  organization_id UUID NOT NULL,
-                                  code VARCHAR(50) NOT NULL,
-                                  name VARCHAR(200) NOT NULL,
-                                  type VARCHAR(10) NOT NULL,
-                                  viscosity_coeff NUMERIC(5,2),
-                                  requires_heating BOOLEAN,
-                                  bottle_volume_l NUMERIC(5,2),
-                                  fill_speed_per_min NUMERIC(8,2),
-                                  parent_pf_id UUID,
-                                  version_id UUID NOT NULL REFERENCES schedule_version(id) ON DELETE CASCADE,
-                                  PRIMARY KEY (id, version_id)
+    id UUID NOT NULL,
+    organization_id UUID NOT NULL,
+    code VARCHAR(50) NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    type VARCHAR(10) NOT NULL,
+    viscosity_coeff NUMERIC(5,2),
+    requires_heating BOOLEAN,
+    bottle_volume_l NUMERIC(5,2),
+    fill_speed_per_min NUMERIC(8,2),
+    parent_pf_id UUID,
+    version_id UUID NOT NULL REFERENCES schedule_version(id) ON DELETE CASCADE,
+    PRIMARY KEY (id, version_id)
 );
-
-COMMENT ON TABLE product_snapshot IS 'Снимок продукции на момент создания версии плана.';
 
 CREATE TABLE operation_snapshot (
-                                    id UUID NOT NULL,
-                                    organization_id UUID NOT NULL,
-                                    product_id UUID NOT NULL,
-                                    stage_order INT NOT NULL,
-                                    name VARCHAR(100) NOT NULL,
-                                    base_duration_mins INT NOT NULL,
-                                    is_setup BOOLEAN,
-                                    is_parallel_group BOOLEAN,
-                                    parallel_group_id VARCHAR(50),
-                                    needs_boiler BOOLEAN,
-                                    needs_cooling_zone BOOLEAN,
-                                    needs_operator BOOLEAN,
-                                    needs_lab BOOLEAN,
-                                    duration_formula VARCHAR(200),
-                                    comment TEXT,
-                                    version_id UUID NOT NULL REFERENCES schedule_version(id) ON DELETE CASCADE,
-                                    PRIMARY KEY (id, version_id)
+    id UUID NOT NULL,
+    organization_id UUID NOT NULL,
+    product_id UUID NOT NULL,
+    stage_order INT NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    base_duration_mins INT NOT NULL,
+    is_setup BOOLEAN,
+    is_parallel_group BOOLEAN,
+    parallel_group_id VARCHAR(50),
+    needs_boiler BOOLEAN,
+    needs_cooling_zone BOOLEAN,
+    needs_operator BOOLEAN,
+    needs_lab BOOLEAN,
+    duration_formula VARCHAR(200),
+    comment TEXT,
+    version_id UUID NOT NULL REFERENCES schedule_version(id) ON DELETE CASCADE,
+    PRIMARY KEY (id, version_id)
 );
-
-COMMENT ON TABLE operation_snapshot IS 'Снимок технологических карт на момент создания версии плана.';
 
 CREATE TABLE calendar_snapshot (
-                                   id UUID NOT NULL,
-                                   organization_id UUID NOT NULL,
-                                   equipment_id UUID,
-                                   event_type VARCHAR(30) NOT NULL,
-                                   starts_at TIMESTAMPTZ NOT NULL,
-                                   ends_at TIMESTAMPTZ NOT NULL,
-                                   comment TEXT,
-                                   version_id UUID NOT NULL REFERENCES schedule_version(id) ON DELETE CASCADE,
-                                   PRIMARY KEY (id, version_id)
+    id UUID NOT NULL,
+    organization_id UUID NOT NULL,
+    equipment_id UUID,
+    event_type VARCHAR(30) NOT NULL,
+    starts_at TIMESTAMPTZ NOT NULL,
+    ends_at TIMESTAMPTZ NOT NULL,
+    comment TEXT,
+    version_id UUID NOT NULL REFERENCES schedule_version(id) ON DELETE CASCADE,
+    PRIMARY KEY (id, version_id)
 );
-
-COMMENT ON TABLE calendar_snapshot IS 'Снимок календаря простоев на момент создания версии плана.';
 
 -- ==========================================
 -- 9. ИНДЕКСЫ
@@ -351,7 +339,7 @@ CREATE INDEX idx_task_equipment_time ON scheduled_task USING GIST (
     organization_id,
     equipment_id,
     tstzrange(planned_start, planned_end)
-    );
+);
 
 CREATE INDEX idx_equipment_org ON equipment(organization_id);
 CREATE INDEX idx_product_org ON product(organization_id);
@@ -363,6 +351,19 @@ CREATE INDEX idx_equip_snap_ver ON equipment_snapshot(version_id);
 CREATE INDEX idx_prod_snap_ver ON product_snapshot(version_id);
 CREATE INDEX idx_oper_snap_ver ON operation_snapshot(version_id);
 CREATE INDEX idx_cal_snap_ver ON calendar_snapshot(version_id);
+
+-- ==========================================
+-- 10. ДЕМО-НАСТРОЙКИ (Опционально, для быстрого старта)
+-- ==========================================
+INSERT INTO organization_settings (organization_id, setting_key, setting_value, description) VALUES
+('00000000-0000-0000-0000-000000000001', 'max_operators', '3', 'Максимальное количество операторов'),
+('00000000-0000-0000-0000-000000000001', 'cooling_zone_capacity', '2', 'Максимум реакторов в зоне охлаждения'),
+('00000000-0000-0000-0000-000000000001', 'default_horizon_hours', '2160', 'Горизонт планирования по умолчанию (часы)'),
+('00000000-0000-0000-0000-000000000001', 'max_fill_percent', '0.70', 'Максимальная загрузка реактора'),
+('00000000-0000-0000-0000-000000000001', 'planning_start_date', '"2026-09-01T08:00:00"', 'Дата начала планирования по умолчанию'),
+('00000000-0000-0000-0000-000000000001', 'work_start_time', '"08:00"', 'Начало рабочего дня'),
+('00000000-0000-0000-0000-000000000001', 'work_end_time', '"20:00"', 'Конец рабочего дня')
+ON CONFLICT (organization_id, setting_key) DO NOTHING;
 
 -- ==========================================
 -- ГОТОВО! Схема создана.

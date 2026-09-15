@@ -1,0 +1,18 @@
+# Основные зависимости
+fastapi>=0.141.0
+uvicorn>=0.52.0
+sqlalchemy[asyncio]>=2.0.52
+asyncpg>=0.31.0
+pydantic>=2.13.0
+pydantic-settings>=2.0.0
+
+# OR-Tools
+ortools>=9.15.0
+
+# Экспорт в Excel
+openpyxl>=3.1.0
+
+# JWT авторизация
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+python-multipart>=0.0.9

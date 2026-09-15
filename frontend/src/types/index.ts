@@ -133,3 +133,32 @@ export interface Batch {
     product_code?: string;
     equipment_name?: string;
 }
+
+// ==========================================
+// Авторизация
+// ==========================================
+export interface LoginRequest {
+    email: string;
+    password: string;
+}
+
+export interface TokenResponse {
+    access_token: string;
+    token_type: string;
+    user_id: string;
+    organization_id: string;
+    role: string;
+    full_name?: string;
+}
+
+export interface User {
+    id: string;
+    email: string;
+    full_name?: string;
+    role: 'ADMIN' | 'PLANNER' | 'MASTER' | 'LAB' | 'VIEWER';
+    organization_id: string;
+    is_active: boolean;
+    last_login_at?: string;
+}
+
+export type UserRole = User['role'];
