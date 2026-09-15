@@ -269,11 +269,8 @@ export const ordersApi = {
 // Schedule API
 // ==========================================
 export const scheduleApi = {
-    build: async (horizonHours: number, timeoutSeconds: number) => {
-        const response = await api.post('/api/v1/schedule/build', {
-            horizon_hours: horizonHours,
-            timeout_seconds: timeoutSeconds,
-        });
+    build: async (data: { horizon_hours?: number; timeout_seconds?: number }) => {
+        const response = await api.post('/api/v1/schedule/build', data);
         return response.data;
     },
     getLastResult: async () => {
@@ -286,6 +283,10 @@ export const scheduleApi = {
     },
     getVersions: async () => {
         const response = await api.get('/api/v1/schedule/versions');
+        return response.data;
+    },
+    createVersion: async (data: { name: string; version_type: string; comment?: string }) => {
+        const response = await api.post('/api/v1/schedule/versions', data);
         return response.data;
     },
     deleteVersion: async (versionId: string) => {
@@ -305,7 +306,7 @@ export const ganttApi = {
     },
     exportExcel: async (versionId?: string) => {
         const params = versionId ? { version_id: versionId } : {};
-        const response = await api.get('/api/v1/gantt/export-excel', {
+        const response = await api.get('/api/v1/gantt/export', {
             params,
             responseType: 'blob',
         });

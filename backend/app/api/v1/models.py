@@ -1,10 +1,11 @@
-﻿from pydantic import BaseModel, Field
+﻿# backend/app/api/v1/models.py
+from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime
 from uuid import UUID
 
 class ScheduleBuildRequest(BaseModel):
-    organization_id: UUID = Field(default=UUID("00000000-0000-0000-0000-000000000001"))
+    # organization_id удален, так как теперь берется из токена
     horizon_hours: int = Field(default=2160)
     timeout_seconds: int = Field(default=120)
 
@@ -25,9 +26,9 @@ class GanttTask(BaseModel):
     start: datetime
     end: datetime
     duration_minutes: int
-    item_type: str = "task"  # ✅ task, setup, downtime
-    setup_type: Optional[str] = None  # ✅ same_pf, diff_pf
-    downtime_type: Optional[str] = None  # ✅ WEEKEND, REPAIR, BREAKDOWN
+    item_type: str = "task"
+    setup_type: Optional[str] = None
+    downtime_type: Optional[str] = None
 
 class GanttResponse(BaseModel):
     tasks: List[GanttTask]

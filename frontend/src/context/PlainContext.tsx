@@ -1,4 +1,4 @@
-// src/context/PlainContext.tsx
+// frontend/src/context/PlainContext.tsx
 import React, { createContext, useState, useEffect, useContext } from 'react';
 import axios from 'axios';
 import { API_BASE_URL } from '../config';
@@ -32,11 +32,14 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const loadVersions = async () => {
         try {
             const response = await axios.get(`${API_BASE_URL}/api/v1/schedule/versions`);
-            setVersions(response.data);
-            // ✅ НЕ устанавливаем currentVersionId автоматически
-            // Справочники должны показывать актуальные данные из основных таблиц
-        } catch (err) {
-            console.error("Ошибка загрузки версий планов:", err);
+            // ✅ Гарантируем, что versions всегда массив, даже если API вернет неожиданный формат
+            setVersions(Array.isArray(response.data) ? response.data : []);
+        } catch (err: any) {
+            // ✅ Тихо игнорируем 401 Unauthorized.
+            // Axios-интерсептор в api.ts уже перехватит эту ошибку и перенаправит на /login.
+            if (err.response?.status !== 401) {
+                console.error("Ошибка загрузки версий планов:", err);
+            }
         }
     };
 
@@ -63,6 +66,7 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const deletePlan = async (versionId: string): Promise<void> => {
         await axios.delete(`${API_BASE_URL}/api/v1/schedule/versions/${versionId}`);
         setVersions((prev) => prev.filter((v) => v.id !== versionId));
+
         // Если удалили текущий выбранный план — сбрасываем в режим редактирования
         if (currentVersionId === versionId) {
             setCurrentVersionId(null);

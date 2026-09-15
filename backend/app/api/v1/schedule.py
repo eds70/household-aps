@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from typing import List, Dict, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 from datetime import datetime
 from .models import ScheduleBuildRequest, ScheduleBuildResponse
 from app.auth.dependencies import get_current_org_id, get_db_session
@@ -98,6 +98,46 @@ async def get_schedule_versions(
     ]
 
 
+@router.post("/versions", response_model=dict)
+async def create_schedule_version(
+        request: dict,
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Создать новую версию плана (пустую, без задач).
+    """
+    version_id = uuid4()
+    name = request.get("name", "Без названия")
+    version_type = request.get("version_type", "MONTHLY")
+    comment = request.get("comment", "")
+
+    # Создаем версию плана
+    await db.execute(
+        text("""
+            INSERT INTO schedule_version (id, organization_id, name, version_type, is_active, created_at, comment)
+            VALUES (:id, :org_id, :name, :version_type, FALSE, NOW(), :comment)
+        """),
+        {
+            "id": version_id,
+            "org_id": org_id,
+            "name": name,
+            "version_type": version_type,
+            "comment": comment,
+        },
+    )
+    await db.commit()
+
+    return {
+        "id": str(version_id),
+        "name": name,
+        "version_type": version_type,
+        "is_active": False,
+        "created_at": datetime.now().isoformat(),
+        "comment": comment,
+    }
+
+
 @router.post("/save", response_model=dict)
 async def save_current_schedule(
         org_id: UUID = Depends(get_current_org_id),
@@ -120,6 +160,7 @@ async def save_current_schedule(
     result = await saver.save_schedule(_last_schedule_result)
 
     _last_schedule_result["version_id"] = result["version_id"]
+
     return {
         "status": "success",
         "message": f"План '{result['name']}' успешно сохранен",

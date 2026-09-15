@@ -61,7 +61,15 @@ const SchedulePage: React.FC = () => {
             setResult(data);
             await loadVersions(); // Обновляем список после построения
         } catch (err: any) {
-            setError(err.response?.data?.detail || 'Ошибка при построении плана');
+            // ✅ Безопасное извлечение сообщения об ошибке
+            const detail = err.response?.data?.detail;
+            const errorMsg = typeof detail === 'string'
+                ? detail
+                : Array.isArray(detail)
+                    ? detail.map((d: any) => d.msg).join('; ')
+                    : 'Ошибка при построении плана';
+
+            setError(errorMsg);
         } finally {
             setLoading(false);
         }

@@ -1,4 +1,4 @@
-// src/pages/GanttPage.tsx
+// frontend/src/pages/GanttPage.tsx
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
     Box,
@@ -31,13 +31,14 @@ import {
     ZoomIn as ZoomInIcon,
     ZoomOut as ZoomOutIcon,
     Today as TodayIcon,
+    Lock as LockIcon,
 } from '@mui/icons-material';
 import { Timeline } from 'vis-timeline/standalone';
 import { DataSet } from 'vis-data';
 import 'vis-timeline/styles/vis-timeline-graph2d.min.css';
-import axios from 'axios';
-
-const API_BASE_URL = 'http://localhost:8000';
+import { ganttApi } from '../services/api';
+import { API_BASE_URL } from '../config';
+import { usePlan } from '../context/PlainContext';
 
 const OPERATION_COLORS: Record<string, string> = {
     'Нагрев': '#e74c3c',
@@ -76,9 +77,11 @@ interface TaskData {
 const GanttPage: React.FC = () => {
     const containerRef = useRef<HTMLDivElement>(null);
     const timelineRef = useRef<any>(null);
-
-    // Ref для актуальной версии handleTaskEdit (избавляемся от stale closure)
     const handleTaskEditRef = useRef<(taskId: string) => void>(() => {});
+
+    // ✅ Получаем версию плана из контекста
+    const { currentVersionId, currentPlanName } = usePlan();
+    const isReadOnly = currentVersionId !== null;
 
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -106,8 +109,9 @@ const GanttPage: React.FC = () => {
         setLoading(true);
         setError(null);
         try {
-            const response = await axios.get(`${API_BASE_URL}/api/v1/gantt/`);
-            const data = response.data;
+            // ✅ Передаем version_id если выбран сохраненный план
+            const data = await ganttApi.getData(currentVersionId || undefined);
+
             setStats({
                 totalTasks: data.total_tasks,
                 makespanHours: data.makespan_hours,
@@ -121,14 +125,28 @@ const GanttPage: React.FC = () => {
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [currentVersionId]);
+
+    useEffect(() => {
+        loadGanttData();
+        return () => {
+            if (timelineRef.current) {
+                timelineRef.current.destroy();
+                timelineRef.current = null;
+            }
+            if (clickTimeoutRef.current) {
+                clearTimeout(clickTimeoutRef.current);
+                clickTimeoutRef.current = null;
+            }
+        };
+    }, [loadGanttData]);
 
     // Генерация замывок между задачами на одном оборудовании
     const generateSetups = (tasksData: TaskData[]): TaskData[] => {
         const setups: TaskData[] = [];
         const byEquipment: Record<string, TaskData[]> = {};
 
-        tasksData.forEach(task => {
+        tasksData.forEach((task) => {
             if (!byEquipment[task.equipment_id]) {
                 byEquipment[task.equipment_id] = [];
             }
@@ -137,17 +155,13 @@ const GanttPage: React.FC = () => {
 
         Object.entries(byEquipment).forEach(([eqId, eqTasks]) => {
             eqTasks.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
-
             for (let i = 0; i < eqTasks.length - 1; i++) {
                 const curr = eqTasks[i];
                 const next = eqTasks[i + 1];
-
-                // Замывка только между разными партиями
                 if (curr.batch_id !== next.batch_id) {
                     const setupStart = new Date(curr.end);
                     const setupEnd = new Date(next.start);
                     const durationMins = Math.round((setupEnd.getTime() - setupStart.getTime()) / 60000);
-
                     if (durationMins > 0) {
                         setups.push({
                             id: `setup_${curr.id}_${next.id}`,
@@ -165,18 +179,15 @@ const GanttPage: React.FC = () => {
                 }
             }
         });
-
         return setups;
     };
 
-    // Генерация выходных дней (суббота-воскресенье)
+    // Генерация выходных дней
     const generateWeekends = (tasksData: TaskData[], equipment: string[]): TaskData[] => {
         if (tasksData.length === 0 || equipment.length === 0) return [];
-
         const weekends: TaskData[] = [];
-        const startDate = new Date(Math.min(...tasksData.map(t => new Date(t.start).getTime())));
-        const endDate = new Date(Math.max(...tasksData.map(t => new Date(t.end).getTime())));
-
+        const startDate = new Date(Math.min(...tasksData.map((t) => new Date(t.start).getTime())));
+        const endDate = new Date(Math.max(...tasksData.map((t) => new Date(t.end).getTime())));
         startDate.setHours(0, 0, 0, 0);
         endDate.setHours(23, 59, 59, 999);
 
@@ -187,13 +198,11 @@ const GanttPage: React.FC = () => {
                 const weekendStart = new Date(current);
                 const weekendEnd = new Date(current);
                 weekendEnd.setHours(23, 59, 59, 999);
-
-                // Создаём выходной для каждого оборудования
-                equipment.forEach(eqId => {
+                equipment.forEach((eqId) => {
                     weekends.push({
                         id: `weekend_${current.toISOString().split('T')[0]}_${eqId}`,
                         batch_id: 'Выходной',
-                        operation_name: '📅 Выходной',
+                        operation_name: ' Выходной',
                         equipment_id: eqId,
                         product_id: '—',
                         start: weekendStart.toISOString(),
@@ -206,223 +215,203 @@ const GanttPage: React.FC = () => {
             }
             current.setDate(current.getDate() + 1);
         }
-
         return weekends;
     };
 
-    // Обработчик двойного клика (использует ref для избежания stale closure)
-    const handleTaskEdit = useCallback((taskId: string) => {
-        const taskData = tasks.find(t => t.id === taskId);
-        if (taskData) {
-            setSelectedTask(taskData);
-            setEditFormData({ start: taskData.start, end: taskData.end });
-            setEditDialogOpen(true);
-        }
-    }, [tasks]);
+    const handleTaskEdit = useCallback(
+        (taskId: string) => {
+            if (isReadOnly) return; // ✅ Блокируем редактирование в режиме просмотра
+            const taskData = tasks.find((t) => t.id === taskId);
+            if (taskData) {
+                setSelectedTask(taskData);
+                setEditFormData({ start: taskData.start, end: taskData.end });
+                setEditDialogOpen(true);
+            }
+        },
+        [tasks, isReadOnly]
+    );
 
-    // Обновляем ref при каждом изменении handleTaskEdit
     useEffect(() => {
         handleTaskEditRef.current = handleTaskEdit;
     }, [handleTaskEdit]);
 
-    const renderTimeline = useCallback((tasksData: TaskData[], equipment: string[]) => {
-        if (!containerRef.current) return;
-
-        if (timelineRef.current) {
-            timelineRef.current.destroy();
-            timelineRef.current = null;
-        }
-
-        // Фильтрация только обычных задач
-        let filteredTasks = tasksData.filter(task => task.item_type === 'task' || !task.item_type);
-
-        if (searchQuery) {
-            const query = searchQuery.toLowerCase();
-            filteredTasks = filteredTasks.filter(task =>
-                task.operation_name.toLowerCase().includes(query) ||
-                task.batch_id.toLowerCase().includes(query) ||
-                task.product_id.toLowerCase().includes(query)
-            );
-        }
-
-        if (equipmentFilter.length > 0) {
-            filteredTasks = filteredTasks.filter(task =>
-                equipmentFilter.includes(task.equipment_id)
-            );
-        }
-
-        if (productFilter.length > 0) {
-            filteredTasks = filteredTasks.filter(task =>
-                productFilter.includes(task.product_id)
-            );
-        }
-
-        // Генерация замывок и выходных
-        const setups = showSetups ? generateSetups(filteredTasks) : [];
-        const weekends = showDowntimes ? generateWeekends(filteredTasks, equipment) : [];
-        const allItems = [...filteredTasks, ...setups, ...weekends];
-
-        const groupsArray = equipment.map((eq: string) => ({
-            id: eq,
-            content: `<b>${eq}</b>`,
-        }));
-
-        const itemsArray = allItems.map((task: TaskData) => {
-            const itemType = task.item_type || 'task';
-            const color = getOperationColor(task.operation_name);
-
-            let style = '';
-            let title = '';
-            let className = '';
-
-            if (itemType === 'task') {
-                style = `background-color: ${color}30; border-left: 4px solid ${color}; border-radius: 4px;`;
-                title = `
-          <div style="padding: 8px; min-width: 280px;">
-            <b style="font-size: 14px; color: #2c3e50;">${task.operation_name}</b><br>
-            <hr style="margin: 8px 0; border: none; border-top: 1px solid #ecf0f1;">
-            <div style="font-size: 12px; line-height: 1.6;">
-              <b>Партия:</b> ${task.batch_id}<br>
-              <b>Продукт:</b> ${task.product_id}<br>
-              <b>Оборудование:</b> ${task.equipment_id}<br>
-              <b>Длительность:</b> ${task.duration_minutes} мин<br>
-              <b>Начало:</b> ${new Date(task.start).toLocaleString('ru-RU')}<br>
-              <b>Конец:</b> ${new Date(task.end).toLocaleString('ru-RU')}
-            </div>
-          </div>
-        `;
-            } else if (itemType === 'setup') {
-                const setupColor = task.setup_type === 'same_pf' ? '#95a5a6' : '#e67e22';
-                const setupLabel = task.setup_type === 'same_pf' ? 'тот же ПФ (30 мин)' : 'другой ПФ (90 мин)';
-                style = `background-color: ${setupColor}25; border: 2px dashed ${setupColor}; border-radius: 4px;`;
-                className = 'item-setup';
-                title = `
-          <div style="padding: 8px; min-width: 280px; background: #fff9e6;">
-            <b style="font-size: 14px; color: #e67e22;"> ${task.operation_name}</b><br>
-            <hr style="margin: 8px 0; border: none; border-top: 1px solid #ecf0f1;">
-            <div style="font-size: 12px; line-height: 1.6;">
-              <b>Тип:</b> ${setupLabel}<br>
-              <b>Оборудование:</b> ${task.equipment_id}<br>
-              <b>Длительность:</b> ${task.duration_minutes} мин<br>
-              <b>Начало:</b> ${new Date(task.start).toLocaleString('ru-RU')}<br>
-              <b>Конец:</b> ${new Date(task.end).toLocaleString('ru-RU')}
-            </div>
-          </div>
-        `;
-            } else if (itemType === 'downtime') {
-                style = `background-color: #9b59b620; border: 1px solid #9b59b6; border-radius: 4px; background-image: repeating-linear-gradient(45deg, transparent, transparent 10px, #9b59b615 10px, #9b59b615 20px);`;
-                className = 'item-downtime';
-                title = `
-          <div style="padding: 8px; min-width: 280px; background: #f5eef8;">
-            <b style="font-size: 14px; color: #9b59b6;">📅 ${task.operation_name}</b><br>
-            <hr style="margin: 8px 0; border: none; border-top: 1px solid #ecf0f1;">
-            <div style="font-size: 12px; line-height: 1.6;">
-              <b>Тип:</b> ${task.downtime_type}<br>
-              <b>Длительность:</b> ${task.duration_minutes} мин (${(task.duration_minutes / 60).toFixed(1)} ч)<br>
-              <b>Начало:</b> ${new Date(task.start).toLocaleString('ru-RU')}<br>
-              <b>Конец:</b> ${new Date(task.end).toLocaleString('ru-RU')}
-            </div>
-          </div>
-        `;
-            }
-
-            return {
-                id: task.id,
-                group: task.equipment_id,
-                content: `
-          <div style="padding: 4px; font-size: 11px;">
-            <div style="font-weight: bold; color: #2c3e50; margin-bottom: 2px;">
-              ${task.operation_name}
-            </div>
-            <div style="font-size: 10px; color: #555;">
-              ${task.duration_minutes} мин
-            </div>
-          </div>
-        `,
-                start: task.start,
-                end: task.end,
-                style: style,
-                title: title,
-                className: className,
-            };
-        });
-
-        const groups = new DataSet(groupsArray);
-        const items = new DataSet(itemsArray);
-
-        const options = {
-            groupOrder: 'content' as const,
-            editable: {
-                add: false,
-                updateTime: true,
-                updateGroup: true,
-                remove: false,
-            },
-            margin: { item: 2, axis: 5 },
-            orientation: 'top' as const,
-            stack: false,  // ✅ ВСЕ ЗАДАЧИ В ОДНОЙ СТРОКЕ НА ОБОРУДОВАНИЕ
-            showCurrentTime: true,
-            zoomMin: 1000 * 60 * 60 * 4,
-            zoomMax: 1000 * 60 * 60 * 24 * 14,
-            format: {
-                minorLabels: { hour: 'HH:mm', weekday: 'D MMM' },
-                majorLabels: { day: 'D MMMM YYYY' },
-            },
-            locale: 'ru',
-            tooltip: {
-                followMouse: true,
-                overflowMethod: 'cap' as const,
-                delay: 100,
-            },
-            snap: (date: Date) => {
-                const minutes = 15;
-                const ms = 1000 * 60 * minutes;
-                return new Date(Math.round(date.getTime() / ms) * ms);
-            },
-            onMove: (item: any, callback: Function) => {
-                callback(item);
-            },
-            onMoving: (item: any) => item,
-        };
-
-        timelineRef.current = new Timeline(containerRef.current, items, groups, options);
-
-        // ✅ НАДЁЖНЫЙ ДЕТЕКТОР ДВОЙНОГО КЛИКА ЧЕРЕЗ ТАЙМЕР
-        timelineRef.current.on('click', (props: any) => {
-            if (props.item) {
-                if (clickTimeoutRef.current) {
-                    // Второй клик в течение 300мс → двойной клик
-                    clearTimeout(clickTimeoutRef.current);
-                    clickTimeoutRef.current = null;
-                    handleTaskEditRef.current(props.item);
-                } else {
-                    // Первый клик → запускаем таймер
-                    clickTimeoutRef.current = setTimeout(() => {
-                        clickTimeoutRef.current = null;
-                    }, 300);
-                }
-            }
-        });
-
-        timelineRef.current.fit();
-    }, [searchQuery, equipmentFilter, productFilter, showSetups, showDowntimes]);
-
-    useEffect(() => {
-        loadGanttData();
-        return () => {
+    const renderTimeline = useCallback(
+        (tasksData: TaskData[], equipment: string[]) => {
+            if (!containerRef.current) return;
             if (timelineRef.current) {
                 timelineRef.current.destroy();
                 timelineRef.current = null;
             }
-            // Очищаем таймер при размонтировании
-            if (clickTimeoutRef.current) {
-                clearTimeout(clickTimeoutRef.current);
-                clickTimeoutRef.current = null;
-            }
-        };
-    }, [loadGanttData]);
 
-    // Перерисовка при изменении фильтров
+            // Фильтрация только обычных задач
+            let filteredTasks = tasksData.filter((task) => task.item_type === 'task' || !task.item_type);
+
+            if (searchQuery) {
+                const query = searchQuery.toLowerCase();
+                filteredTasks = filteredTasks.filter(
+                    (task) =>
+                        task.operation_name.toLowerCase().includes(query) ||
+                        task.batch_id.toLowerCase().includes(query) ||
+                        task.product_id.toLowerCase().includes(query)
+                );
+            }
+
+            if (equipmentFilter.length > 0) {
+                filteredTasks = filteredTasks.filter((task) => equipmentFilter.includes(task.equipment_id));
+            }
+
+            if (productFilter.length > 0) {
+                filteredTasks = filteredTasks.filter((task) => productFilter.includes(task.product_id));
+            }
+
+            const setups = showSetups ? generateSetups(filteredTasks) : [];
+            const weekends = showDowntimes ? generateWeekends(filteredTasks, equipment) : [];
+            const allItems = [...filteredTasks, ...setups, ...weekends];
+
+            const groupsArray = equipment.map((eq: string) => ({
+                id: eq,
+                content: `<b>${eq}</b>`,
+            }));
+
+            const itemsArray = allItems.map((task: TaskData) => {
+                const itemType = task.item_type || 'task';
+                const color = getOperationColor(task.operation_name);
+                let style = '';
+                let title = '';
+                let className = '';
+
+                if (itemType === 'task') {
+                    style = `background-color: ${color}30; border-left: 4px solid ${color}; border-radius: 4px;`;
+                    title = `
+            <div style="padding: 8px; min-width: 280px;">
+              <b style="font-size: 14px; color: #2c3e50;">${task.operation_name}</b><br>
+              <hr style="margin: 8px 0; border: none; border-top: 1px solid #ecf0f1;">
+              <div style="font-size: 12px; line-height: 1.6;">
+                <b>Партия:</b> ${task.batch_id}<br>
+                <b>Продукт:</b> ${task.product_id}<br>
+                <b>Оборудование:</b> ${task.equipment_id}<br>
+                <b>Длительность:</b> ${task.duration_minutes} мин<br>
+                <b>Начало:</b> ${new Date(task.start).toLocaleString('ru-RU')}<br>
+                <b>Конец:</b> ${new Date(task.end).toLocaleString('ru-RU')}
+              </div>
+            </div>
+          `;
+                } else if (itemType === 'setup') {
+                    const setupColor = task.setup_type === 'same_pf' ? '#95a5a6' : '#e67e22';
+                    const setupLabel = task.setup_type === 'same_pf' ? 'тот же ПФ (30 мин)' : 'другой ПФ (90 мин)';
+                    style = `background-color: ${setupColor}25; border: 2px dashed ${setupColor}; border-radius: 4px;`;
+                    className = 'item-setup';
+                    title = `
+            <div style="padding: 8px; min-width: 280px; background: #fff9e6;">
+              <b style="font-size: 14px; color: #e67e22;"> ${task.operation_name}</b><br>
+              <hr style="margin: 8px 0; border: none; border-top: 1px solid #ecf0f1;">
+              <div style="font-size: 12px; line-height: 1.6;">
+                <b>Тип:</b> ${setupLabel}<br>
+                <b>Оборудование:</b> ${task.equipment_id}<br>
+                <b>Длительность:</b> ${task.duration_minutes} мин<br>
+                <b>Начало:</b> ${new Date(task.start).toLocaleString('ru-RU')}<br>
+                <b>Конец:</b> ${new Date(task.end).toLocaleString('ru-RU')}
+              </div>
+            </div>
+          `;
+                } else if (itemType === 'downtime') {
+                    style = `background-color: #9b59b620; border: 1px solid #9b59b6; border-radius: 4px; background-image: repeating-linear-gradient(45deg, transparent, transparent 10px, #9b59b615 10px, #9b59b615 20px);`;
+                    className = 'item-downtime';
+                    title = `
+            <div style="padding: 8px; min-width: 280px; background: #f5eef8;">
+              <b style="font-size: 14px; color: #9b59b6;">📅 ${task.operation_name}</b><br>
+              <hr style="margin: 8px 0; border: none; border-top: 1px solid #ecf0f1;">
+              <div style="font-size: 12px; line-height: 1.6;">
+                <b>Тип:</b> ${task.downtime_type}<br>
+                <b>Длительность:</b> ${task.duration_minutes} мин (${(task.duration_minutes / 60).toFixed(1)} ч)<br>
+                <b>Начало:</b> ${new Date(task.start).toLocaleString('ru-RU')}<br>
+                <b>Конец:</b> ${new Date(task.end).toLocaleString('ru-RU')}
+              </div>
+            </div>
+          `;
+                }
+
+                return {
+                    id: task.id,
+                    group: task.equipment_id,
+                    content: `
+            <div style="padding: 4px; font-size: 11px;">
+              <div style="font-weight: bold; color: #2c3e50; margin-bottom: 2px;">
+                ${task.operation_name}
+              </div>
+              <div style="font-size: 10px; color: #555;">
+                ${task.duration_minutes} мин
+              </div>
+            </div>
+          `,
+                    start: task.start,
+                    end: task.end,
+                    style: style,
+                    title: title,
+                    className: className,
+                };
+            });
+
+            const groups = new DataSet(groupsArray);
+            const items = new DataSet(itemsArray);
+
+            const options = {
+                groupOrder: 'content' as const,
+                editable: {
+                    add: false,
+                    updateTime: !isReadOnly, // ✅ Блокируем перемещение в режиме просмотра
+                    updateGroup: !isReadOnly,
+                    remove: false,
+                },
+                margin: { item: 2, axis: 5 },
+                orientation: 'top' as const,
+                stack: false,
+                showCurrentTime: true,
+                zoomMin: 1000 * 60 * 60 * 4,
+                zoomMax: 1000 * 60 * 60 * 24 * 14,
+                format: {
+                    minorLabels: { hour: 'HH:mm', weekday: 'D MMM' },
+                    majorLabels: { day: 'D MMMM YYYY' },
+                },
+                locale: 'ru',
+                tooltip: {
+                    followMouse: true,
+                    overflowMethod: 'cap' as const,
+                    delay: 100,
+                },
+                snap: (date: Date) => {
+                    const minutes = 15;
+                    const ms = 1000 * 60 * minutes;
+                    return new Date(Math.round(date.getTime() / ms) * ms);
+                },
+                onMove: (item: any, callback: Function) => {
+                    callback(item);
+                },
+                onMoving: (item: any) => item,
+            };
+
+            timelineRef.current = new Timeline(containerRef.current, items, groups, options);
+
+            // Детектор двойного клика
+            timelineRef.current.on('click', (props: any) => {
+                if (props.item) {
+                    if (clickTimeoutRef.current) {
+                        clearTimeout(clickTimeoutRef.current);
+                        clickTimeoutRef.current = null;
+                        handleTaskEditRef.current(props.item);
+                    } else {
+                        clickTimeoutRef.current = setTimeout(() => {
+                            clickTimeoutRef.current = null;
+                        }, 300);
+                    }
+                }
+            });
+
+            timelineRef.current.fit();
+        },
+        [searchQuery, equipmentFilter, productFilter, showSetups, showDowntimes, isReadOnly]
+    );
+
     useEffect(() => {
         if (tasks.length > 0 && equipmentList.length > 0) {
             renderTimeline(tasks, equipmentList);
@@ -454,18 +443,21 @@ const GanttPage: React.FC = () => {
     };
 
     const handleExport = () => {
-        window.open(`${API_BASE_URL}/api/v1/gantt/export`, '_blank');
+        // ✅ Передаем version_id в экспорт если выбран сохраненный план
+        const params = currentVersionId ? `?version_id=${currentVersionId}` : '';
+        window.open(`${API_BASE_URL}/api/v1/gantt/export${params}`, '_blank');
     };
 
     const handleSaveTask = async () => {
-        if (!selectedTask) return;
+        if (!selectedTask || isReadOnly) return;
         try {
-            // ✅ Функциональное обновление (избавляемся от stale closure)
-            setTasks(prev => prev.map(t =>
-                t.id === selectedTask.id
-                    ? { ...t, start: editFormData.start, end: editFormData.end }
-                    : t
-            ));
+            setTasks((prev) =>
+                prev.map((t) =>
+                    t.id === selectedTask.id
+                        ? { ...t, start: editFormData.start, end: editFormData.end }
+                        : t
+                )
+            );
             setEditDialogOpen(false);
         } catch (err: any) {
             console.error('Error saving task:', err);
@@ -504,9 +496,10 @@ const GanttPage: React.FC = () => {
 
             {error && (
                 <Alert severity="warning" sx={{ mb: 2 }}>
-                    {error} <br />
+                    {error}
+                    <br />
                     <Typography variant="body2" sx={{ mt: 1 }}>
-                        💡 Перейдите на вкладку <b>"Планирование"</b> и нажмите <b>"Построить план"</b>, затем вернитесь сюда.
+                        💡 Перейдите на вкладку <b>"Планирование"</b> и нажмите <b>"Построить план"</b>, либо выберите сохраненную версию.
                     </Typography>
                 </Alert>
             )}
@@ -519,13 +512,25 @@ const GanttPage: React.FC = () => {
                             <Chip label={`Makespan: ${stats.makespanHours.toFixed(1)} ч`} color="secondary" variant="outlined" />
                             <Chip label={`Оборудование: ${stats.equipmentCount}`} variant="outlined" />
 
+                            {/* ✅ Индикатор режима просмотра */}
+                            {isReadOnly && (
+                                <Chip
+                                    icon={<LockIcon />}
+                                    label={`Просмотр: ${currentPlanName}`}
+                                    color="info"
+                                    variant="filled"
+                                />
+                            )}
+
                             <Box sx={{ display: 'flex', gap: 1, ml: 'auto', flexWrap: 'wrap' }}>
-                                {Object.entries(OPERATION_COLORS).slice(0, 5).map(([name, color]) => (
-                                    <Box key={name} sx={{ display: 'flex', alignItems: 'center', gap: 0.5, fontSize: '0.85rem' }}>
-                                        <Box sx={{ width: 12, height: 12, bgcolor: color, borderRadius: '2px' }} />
-                                        {name}
-                                    </Box>
-                                ))}
+                                {Object.entries(OPERATION_COLORS)
+                                    .slice(0, 5)
+                                    .map(([name, color]) => (
+                                        <Box key={name} sx={{ display: 'flex', alignItems: 'center', gap: 0.5, fontSize: '0.85rem' }}>
+                                            <Box sx={{ width: 12, height: 12, bgcolor: color, borderRadius: '2px' }} />
+                                            {name}
+                                        </Box>
+                                    ))}
                             </Box>
                         </Box>
 
@@ -556,7 +561,9 @@ const GanttPage: React.FC = () => {
                                     label="Оборудование"
                                 >
                                     {equipmentList.map((eq) => (
-                                        <MenuItem key={eq} value={eq}>{eq}</MenuItem>
+                                        <MenuItem key={eq} value={eq}>
+                                            {eq}
+                                        </MenuItem>
                                     ))}
                                 </Select>
                             </FormControl>
@@ -570,12 +577,13 @@ const GanttPage: React.FC = () => {
                                     label="Продукты"
                                 >
                                     {productList.map((prod) => (
-                                        <MenuItem key={prod} value={prod}>{prod}</MenuItem>
+                                        <MenuItem key={prod} value={prod}>
+                                            {prod}
+                                        </MenuItem>
                                     ))}
                                 </Select>
                             </FormControl>
 
-                            {/* ✅ Checkbox'ы для замывок и простоев */}
                             <FormControlLabel
                                 control={
                                     <Checkbox
@@ -586,6 +594,7 @@ const GanttPage: React.FC = () => {
                                 }
                                 label={<Typography variant="body2">🧼 Замывки</Typography>}
                             />
+
                             <FormControlLabel
                                 control={
                                     <Checkbox
@@ -611,20 +620,24 @@ const GanttPage: React.FC = () => {
                         </Box>
                     </Card>
 
-                    <Card sx={{
-                        flexGrow: 1,
-                        boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        minHeight: 0,
-                    }}>
-                        <CardContent sx={{
-                            p: 0,
+                    <Card
+                        sx={{
                             flexGrow: 1,
+                            boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
                             display: 'flex',
                             flexDirection: 'column',
                             minHeight: 0,
-                        }}>
+                        }}
+                    >
+                        <CardContent
+                            sx={{
+                                p: 0,
+                                flexGrow: 1,
+                                display: 'flex',
+                                flexDirection: 'column',
+                                minHeight: 0,
+                            }}
+                        >
                             <Box
                                 ref={containerRef}
                                 sx={{
@@ -634,7 +647,7 @@ const GanttPage: React.FC = () => {
                                     '& .vis-item': {
                                         borderColor: 'transparent',
                                         transition: 'transform 0.2s, box-shadow 0.2s',
-                                        cursor: 'move',
+                                        cursor: isReadOnly ? 'default' : 'move',
                                         '&:hover': {
                                             transform: 'scaleY(1.05)',
                                             zIndex: 10,
@@ -670,7 +683,9 @@ const GanttPage: React.FC = () => {
                     </Card>
 
                     <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block', textAlign: 'center' }}>
-                        💡 Все операции по реактору в одной строке • Пунктир = замывки • Фиолетовый фон = выходные • Двойной клик для редактирования • Колесико мыши для масштабирования
+                        💡 Все операции по реактору в одной строке • Пунктир = замывки • Фиолетовый фон = выходные
+                        {isReadOnly ? ' • Режим просмотра (редактирование недоступно)' : ' • Двойной клик для редактирования'}
+                        • Колесико мыши для масштабирования
                     </Typography>
                 </>
             )}
