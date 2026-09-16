@@ -314,4 +314,18 @@ export const ganttApi = {
     },
 };
 
+// ==========================================
+// Advisor API
+// ==========================================
+export const advisorApi = {
+    getAdvice: async (): Promise<import('../types').AdvisorResponse> => {
+        const response = await api.get('/api/v1/schedule/advice');
+        return response.data;
+    },
+    checkFeasibility: async (): Promise<import('../types').FeasibilityResponse> => {
+        const response = await api.post('/api/v1/schedule/feasibility');
+        return response.data;
+    },
+};
+
 export default api;

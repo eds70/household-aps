@@ -1,143 +1,234 @@
-Я проанализировал предоставленный дамп проекта. Моя внутренняя кодовая база обновлена с учетом всех последних изменений.
-
-Ниже представлена сводка по текущему состоянию приложения, а также полностью актуализированные файлы `README.md` и `init_schema.sql`.
-
----
-
-## 📊 Сводка по текущему состоянию приложения (v1.2.0)
-
-Проект **APS Production Scheduler** находится в стабильном, готовом к развертыванию состоянии. Ключевые достижения текущей версии:
-
-1. **Полная мульти-тенантность и безопасность**:
-    - Удалены все захардкоженные `ORG_ID` и `DATABASE_URL`.
-    - Внедрена JWT-авторизация (bcrypt + `python-jose`) с ролевой моделью (ADMIN, PLANNER, MASTER, LAB, VIEWER).
-    - Все API-эндпоинты защищены через FastAPI Dependencies (`get_current_org_id`, `get_current_user`).
-    - На фронтенде реализованы Axios-интерсепторы для автоматической подстановки токена и обработки 401 (редирект на логин).
-
-2. **Централизованная конфигурация**:
-    - Используется `pydantic-settings` для загрузки переменных из `.env`.
-    - Добавлена таблица `organization_settings` для гибкой настройки бизнес-правил (горизонт планирования, лимиты ресурсов) без изменения кода.
-
-3. **Версионирование планов (Snapshots)**:
-    - Реализована архитектура снапшотов (`equipment_snapshot`, `product_snapshot` и т.д.), привязанных к `schedule_version`.
-    - Фронтенд поддерживает режим "Только чтение" (Read-only) при просмотре исторических версий плана, блокируя inline-редактирование в AG Grid.
-
-4. **Планировщик (OR-Tools CP-SAT)**:
-    - Полностью интегрирован с мульти-тенантностью: `DataLoader` и `ScheduleSaver` принимают `org_id` и фильтруют данные строго по организации.
-
-5. **Frontend (React 19 + MUI v9)**:
-    - Готовая страница логина (`LoginPage.tsx`).
-    - Глобальный `AuthContext` для управления сессией.
-    - Обновленный `MainLayout` с отображением профиля пользователя и кнопкой выхода.
-
----
-
-## 📄 Актуализированный `README.md`
+# 📄 ФАЙЛ: `README.md`
 
 ```markdown
 # 🏭 APS Production Scheduler
 
 **Система автоматического планирования производства на базе OR-Tools CP-SAT**
 
+Версия: **1.3.0** (Итерации 0–2 завершены)
+
+[![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![OR-Tools](https://img.shields.io/badge/OR--Tools-9.15+-F7931E)](https://developers.google.com/optimization)
+[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+
+---
+
+## ⚡ TL;DR — запуск за 60 секунд
+
+```powershell
+# Из корня проекта (household-aps\):
+.\quickstart.ps1
+```
+
+Скрипт сделает всё: поднимет PostgreSQL в Docker, применит схему и демо-данные, поставит Python/npm-зависимости, создаст админа.
+
+После — в двух терминалах:
+
+```powershell
+# Терминал 1 (Backend)
+cd backend; .\.venv\Scripts\Activate.ps1; python run_server.py
+
+# Терминал 2 (Frontend)
+cd frontend; npm run dev
+```
+
+**Открыть:** http://localhost:5173  
+**Логин:** `admin@household.ru` / `admin123`
+
+---
+
 ## 📋 Описание
-APS (Advanced Planning and Scheduling) — полнофункциональная система оптимального планирования производства для химической промышленности (бытовая химия). Строит расписание загрузки оборудования с учетом:
-- Технологических карт и строгой последовательности operations
-- Ограничений оборудования (бойлеры, зоны охлаждения, операторы, вместимость)
-- Матрицы замывки (setup times) между разными партиями (30/90 минут)
-- Календаря простоев (выходные, плановые ремонты, аварии)
-- Ресурсных ограничений и доступности материалов
-- **Мульти-тенантности и версионирования планов** (снапшоты справочников на момент планирования)
+
+APS (Advanced Planning and Scheduling) — полнофункциональная система оптимального планирования производства для химической промышленности (бытовая химия).
+
+Строит расписание загрузки оборудования с учётом:
+- **Технологических карт** и строгой последовательности операций
+- **Цепочек рабочих центров** (реактор → накопительная ёмкость → линия розлива)
+- **Освобождения реактора** только после полного слива жидкости
+- **Двухресурсных операций** (слив занимает реактор+линию, перекачка — реактор+танк)
+- **Матрицы замывки** (30/90 минут) между партиями разных ПФ
+- **Календаря простоев** (выходные, плановые ремонты, аварии)
+- **Ресурсных ограничений** (аппаратчики, бойлер, зона охлаждения, лаборатория)
+- **Остатков сырья** и графика поставок
+- **Мульти-тенантности** и **версионирования планов** (снапшоты справочников)
 
 ## 🎯 Ключевые возможности
-- ✅ **Динамический расчет длительностей** операций (вязкость, объем, тип мешалки)
-- ✅ **Оптимизация через OR-Tools CP-SAT** (минимизация makespan)
-- ✅ **Учет матрицы замывки** между партиями (30/90 минут)
-- ✅ **Календарь простоев** (выходные, плановые ремонты, аварии)
-- ✅ **JWT Авторизация и Ролевая модель** (ADMIN, PLANNER, MASTER, LAB, VIEWER)
-- ✅ **Версионирование планов** с сохранением снапшотов справочников (режим "что если")
-- ✅ **Управление материалами, рецептурами и производственными заказами**
-- ✅ **Автоматическое разбиение заказов** на партии по объему реактора
-- ✅ **REST API на FastAPI** с автоматической документацией Swagger UI
-- ✅ **Экспорт плана в Excel** с интерактивной визуализацией диаграммы Ганта (vis-timeline)
+
+### Итерация 0 — Фундамент
+- ✅ Эталонный тест-кейс из ТЗ (Раздел 4)
+- ✅ Централизованная конфигурация через `organization_settings`
+- ✅ Feature-флаги для поэтапного внедрения
+- ✅ Structured logging планировщика
+- ✅ CI на GitHub Actions
+
+### Итерация 1 — Цепочки рабочих центров
+- ✅ Модуль `routing.py` — построение цепочек операций
+- ✅ **Двухресурсные операции** (`linked_equipment_id`)
+- ✅ Слив: `реактор → линия` (DIRECT) или `реактор → танк → линия` (VIA_TANK)
+- ✅ Замыв реактора после слива (в конце цепочки)
+- ✅ `NoOverlap` по каждому ресурсу отдельно
+- ✅ Оптимизация setup-ограничений (270 вместо 9714)
+- ✅ Корректный расчёт длительности слива (кг ПФ → бутылки → минуты)
+- ✅ Makespan ~553 ч (было 1856 ч)
+
+### Итерация 2 — Материальные ограничения и Advisor
+- ✅ Модуль `materials.py` — расчёт потребности в сырье по всем партиям
+- ✅ Модуль `advisor.py` — 4 типа подсказок:
+    - 🔴 **MATERIAL_SHORTAGE** — дефицит сырья
+    - 🟡 **UNDERLOAD** — неполная загрузка реактора
+    - 🔵 **ROUTE_MISMATCH** — VIA_TANK без танка
+    - 🔵 **EQUIPMENT_GAP** — простои оборудования
+- ✅ Модуль `feasibility.py` — оценка исполнимости плана
+- ✅ API: `GET /api/v1/schedule/advice`, `POST /api/v1/schedule/feasibility`
+- ✅ UI: панель Advisor с фильтрацией по severity
+- ✅ **Обнаружение дефицита отдушки (150 кг) и соли (1500 кг)** — ключевые кейсы ТЗ
+
+### Общие возможности
+- ✅ JWT авторизация и ролевая модель (ADMIN, PLANNER, MASTER, LAB, VIEWER)
+- ✅ Управление оборудованием, продуктами, материалами, рецептурами
+- ✅ Технологические карты с формулами расчёта длительностей
+- ✅ Автоматическое разбиение заказов на партии
+- ✅ Диаграмма Ганта с интерактивным просмотром
+- ✅ Экспорт плана в Excel
+- ✅ Версионирование планов через снапшоты
 
 ## 🛠️ Стек технологий
 
 ### Backend
 | Компонент | Версия | Назначение |
 |-----------|--------|------------|
-| Python | 3.12+ (64-bit) | Язык программирования |
-| FastAPI | 0.141.1 | REST API фреймворк |
-| OR-Tools | 9.15.6755 | CP-SAT solver для оптимизации |
-| Uvicorn | 0.52.4 | ASGI сервер |
-| SQLAlchemy | 2.0.52 | ORM для асинхронной работы с БД |
-| asyncpg | 0.31.0 | Асинхронный драйвер PostgreSQL |
-| Pydantic | 2.13.5 | Валидация данных и сериализация |
-| python-jose / bcrypt | latest | JWT авторизация и хеширование паролей |
+| Python | 3.12+ | Язык программирования |
+| FastAPI | 0.141+ | REST API фреймворк |
+| OR-Tools | 9.15+ | CP-SAT solver для оптимизации |
+| Uvicorn | 0.52+ | ASGI сервер |
+| SQLAlchemy | 2.0+ | Async ORM |
+| asyncpg | 0.31+ | Async драйвер PostgreSQL |
+| Pydantic | 2.13+ | Валидация данных |
+| python-jose / bcrypt | latest | JWT авторизация |
 
 ### База данных
 | Компонент | Версия | Назначение |
 |-----------|--------|------------|
-| PostgreSQL | 16+ | Реляционная СУБД (запускается в Docker) |
-| Docker | 24+ | Контейнеризация базы данных |
+| PostgreSQL | 16+ | Реляционная СУБД (Docker) |
+| Docker | 24+ | Контейнеризация |
 
 ### Frontend
 | Компонент | Версия | Назначение |
 |-----------|--------|------------|
 | React | 19.x | UI фреймворк |
-| TypeScript | ~6.0.2 | Типизация |
-| Vite | 8.x | Сборщик и dev-сервер |
-| MUI (Material-UI) | 9.4.0 | Компоненты интерфейса |
-| AG Grid Community | 36.1.0 | Таблицы данных с inline-редактированием |
-| vis-timeline | 8.5.4 | Интерактивная диаграмма Ганта |
-| axios | 1.20.0 | HTTP-клиент для API запросов с интерсепторами |
+| TypeScript | ~6.0 | Типизация |
+| Vite | 8.x | Сборщик |
+| MUI (Material-UI) | 9.4 | UI компоненты |
+| AG Grid Community | 36.1 | Таблицы с inline-редактированием |
+| vis-timeline | 8.5 | Интерактивная диаграмма Ганта |
+| axios | 1.20 | HTTP-клиент с интерсепторами |
 
 ## 📁 Структура проекта
+
 ```text
 household-aps/
+├── quickstart.ps1                   # ⚡ Скрипт быстрого старта
+├── README.md
 ├── backend/
 │   ├── app/
-│   │   ├── api/v1/           # REST API endpoints (auth, equipment, products, materials, recipes, operations, orders, schedule, gantt, calendar)
-│   │   ├── auth/             # JWT, хеширование паролей, FastAPI dependencies
-│   │   ├── core/             # Конфигурация (pydantic-settings)
-│   │   ├── scheduler/        # OR-Tools планировщик (core, data_loader, saver, duration, constraints)
-│   │   └── main.py           # Точка входа FastAPI приложения
-│   ├── .env                  # Переменные окружения (не коммитится в Git)
-│   ├── init_schema.sql       # Полная схема БД PostgreSQL
-│   ├── seed_demo.py          # Скрипт заполнения БД демо-данными
-│   ├── scripts/              # Утилиты (create_admin_user.py)
-│   ├── pyproject.toml        # Зависимости Python
-│   └── run_server.py         # Скрипт запуска Uvicorn
+│   │   ├── api/v1/                  # REST API endpoints
+│   │   │   ├── auth.py
+│   │   │   ├── equipment.py
+│   │   │   ├── products.py
+│   │   │   ├── materials.py
+│   │   │   ├── recipes.py
+│   │   │   ├── operations.py
+│   │   │   ├── orders.py
+│   │   │   ├── schedule.py
+│   │   │   ├── gantt.py
+│   │   │   ├── calendar.py
+│   │   │   ├── advisor.py           # Итерация 2
+│   │   │   └── models.py
+│   │   ├── auth/                    # JWT + RBAC
+│   │   ├── core/                    # Конфигурация
+│   │   ├── scheduler/               # Ядро планировщика
+│   │   │   ├── core.py              # Оркестратор планирования
+│   │   │   ├── data_loader.py       # Загрузка данных из БД
+│   │   │   ├── routing.py           # Цепочки операций (Итерация 1)
+│   │   │   ├── materials.py         # Потребность в сырье (Итерация 2)
+│   │   │   ├── advisor.py           # Подсказки (Итерация 2)
+│   │   │   ├── feasibility.py       # Оценка исполнимости (Итерация 2)
+│   │   │   ├── saver.py             # Сохранение плана
+│   │   │   ├── feature_flags.py     # Feature-флаги
+│   │   │   ├── logging_config.py    # Structured logging
+│   │   │   ├── duration/            # Стратегии длительностей
+│   │   │   └── constraints/         # Плагины ограничений
+│   │   └── main.py
+│   ├── .env
+│   ├── init_schema.sql              # Полная схема БД (v1.3.0)
+│   ├── seed_demo.py                 # Python-скрипт демо-данных
+│   ├── seed_demo_data.sql           # SQL-версия демо-данных (v1.3.0)
+│   ├── migrations/ — История миграций БД
+    │   ├── add_history_0_2.sql — Склейка Итераций 0–2
+    │   └── README.md — Описание миграций
+│   ├── scripts/create_admin_user.py
+│   ├── requirements.txt
+│   ├── requirements-dev.txt
+│   ├── pyproject.toml
+│   └── run_server.py
 ├── frontend/
 │   ├── src/
-│   │   ├── components/       # Переиспользуемые UI компоненты (MainLayout)
-│   │   ├── context/          # React Context (AuthContext, PlainContext)
-│   │   ├── pages/            # Страницы приложения (Login, Equipment, Products, Materials, Recipes, Operations, Orders, Schedule, Gantt)
-│   │   ├── services/         # API клиенты (api.ts с интерсепторами)
-│   │   ├── types/            # TypeScript интерфейсы
-│   │   ├── App.tsx           # Роутинг приложения с ProtectedRoute
-│   │   └── main.tsx          # Точка входа React
-│   ├── package.json          # Зависимости Node.js
-│   └── vite.config.ts        # Конфигурация Vite
+│   │   ├── components/layout/       # MainLayout
+│   │   ├── context/                 # AuthContext, PlanContext
+│   │   ├── pages/                   # Login, Equipment, Products, Materials, Recipes, Operations, Orders, Schedule, Gantt
+│   │   ├── services/api.ts          # Axios с интерсепторами
+│   │   ├── types/                   # TypeScript интерфейсы
+│   │   ├── App.tsx                  # Роутинг
+│   │   └── main.tsx
+│   ├── package.json
+│   └── vite.config.ts
 └── README.md
 ```
 
 ## 🚀 Быстрый старт
 
-### Предварительные требования
-- Python 3.12+
-- Node.js 18+
-- Docker и Docker Compose
+### Автоматический (рекомендуется)
 
-### Шаг 1: Клонирование и настройка окружения
-```bash
-git clone <URL_РЕПОЗИТОРИЯ>
-cd household-aps/backend
-cp .env.example .env  # Создайте .env файл и настройте SECRET_KEY
+Из корня проекта:
+
+```powershell
+.\quickstart.ps1
 ```
 
-### Шаг 2: Запуск базы данных (PostgreSQL в Docker)
+Скрипт делает всё:
+1. Поднимает PostgreSQL в контейнере `aps_postgres`
+2. Применяет `init_schema.sql` + `seed_demo_data.sql`
+3. Создаёт `.venv` и ставит Python-зависимости
+4. Создаёт администратора `admin@household.ru`
+5. Устанавливает npm-зависимости
+
+**Флаги:**
+- `-SkipDb` — пропустить PostgreSQL (уже запущен)
+- `-SkipSeed` — пропустить схему и демо-данные
+- `-SkipFrontend` — пропустить npm-зависимости
+- `-Help` — справка
+
+**Если PowerShell блокирует запуск скриптов:**
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+```
+
+Затем — запустить backend и frontend в двух терминалах (см. ниже).
+
+### Ручной (если нужен контроль)
+
+#### Предварительные требования
+- Python 3.12+
+- Node.js 18+
+- Docker
+
+#### Шаг 1: Запуск PostgreSQL
+
 ```bash
-docker run --name aps-postgres \
+docker run --name aps_postgres \
   -e POSTGRES_USER=aps \
   -e POSTGRES_PASSWORD=aps_secret \
   -e POSTGRES_DB=household \
@@ -145,54 +236,246 @@ docker run --name aps-postgres \
   -d postgres:16
 ```
 
-### Шаг 3: Инициализация схемы БД и демо-данных
-```bash
-# Инициализация схемы
-docker exec -i aps-postgres psql -U aps -d household < backend/init_schema.sql
+#### Шаг 2: Инициализация схемы и демо-данных
 
-# Заполнение демо-данными
+```powershell
+Get-Content -Raw backend\init_schema.sql    | docker exec -i aps_postgres psql -U aps -d household
+Get-Content -Raw backend\seed_demo_data.sql | docker exec -i aps_postgres psql -U aps -d household
+```
+
+**Или через Python-скрипт:**
+
+```powershell
 cd backend
 python seed_demo.py
 ```
 
-### Шаг 4: Создание пользователя-администратора
-```bash
+#### Шаг 3: Создание администратора
+
+```powershell
+cd backend
 python -m scripts.create_admin_user
-# Скопируйте выведенный JWT токен для тестов в Swagger UI
 ```
 
-### Шаг 5: Запуск Backend
-```bash
-# Активация виртуального окружения
+#### Шаг 4: Запуск Backend
+
+```powershell
+cd backend
 python -m venv .venv
-source .venv/Scripts/activate  # Windows: .venv\Scripts\activate
-
-# Установка зависимостей
-pip install -r requirements.txt  # или poetry install
-
-# Запуск сервера
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt -r requirements-dev.txt
 python run_server.py
 ```
-*Swagger UI доступен по адресу: http://localhost:8000/docs*
 
-### Шаг 6: Запуск Frontend
-```bash
-cd ../frontend
+*Swagger UI: http://localhost:8000/docs*
+
+#### Шаг 5: Запуск Frontend
+
+```powershell
+cd frontend
 npm install
 npm run dev
 ```
-*Приложение доступно по адресу: http://localhost:5173*
+
+*Приложение: http://localhost:5173*  
 *Демо-доступ: `admin@household.ru` / `admin123`*
 
-## 📚 Документация API
-После запуска backend откройте **http://localhost:8000/docs**.
-Все защищенные эндпоинты требуют заголовка `Authorization: Bearer <token>`. В Swagger UI нажмите кнопку **Authorize** в правом верхнем углу, чтобы ввести токен.
+### Запуск в двух терминалах
 
-## 🧩 Основные сущности
-- **Оборудование**: Реакторы (REACTOR), Линии розлива (FILLING_LINE), Накопительные емкости (TANK), Бойлеры (BOILER).
-- **Продукция**: Полуфабрикаты (ПФ) и Готовая продукция (ГП), связанная с ПФ.
-- **Материалы и Рецептуры**: Сырье (RAW), Упаковка (PACKAGING), Этикетки (LABEL) с привязкой к остаткам.
-- **Технологические карты**: 8-11 этапов на каждый ПФ с формулами расчета длительностей и требованиями к ресурсам.
-- **Заказы и Партии**: Автоматическое разбиение целевого количества заказа на партии, исходя из `volume_kg` реактора и `max_fill_percent`.
+После `quickstart.ps1` (или ручной настройки):
 
+**Терминал 1 — Backend:**
+```powershell
+cd backend
+.\.venv\Scripts\Activate.ps1
+python run_server.py
 ```
+
+**Терминал 2 — Frontend:**
+```powershell
+cd frontend
+npm run dev
+```
+
+**Открыть:**
+- Frontend: http://localhost:5173
+- Swagger: http://localhost:8000/docs
+- Логин: `admin@household.ru` / `admin123`
+
+## 📚 Документация API
+
+После запуска backend: **http://localhost:8000/docs**
+
+Защищённые эндпоинты требуют `Authorization: Bearer <token>`.
+
+### Основные эндпоинты
+
+**Авторизация:**
+- `POST /api/v1/auth/login` — вход
+- `GET /api/v1/auth/me` — профиль
+
+**Справочники:**
+- `GET/POST/PUT/DELETE /api/v1/equipment` — оборудование
+- `GET/POST/PUT/DELETE /api/v1/products` — продукты
+- `GET/POST/PUT/DELETE /api/v1/materials` — материалы
+- `GET/POST/PUT/DELETE /api/v1/recipes` — рецептуры
+- `GET/POST/PUT/DELETE /api/v1/operations` — техкарты
+- `GET/POST/PUT/DELETE /api/v1/orders` — заказы
+- `GET/POST/PUT/DELETE /api/v1/calendar` — календарь простоев
+
+**Планирование:**
+- `POST /api/v1/schedule/build` — построить план
+- `GET /api/v1/schedule/versions` — список версий
+- `POST /api/v1/schedule/versions` — создать версию
+- `DELETE /api/v1/schedule/versions/{id}` — удалить
+
+**Advisor (Итерация 2):**
+- `GET /api/v1/schedule/advice` — подсказки
+- `POST /api/v1/schedule/feasibility` — оценка исполнимости
+
+**Гант:**
+- `GET /api/v1/gantt/` — данные диаграммы
+- `GET /api/v1/gantt/export` — экспорт в Excel
+
+## 🧩 Ключевые сущности
+
+### Оборудование
+- **REACTOR** — реакторы (5000–10000 кг)
+- **TANK** — накопительные ёмкости (буфер между реактором и линией)
+- **FILLING_LINE** — линии розлива
+- **MANUAL_STATION** — ручные станции
+- **BOILER** — бойлер (нагрев воды, 2000 кг)
+
+Все оборудование идентифицируется по полю **`code`** (REACTOR_1, TANK_1, LINE_1, BOILER).
+
+### Цепочки рабочих центров (Итерация 1)
+
+**DIRECT:** реактор → линия
+```
+REACTOR_1 → LINE_1
+```
+
+**VIA_TANK:** реактор → накопительная ёмкость → линия
+```
+REACTOR_1 → TANK_1 → LINE_1
+```
+
+**Особенности:**
+- Операции слива занимают **два ресурса** одновременно
+- Реактор освобождается **только после полного слива**
+- Замыв реактора стартует после слива и занимает реактор (NoOverlap)
+
+### Продукция
+- **PF** (полуфабрикат) — `route_type`: DIRECT | VIA_TANK
+- **GP** (готовая продукция) — привязана к ПФ через `parent_pf_id`
+
+### Advisor (Итерация 2)
+
+Модуль `advisor.py` выдаёт подсказки:
+
+| Код | Severity | Описание |
+|-----|----------|----------|
+| MATERIAL_SHORTAGE | CRITICAL / WARNING | Дефицит сырья или малый запас |
+| UNDERLOAD | INFO | Неполная загрузка реактора |
+| ROUTE_MISMATCH | INFO | VIA_TANK без танка |
+| EQUIPMENT_GAP | INFO | Простой оборудования > 8 ч |
+
+### Feature-флаги
+
+| Флаг | Статус | Итерация |
+|------|--------|----------|
+| enable_tank_routing | ✅ ON | 1 |
+| enable_advisor | ✅ ON | 2 |
+| enable_material_constraints | ✅ ON | 2 |
+| enable_shift_planning | ❌ OFF | 3 |
+| enable_rescheduling | ❌ OFF | 4 |
+| enable_lab_blocking | ❌ OFF | 5 |
+| enable_operator_pools | ❌ OFF | 6 |
+| enable_manual_station | ❌ OFF | 6 |
+| enable_cooling_degradation | ❌ OFF | 7 |
+| enable_cz_integration | ❌ OFF | 8 |
+
+## 🧪 Тестирование
+
+```powershell
+cd backend
+pytest tests/ -v
+```
+
+**Текущее состояние:** 99 passed.
+
+| Файл | Тестов | Что проверяет |
+|------|--------|---------------|
+| `test_tz_case.py` | 41 | Эталонный кейс ТЗ |
+| `test_materials.py` | 11 | Расчёт потребности в сырье |
+| `test_advisor.py` | 9 | Подсказки Advisor |
+| `test_routing.py` | 11 | Цепочки операций |
+| `test_dependencies.py` | 9 | FastAPI dependencies |
+| `test_auth_models.py` | 9 | Pydantic-модели авторизации |
+| `test_security.py` | 5 | JWT и bcrypt |
+| `test_config.py` | 3 | Конфигурация |
+
+## 🔧 Полезные команды
+
+### Проверить статус PostgreSQL
+```powershell
+docker ps --filter "name=aps_postgres"
+```
+
+### Подключиться к БД
+```powershell
+docker exec -it aps_postgres psql -U aps -d household
+```
+
+### Пересоздать БД с нуля
+```powershell
+docker exec aps_postgres psql -U aps -d household -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+Get-Content -Raw backend\init_schema.sql    | docker exec -i aps_postgres psql -U aps -d household
+Get-Content -Raw backend\seed_demo_data.sql | docker exec -i aps_postgres psql -U aps -d household
+```
+
+### Остановить/запустить PostgreSQL
+```powershell
+docker stop aps_postgres
+docker start aps_postgres
+```
+
+### Полная очистка (снести контейнер и БД)
+```powershell
+docker rm -f aps_postgres
+```
+
+### Экспорт данных из БД
+```powershell
+docker exec aps_postgres pg_dump -U aps household > backup.sql
+```
+
+## 🗺️ Roadmap
+
+| # | Итерация | Длит. | Приоритет | Статус |
+|---|----------|-------|-----------|--------|
+| 0 | Подготовка | 4 дня | 🔥 | ✅ |
+| 1 | Цепочки рабочих центров | 2 нед | 🔥🔥🔥 | ✅ |
+| 2 | Материальные ограничения и Advisor | 2 нед | 🔥🔥🔥 | ✅ |
+| 3 | Сменное планирование и РМ мастера | 2 нед | 🔥🔥🔥 | 📋 Next |
+| 4 | Перепланирование | 2 нед | 🔥🔥🔥 | ⏳ |
+| 5 | Лаборатория и блокировки | 1.5 нед | 🔥🔥 | ⏳ |
+| 6 | Люди как ресурс | 2 нед | 🔥🔥 | ⏳ |
+| 7 | Охлаждение с деградацией | 1.5 нед | 🔥 | ⏳ |
+| 8 | ЧЗ и интеграции | 2 нед | 🔥 | ⏳ |
+| 9 | Рефакторинг и качество | 2 нед | 🟡 | ⏳ |
+| 10 | Multi-objective и what-if | 2 нед | 🟡 | ⏳ |
+
+## 🐛 Известные ограничения
+
+1. **Слив на линию** добавляется в конец цепочки (после замыва). Семантически неверно (по ТЗ замыв после слива), но структурно работает: NoOverlap не даёт им пересечься. Исправим в Итерации 4 (перепланирование).
+
+2. **Материальные ограничения** — не жёсткие constraints в CP-SAT, а предупреждения Advisor. Для жёсткого учёта нужно добавить cumulative constraints (Итерация 9).
+
+3. **График поставок** — все поставки считаются доступными (без учёта `expected_at` vs дата старта партии).
+
+4. **Крем-мыло 5л (Р2)** имеет `route_type=VIA_TANK`, но Р2 не связан с танком. Слив идёт DIRECT. Advisor подсвечивает это как ROUTE_MISMATCH.
+
+## 📄 Лицензия
+
+Внутренний проект.

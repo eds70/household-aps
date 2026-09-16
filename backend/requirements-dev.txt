@@ -1,0 +1,20 @@
+# ==========================================
+# Dev-зависимости APS Production Scheduler
+# ==========================================
+# Установка:
+#   pip install -r requirements.txt -r requirements-dev.txt
+# ==========================================
+
+# Тестирование
+pytest>=9.0.0
+pytest-asyncio>=1.0.0
+pytest-cov>=6.0.0
+httpx>=0.27.0          # для тестов FastAPI через TestClient
+
+# Линтеры и форматтеры
+ruff>=0.6.0
+black>=24.0.0
+mypy>=1.10.0
+
+# Отладка
+ipython>=8.0.0

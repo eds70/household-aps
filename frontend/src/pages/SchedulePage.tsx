@@ -9,13 +9,23 @@ import type { ColDef, GridReadyEvent } from 'ag-grid-community';
 import {
     Box, Button, Card, CardContent, TextField, Typography, Alert,
     CircularProgress, Dialog, DialogTitle, DialogContent, DialogActions,
-    FormControl, InputLabel, Select, MenuItem, IconButton, Tooltip
+    FormControl, InputLabel, Select, MenuItem, IconButton, Tooltip,
+    Accordion, AccordionSummary, AccordionDetails, Chip, Divider,
 } from '@mui/material';
 import {
-    PlayArrow as PlayIcon, Add as AddIcon,
-    Delete as DeleteIcon, Visibility as ViewIcon, History as HistoryIcon
+    PlayArrow as PlayIcon,
+    Add as AddIcon,
+    Delete as DeleteIcon,
+    Visibility as ViewIcon,
+    History as HistoryIcon,
+    ExpandMore as ExpandMoreIcon,
+    Warning as WarningIcon,
+    Error as ErrorIcon,
+    Info as InfoIcon,
+    Refresh as RefreshIcon,
 } from '@mui/icons-material';
-import { scheduleApi } from '../services/api';
+import { scheduleApi, advisorApi } from '../services/api';
+import type { AdvisorResponse, AdvisorSeverity } from '../types';
 import axios from 'axios';
 import { API_BASE_URL } from '../config';
 
@@ -27,6 +37,24 @@ const VERSION_TYPE_LABELS: Record<string, string> = {
     WHAT_IF: 'Сценарий "что если"',
 };
 
+const SEVERITY_COLORS: Record<AdvisorSeverity, 'error' | 'warning' | 'info'> = {
+    CRITICAL: 'error',
+    WARNING: 'warning',
+    INFO: 'info',
+};
+
+const SEVERITY_LABELS: Record<AdvisorSeverity, string> = {
+    CRITICAL: 'Критично',
+    WARNING: 'Внимание',
+    INFO: 'Инфо',
+};
+
+const SEVERITY_ICONS: Record<AdvisorSeverity, React.ReactNode> = {
+    CRITICAL: <ErrorIcon fontSize="small" />,
+    WARNING: <WarningIcon fontSize="small" />,
+    INFO: <InfoIcon fontSize="small" />,
+};
+
 const SchedulePage: React.FC = () => {
     const { versions, setPlan, loadVersions, currentVersionId } = usePlan();
 
@@ -36,7 +64,11 @@ const SchedulePage: React.FC = () => {
     const [result, setResult] = useState<any>(null);
     const [error, setError] = useState<string | null>(null);
 
-    // Диалог нового плана
+    // Advisor
+    const [advisorData, setAdvisorData] = useState<AdvisorResponse | null>(null);
+    const [advisorLoading, setAdvisorLoading] = useState(false);
+    const [advisorError, setAdvisorError] = useState<string | null>(null);
+
     const [newPlanDialogOpen, setNewPlanDialogOpen] = useState(false);
     const [newPlanForm, setNewPlanForm] = useState({
         name: '',
@@ -49,6 +81,25 @@ const SchedulePage: React.FC = () => {
         loadVersions();
     }, []);
 
+    const loadAdvisor = async () => {
+        setAdvisorLoading(true);
+        setAdvisorError(null);
+        try {
+            const data = await advisorApi.getAdvice();
+            setAdvisorData(data);
+        } catch (err: any) {
+            const detail = err.response?.data?.detail;
+            const errorMsg = typeof detail === 'string' ? detail : 'Ошибка загрузки подсказок';
+            setAdvisorError(errorMsg);
+        } finally {
+            setAdvisorLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        loadAdvisor();
+    }, []);
+
     const handleBuildSchedule = async () => {
         setLoading(true);
         setError(null);
@@ -56,19 +107,18 @@ const SchedulePage: React.FC = () => {
         try {
             const data = await scheduleApi.build({
                 horizon_hours: horizonHours,
-                timeout_seconds: solverTimeout
+                timeout_seconds: solverTimeout,
             });
             setResult(data);
-            await loadVersions(); // Обновляем список после построения
+            await loadVersions();
+            await loadAdvisor();
         } catch (err: any) {
-            // ✅ Безопасное извлечение сообщения об ошибке
             const detail = err.response?.data?.detail;
             const errorMsg = typeof detail === 'string'
                 ? detail
                 : Array.isArray(detail)
                     ? detail.map((d: any) => d.msg).join('; ')
                     : 'Ошибка при построении плана';
-
             setError(errorMsg);
         } finally {
             setLoading(false);
@@ -136,13 +186,13 @@ const SchedulePage: React.FC = () => {
             headerName: 'Дата создания',
             field: 'created_at',
             width: 180,
-            valueFormatter: (p) => p.value ? new Date(p.value).toLocaleString('ru-RU') : '—'
+            valueFormatter: (p) => p.value ? new Date(p.value).toLocaleString('ru-RU') : '—',
         },
         {
             headerName: 'Комментарий',
             field: 'comment',
             flex: 1,
-            valueFormatter: (p) => p.value || '—'
+            valueFormatter: (p) => p.value || '—',
         },
         {
             headerName: 'Действия',
@@ -154,16 +204,16 @@ const SchedulePage: React.FC = () => {
                 return (
                     <Box sx={{ display: 'flex', gap: 0.5 }}>
                         <Tooltip title={isCurrent ? 'Текущий план' : 'Открыть план'}>
-              <span>
-                <IconButton
-                    size="small"
-                    color={isCurrent ? 'success' : 'primary'}
-                    onClick={() => handleOpenPlan(version)}
-                    disabled={isCurrent}
-                >
-                  <ViewIcon fontSize="small" />
-                </IconButton>
-              </span>
+                            <span>
+                                <IconButton
+                                    size="small"
+                                    color={isCurrent ? 'success' : 'primary'}
+                                    onClick={() => handleOpenPlan(version)}
+                                    disabled={isCurrent}
+                                >
+                                    <ViewIcon fontSize="small" />
+                                </IconButton>
+                            </span>
                         </Tooltip>
                         <Tooltip title="Удалить план">
                             <IconButton
@@ -179,6 +229,99 @@ const SchedulePage: React.FC = () => {
             },
         },
     ];
+
+    const renderAdvisorPanel = () => {
+        if (advisorLoading) {
+            return (
+                <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
+                    <CircularProgress size={24} />
+                </Box>
+            );
+        }
+
+        if (advisorError) {
+            return (
+                <Alert severity="error" sx={{ mb: 2 }} onClose={() => setAdvisorError(null)}>
+                    {advisorError}
+                </Alert>
+            );
+        }
+
+        if (!advisorData || advisorData.tips.length === 0) {
+            return (
+                <Alert severity="success" sx={{ mb: 2 }}>
+                    Подсказок нет. Все проверки пройдены.
+                </Alert>
+            );
+        }
+
+        return (
+            <Card sx={{ mb: 2, boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}>
+                <CardContent>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                            <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                                Подсказки Advisor
+                            </Typography>
+                            {advisorData.critical_count > 0 && (
+                                <Chip label={`Критично: ${advisorData.critical_count}`} color="error" size="small" />
+                            )}
+                            {advisorData.warning_count > 0 && (
+                                <Chip label={`Внимание: ${advisorData.warning_count}`} color="warning" size="small" />
+                            )}
+                            {advisorData.info_count > 0 && (
+                                <Chip label={`Инфо: ${advisorData.info_count}`} color="info" size="small" variant="outlined" />
+                            )}
+                        </Box>
+                        <Button
+                            size="small"
+                            startIcon={<RefreshIcon />}
+                            onClick={loadAdvisor}
+                            sx={{ textTransform: 'none' }}
+                        >
+                            Обновить
+                        </Button>
+                    </Box>
+
+                    <Divider sx={{ mb: 2 }} />
+
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                        {advisorData.tips.map((tip, index) => (
+                            <Accordion key={`${tip.code}-${index}`} sx={{ boxShadow: 'none', border: '1px solid #e0e0e0' }}>
+                                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
+                                        <Chip
+                                            icon={SEVERITY_ICONS[tip.severity] as any}
+                                            label={SEVERITY_LABELS[tip.severity]}
+                                            color={SEVERITY_COLORS[tip.severity]}
+                                            size="small"
+                                        />
+                                        <Typography variant="body2" sx={{ fontWeight: 600, flexGrow: 1 }}>
+                                            {tip.title}
+                                        </Typography>
+                                    </Box>
+                                </AccordionSummary>
+                                <AccordionDetails>
+                                    <Typography variant="body2" sx={{ mb: 1 }}>
+                                        {tip.message}
+                                    </Typography>
+                                    {tip.details && Object.keys(tip.details).length > 0 && (
+                                        <Box sx={{ mt: 1, p: 1, bgcolor: '#f5f5f5', borderRadius: 1 }}>
+                                            <Typography variant="caption" sx={{ fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>
+                                                {Object.entries(tip.details)
+                                                    .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
+                                                    .join('\n')}
+                                            </Typography>
+                                        </Box>
+                                    )}
+                                </AccordionDetails>
+                            </Accordion>
+                        ))}
+                    </Box>
+                </CardContent>
+            </Card>
+        );
+    };
 
     return (
         <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -247,9 +390,11 @@ const SchedulePage: React.FC = () => {
 
             {result && (
                 <Alert severity="success" sx={{ mb: 2 }}>
-                    ✅ Расчёт завершён: {result.total_tasks} задач, Makespan: {result.makespan_hours.toFixed(1)} ч
+                    Расчёт завершён: {result.total_tasks} задач, Makespan: {result.makespan_hours.toFixed(1)} ч
                 </Alert>
             )}
+
+            {renderAdvisorPanel()}
 
             <Card sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
                 <CardContent sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', p: 2 }}>
@@ -275,7 +420,6 @@ const SchedulePage: React.FC = () => {
                 </CardContent>
             </Card>
 
-            {/* Диалог нового плана */}
             <Dialog open={newPlanDialogOpen} onClose={() => setNewPlanDialogOpen(false)} maxWidth="sm" fullWidth>
                 <DialogTitle sx={{ fontWeight: 600 }}>Создать новый план</DialogTitle>
                 <DialogContent>

@@ -162,3 +162,39 @@ export interface User {
 }
 
 export type UserRole = User['role'];
+
+
+// ==========================================
+// ADVISOR
+// ==========================================
+
+export type AdvisorSeverity = 'CRITICAL' | 'WARNING' | 'INFO';
+
+export interface AdvisorTip {
+    code: string;
+    severity: AdvisorSeverity;
+    title: string;
+    message: string;
+    details: Record<string, any>;
+}
+
+export interface AdvisorResponse {
+    tips: AdvisorTip[];
+    critical_count: number;
+    warning_count: number;
+    info_count: number;
+    generated_at: string;
+}
+
+export interface FeasibilityIssue {
+    code: string;
+    severity: 'BLOCKER' | 'WARNING';
+    message: string;
+    details: Record<string, any>;
+}
+
+export interface FeasibilityResponse {
+    feasible: boolean;
+    issues: FeasibilityIssue[];
+    warnings: FeasibilityIssue[];
+}
