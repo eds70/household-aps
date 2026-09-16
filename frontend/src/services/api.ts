@@ -328,4 +328,41 @@ export const advisorApi = {
     },
 };
 
+// ==========================================
+// Shift API
+// ==========================================
+export const shiftApi = {
+    list: async (params?: {
+        date_from?: string;
+        date_to?: string;
+        only_working?: boolean;
+    }): Promise<import('../types').Shift[]> => {
+        const response = await api.get('/api/v1/shift/list', { params });
+        return response.data;
+    },
+
+    getByDate: async (shiftDate: string): Promise<import('../types').Shift> => {
+        const response = await api.get(`/api/v1/shift/by-date/${shiftDate}`);
+        return response.data;
+    },
+
+    getTasks: async (shiftId: string): Promise<import('../types').ShiftTasksResponse> => {
+        const response = await api.get(`/api/v1/shift/${shiftId}/tasks`);
+        return response.data;
+    },
+
+    getCarryover: async (shiftId: string): Promise<import('../types').ShiftTask[]> => {
+        const response = await api.get(`/api/v1/shift/${shiftId}/carryover`);
+        return response.data;
+    },
+
+    updateTaskFact: async (
+        taskId: string,
+        fact: import('../types').TaskFactRequest,
+    ): Promise<import('../types').TaskFactResponse> => {
+        const response = await api.post(`/api/v1/shift/task/${taskId}/fact`, fact);
+        return response.data;
+    },
+};
+
 export default api;

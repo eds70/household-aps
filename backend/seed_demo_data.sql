@@ -2,7 +2,7 @@
 -- ДЕМОНСТРАЦИОННЫЕ ДАННЫЕ
 -- Кейс из Раздела 4 ТЗ
 -- Сентябрь 2026
--- Версия: 1.3.0 (согласовано с init_schema.sql 1.3.0)
+-- Версия: 1.4.0 (согласовано с init_schema.sql v1.4.0)
 -- ==========================================
 -- Что создаётся:
 --   - 1 организация, 1 админ
@@ -17,6 +17,7 @@
 --   - 3 техкарты (11/8/8 операций)
 --   - Матрица замывки 3×3
 --   - 5 событий календаря (4 выходных + 1 ремонт Р3)
+--   - 30 смен на сентябрь 2026 (08:00-20:00, сб-вс нерабочие)
 --   - 4 производственных заказа
 --   - 28 партий (пересчитано точно по ТЗ)
 -- ==========================================
@@ -51,6 +52,15 @@ v_org_id UUID := '00000000-0000-0000-0000-000000000001';
 
     -- Заказы
     v_order_cream_1 UUID; v_order_cream_5 UUID; v_order_dish_1 UUID; v_order_antiseptic_10 UUID;
+
+    -- Смены
+    v_date DATE;
+    v_end_date DATE;
+    v_starts_at TIMESTAMPTZ;
+    v_ends_at TIMESTAMPTZ;
+    v_dow INT;
+    v_shift_name VARCHAR(50);
+    v_shift_is_working BOOLEAN;
 BEGIN
 
 -- ==========================================
@@ -167,19 +177,19 @@ INSERT INTO equipment (id, organization_id, code, name, type, speed_coeff) VALUE
 -- 6. СВЯЗИ ОБОРУДОВАНИЯ (7 связей)
 -- ==========================================
 INSERT INTO equipment_link (organization_id, from_equipment_id, to_equipment_id, is_direct) VALUES
-                                                                                                (v_org_id, v_reactor1, v_tank1,  TRUE),   -- Р1 → Танк 1
-                                                                                                (v_org_id, v_tank1,    v_line1,  TRUE),   -- Танк 1 → Л1
-                                                                                                (v_org_id, v_reactor1, v_line1,  TRUE),   -- Р1 → Л1 (напрямую)
-                                                                                                (v_org_id, v_reactor2, v_line1,  TRUE),   -- Р2 → Л1
-                                                                                                (v_org_id, v_reactor2, v_line2,  TRUE),   -- Р2 → Л2
-                                                                                                (v_org_id, v_reactor3, v_line2,  TRUE),   -- Р3 → Л2
-                                                                                                (v_org_id, v_reactor4, v_line3,  TRUE);   -- Р4 → Л3 (ручной)
+                                                                                                (v_org_id, v_reactor1, v_tank1,  TRUE),
+                                                                                                (v_org_id, v_tank1,    v_line1,  TRUE),
+                                                                                                (v_org_id, v_reactor1, v_line1,  TRUE),
+                                                                                                (v_org_id, v_reactor2, v_line1,  TRUE),
+                                                                                                (v_org_id, v_reactor2, v_line2,  TRUE),
+                                                                                                (v_org_id, v_reactor3, v_line2,  TRUE),
+                                                                                                (v_org_id, v_reactor4, v_line3,  TRUE);
 
 -- ==========================================
 -- 7. МАТРИЦА СОВМЕСТИМОСТИ (11 записей)
 -- ==========================================
--- 6 реакторных
 INSERT INTO equipment_capability (organization_id, equipment_id, product_id, max_fill_percent) VALUES
+                                                                                                   -- 6 реакторных
                                                                                                    (v_org_id, v_reactor1, v_pf_cream,      0.70),
                                                                                                    (v_org_id, v_reactor2, v_pf_cream,      0.70),
                                                                                                    (v_org_id, v_reactor2, v_pf_dish,       0.70),
@@ -313,7 +323,39 @@ INSERT INTO calendar_event (organization_id, equipment_id, event_type, starts_at
     (v_org_id, v_reactor3, 'REPAIR', '2026-09-10 00:00:00+03', '2026-09-21 00:00:00+03', 'Плановый ремонт Р3');
 
 -- ==========================================
--- 13. ПРОИЗВОДСТВЕННЫЕ ЗАКАЗЫ
+-- 13. СМЕНЫ НА СЕНТЯБРЬ 2026 (Итерация 3)
+-- ==========================================
+-- Одна смена в день: 08:00-20:00.
+-- Суббота и воскресенье — нерабочие (is_working = FALSE).
+-- Всего 30 смен: 22 рабочих + 8 выходных.
+
+v_date := '2026-09-01';
+v_end_date := '2026-09-30';
+
+WHILE v_date <= v_end_date LOOP
+    v_dow := EXTRACT(DOW FROM v_date);  -- 0=вс, 6=сб
+
+    v_starts_at := (v_date::text || ' 08:00:00+03')::TIMESTAMPTZ;
+    v_ends_at   := (v_date::text || ' 20:00:00+03')::TIMESTAMPTZ;
+
+    v_shift_is_working := (v_dow <> 0 AND v_dow <> 6);
+    v_shift_name := 'Смена ' || TO_CHAR(v_date, 'DD.MM.YYYY');
+
+INSERT INTO shift (organization_id, name, starts_at, ends_at, is_working, comment)
+VALUES (
+           v_org_id,
+           v_shift_name,
+           v_starts_at,
+           v_ends_at,
+           v_shift_is_working,
+           CASE WHEN v_shift_is_working THEN 'Рабочая смена' ELSE 'Выходной' END
+       );
+
+v_date := v_date + 1;
+END LOOP;
+
+-- ==========================================
+-- 14. ПРОИЗВОДСТВЕННЫЕ ЗАКАЗЫ
 -- ==========================================
 INSERT INTO production_order (id, organization_id, product_id, target_qty, due_date, priority) VALUES
                                                                                                    (gen_random_uuid(), v_org_id, v_gp_cream_1,       20000, '2026-09-30 23:59:59+03', 5),
@@ -328,7 +370,7 @@ SELECT id INTO v_order_dish_1        FROM production_order WHERE product_id = v_
 SELECT id INTO v_order_antiseptic_10 FROM production_order WHERE product_id = v_gp_antiseptic_10;
 
 -- ==========================================
--- 14. ПАРТИИ (28 штук по ТЗ)
+-- 15. ПАРТИИ (28 штук по ТЗ)
 -- ==========================================
 -- Крем-мыло 1л (Р1): 5×3500 + 1×2500 = 20 000 кг → 6 партий
 INSERT INTO batch (organization_id, order_id, product_id, volume_kg, assigned_equipment_id) VALUES
@@ -357,7 +399,7 @@ INSERT INTO batch (organization_id, order_id, product_id, volume_kg, assigned_eq
 SELECT v_org_id, v_order_antiseptic_10, v_pf_antiseptic, 5600, v_reactor3
 FROM generate_series(1, 14);
 
--- Антисептик 10л (Р4): 1×1600 = 1600 кг (остаток)
+-- Антисептик 10л (Р4): 1×1600 = 1600 кг
 INSERT INTO batch (organization_id, order_id, product_id, volume_kg, assigned_equipment_id) VALUES
     (v_org_id, v_order_antiseptic_10, v_pf_antiseptic, 1600, v_reactor4);
 
@@ -381,6 +423,8 @@ UNION ALL SELECT 'app_user',           COUNT(*) FROM app_user
           UNION ALL SELECT 'operation_template', COUNT(*) FROM operation_template
           UNION ALL SELECT 'setup_matrix',       COUNT(*) FROM setup_matrix
           UNION ALL SELECT 'calendar_event',     COUNT(*) FROM calendar_event
+          UNION ALL SELECT 'shift (сентябрь)',   COUNT(*) FROM shift WHERE starts_at >= '2026-09-01' AND starts_at < '2026-10-01'
+          UNION ALL SELECT 'shift (рабочих)',    COUNT(*) FROM shift WHERE is_working = TRUE
           UNION ALL SELECT 'production_order',   COUNT(*) FROM production_order
           UNION ALL SELECT 'batch',              COUNT(*) FROM batch
           UNION ALL SELECT 'organization_settings', COUNT(*) FROM organization_settings;
@@ -402,6 +446,8 @@ UNION ALL SELECT 'app_user',           COUNT(*) FROM app_user
 --   operation_template:     27
 --   setup_matrix:           9
 --   calendar_event:         5
+--   shift (сентябрь):       30
+--   shift (рабочих):        22
 --   production_order:       4
 --   batch:                  28
 --   organization_settings:  17

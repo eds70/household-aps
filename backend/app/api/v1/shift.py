@@ -1,0 +1,525 @@
+# backend/app/api/v1/shift.py
+"""
+API сменного планирования и РМ мастера (Итерация 3).
+
+Эндпоинты:
+  GET  /api/v1/shift/list                    — список смен (диапазон дат)
+  GET  /api/v1/shift/by-date/{date}          — смена на конкретную дату
+  GET  /api/v1/shift/{shift_id}/tasks        — задания смены по рабочим центрам
+  GET  /api/v1/shift/{shift_id}/carryover    — переходящие задания
+  POST /api/v1/shift/task/{task_id}/fact     — внести факт
+"""
+
+from fastapi import APIRouter, HTTPException, Depends, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
+from datetime import datetime, date, timedelta
+from typing import List, Optional
+from uuid import UUID
+
+from .shift_models import (
+    ShiftResponse,
+    ShiftTaskResponse,
+    ShiftTasksGrouped,
+    ShiftTasksResponse,
+    TaskFactRequest,
+    TaskFactResponse,
+)
+from app.auth.dependencies import get_current_org_id, get_db_session
+from app.scheduler.feature_flags import FeatureFlags
+from app.scheduler.logging_config import setup_scheduler_logging, log_with_context
+import logging
+
+
+router = APIRouter(prefix="/api/v1/shift", tags=["Сменное планирование"])
+logger = setup_scheduler_logging(level=logging.INFO)
+
+
+async def _check_shift_planning_enabled(db: AsyncSession, org_id: UUID) -> None:
+    """Проверяет, включён ли feature-флаг enable_shift_planning."""
+    result = await db.execute(
+        text("""
+            SELECT setting_value FROM organization_settings
+            WHERE organization_id = :org_id AND setting_key = 'enable_shift_planning'
+        """),
+        {"org_id": org_id},
+    )
+    row = result.fetchone()
+    if not row:
+        raise HTTPException(status_code=400, detail="Feature enable_shift_planning не настроен")
+
+    flags = FeatureFlags({"enable_shift_planning": row.setting_value})
+    if not flags.enable_shift_planning:
+        raise HTTPException(status_code=400, detail="Сменное планирование отключено (enable_shift_planning = false)")
+
+
+# ==========================================
+# СПИСОК СМЕН
+# ==========================================
+
+@router.get("/list", response_model=List[ShiftResponse])
+async def list_shifts(
+        date_from: Optional[date] = Query(default=None),
+        date_to: Optional[date] = Query(default=None),
+        only_working: bool = Query(default=False),
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
+):
+    """Список смен за период."""
+    await _check_shift_planning_enabled(db, org_id)
+
+    if date_from is None:
+        date_from = date(2026, 9, 1)
+    if date_to is None:
+        date_to = date(2026, 9, 30)
+
+    where_clauses = ["organization_id = :org_id"]
+    params = {
+        "org_id": org_id,
+        "date_from": datetime.combine(date_from, datetime.min.time()).replace(hour=0),
+        "date_to": datetime.combine(date_to + timedelta(days=1), datetime.min.time()),
+    }
+
+    if only_working:
+        where_clauses.append("is_working = TRUE")
+
+    query = text(f"""
+        SELECT id, name, starts_at, ends_at, is_working, comment
+        FROM shift
+        WHERE {' AND '.join(where_clauses)}
+          AND starts_at >= :date_from
+          AND starts_at < :date_to
+        ORDER BY starts_at
+    """)
+
+    result = await db.execute(query, params)
+    return [
+        ShiftResponse(
+            id=row.id,
+            name=row.name,
+            starts_at=row.starts_at,
+            ends_at=row.ends_at,
+            is_working=row.is_working,
+            comment=row.comment,
+        )
+        for row in result.fetchall()
+    ]
+
+
+@router.get("/by-date/{shift_date}", response_model=ShiftResponse)
+async def get_shift_by_date(
+        shift_date: date,
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
+):
+    """Смена на конкретную дату."""
+    await _check_shift_planning_enabled(db, org_id)
+
+    dt_from = datetime.combine(shift_date, datetime.min.time())
+    dt_to = dt_from + timedelta(days=1)
+
+    result = await db.execute(
+        text("""
+            SELECT id, name, starts_at, ends_at, is_working, comment
+            FROM shift
+            WHERE organization_id = :org_id
+              AND starts_at >= :dt_from
+              AND starts_at < :dt_to
+            ORDER BY starts_at
+            LIMIT 1
+        """),
+        {"org_id": org_id, "dt_from": dt_from, "dt_to": dt_to},
+    )
+    row = result.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Смена на {shift_date} не найдена")
+
+    return ShiftResponse(
+        id=row.id,
+        name=row.name,
+        starts_at=row.starts_at,
+        ends_at=row.ends_at,
+        is_working=row.is_working,
+        comment=row.comment,
+    )
+
+
+# ==========================================
+# ЗАДАНИЯ СМЕНЫ
+# ==========================================
+
+@router.get("/{shift_id}/tasks", response_model=ShiftTasksResponse)
+async def get_shift_tasks(
+        shift_id: UUID,
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
+):
+    """Задания смены, сгруппированные по рабочим центрам."""
+    await _check_shift_planning_enabled(db, org_id)
+
+    # Смена
+    shift_result = await db.execute(
+        text("""
+            SELECT id, name, starts_at, ends_at, is_working, comment
+            FROM shift
+            WHERE id = :shift_id AND organization_id = :org_id
+        """),
+        {"shift_id": shift_id, "org_id": org_id},
+    )
+    shift_row = shift_result.fetchone()
+    if not shift_row:
+        raise HTTPException(status_code=404, detail="Смена не найдена")
+
+    shift = ShiftResponse(
+        id=shift_row.id,
+        name=shift_row.name,
+        starts_at=shift_row.starts_at,
+        ends_at=shift_row.ends_at,
+        is_working=shift_row.is_working,
+        comment=shift_row.comment,
+    )
+
+    # Задачи смены
+    tasks_result = await db.execute(
+        text("""
+            SELECT
+                st.id, st.batch_id, st.planned_start, st.planned_end,
+                st.actual_start, st.actual_end, st.actual_qty, st.material_load_at,
+                st.task_role, st.status,
+                st.equipment_id, eq.name AS equipment_name, eq.code AS equipment_code,
+                st.linked_equipment_id, leq.name AS linked_equipment_name,
+                ot.name AS operation_name,
+                p.id AS product_id, p.code AS product_code, p.name AS product_name,
+                b.volume_kg AS batch_volume
+            FROM scheduled_task st
+            LEFT JOIN equipment eq ON st.equipment_id = eq.id
+            LEFT JOIN equipment leq ON st.linked_equipment_id = leq.id
+            LEFT JOIN operation_template ot ON st.operation_template_id = ot.id
+            LEFT JOIN batch b ON st.batch_id = b.id
+            LEFT JOIN product p ON b.product_id = p.id
+            WHERE st.shift_id = :shift_id AND st.organization_id = :org_id
+            ORDER BY eq.name, st.planned_start
+        """),
+        {"shift_id": shift_id, "org_id": org_id},
+    )
+
+    tasks = tasks_result.fetchall()
+
+    # Группировка по equipment_id
+    groups_dict: dict = {}
+    done_count = 0
+
+    for row in tasks:
+        eq_id = str(row.equipment_id)
+        duration = int((row.planned_end - row.planned_start).total_seconds() / 60) if row.planned_start and row.planned_end else 0
+
+        task = ShiftTaskResponse(
+            id=row.id,
+            batch_id=row.batch_id,
+            batch_name=f"Партия {str(row.batch_id)[:8]}" if row.batch_id else None,
+            product_id=row.product_id,
+            product_code=row.product_code,
+            product_name=row.product_name,
+            operation_name=str(row.operation_name or "Операция"),
+            task_role=row.task_role,
+            equipment_id=row.equipment_id,
+            equipment_name=str(row.equipment_name or "Unknown"),
+            linked_equipment_id=row.linked_equipment_id,
+            linked_equipment_name=row.linked_equipment_name,
+            planned_start=row.planned_start,
+            planned_end=row.planned_end,
+            actual_start=row.actual_start,
+            actual_end=row.actual_end,
+            actual_qty=float(row.actual_qty) if row.actual_qty else None,
+            material_load_at=row.material_load_at,
+            status=row.status or "PLANNED",
+            duration_minutes=duration,
+            is_carryover=False,
+        )
+
+        if task.status == "DONE":
+            done_count += 1
+
+        if eq_id not in groups_dict:
+            groups_dict[eq_id] = {
+                "equipment_id": row.equipment_id,
+                "equipment_name": str(row.equipment_name or "Unknown"),
+                "equipment_code": row.equipment_code,
+                "tasks": [],
+            }
+        groups_dict[eq_id]["tasks"].append(task)
+
+    # Переходящие задания из предыдущей рабочей смены
+    prev_shift_result = await db.execute(
+        text("""
+            SELECT id, starts_at, ends_at
+            FROM shift
+            WHERE organization_id = :org_id
+              AND is_working = TRUE
+              AND starts_at < (SELECT starts_at FROM shift WHERE id = :shift_id)
+            ORDER BY starts_at DESC
+            LIMIT 1
+        """),
+        {"org_id": org_id, "shift_id": shift_id},
+    )
+    prev_shift_row = prev_shift_result.fetchone()
+
+    carryover_count = 0
+    if prev_shift_row:
+        carryover_result = await db.execute(
+            text("""
+                SELECT
+                    st.id, st.batch_id, st.planned_start, st.planned_end,
+                    st.actual_start, st.actual_end, st.actual_qty, st.material_load_at,
+                    st.task_role, st.status,
+                    st.equipment_id, eq.name AS equipment_name, eq.code AS equipment_code,
+                    st.linked_equipment_id, leq.name AS linked_equipment_name,
+                    ot.name AS operation_name,
+                    p.id AS product_id, p.code AS product_code, p.name AS product_name
+                FROM scheduled_task st
+                LEFT JOIN equipment eq ON st.equipment_id = eq.id
+                LEFT JOIN equipment leq ON st.linked_equipment_id = leq.id
+                LEFT JOIN operation_template ot ON st.operation_template_id = ot.id
+                LEFT JOIN batch b ON st.batch_id = b.id
+                LEFT JOIN product p ON b.product_id = p.id
+                WHERE st.shift_id = :prev_shift_id
+                  AND st.organization_id = :org_id
+                  AND st.actual_end IS NULL
+                  AND st.status IN ('PLANNED', 'IN_PROGRESS')
+                ORDER BY eq.name, st.planned_start
+            """),
+            {"prev_shift_id": prev_shift_row.id, "org_id": org_id},
+        )
+
+        for row in carryover_result.fetchall():
+            eq_id = str(row.equipment_id)
+            duration = int((row.planned_end - row.planned_start).total_seconds() / 60) if row.planned_start and row.planned_end else 0
+
+            task = ShiftTaskResponse(
+                id=row.id,
+                batch_id=row.batch_id,
+                batch_name=f"Партия {str(row.batch_id)[:8]}" if row.batch_id else None,
+                product_id=row.product_id,
+                product_code=row.product_code,
+                product_name=row.product_name,
+                operation_name=str(row.operation_name or "Операция"),
+                task_role=row.task_role,
+                equipment_id=row.equipment_id,
+                equipment_name=str(row.equipment_name or "Unknown"),
+                linked_equipment_id=row.linked_equipment_id,
+                linked_equipment_name=row.linked_equipment_name,
+                planned_start=row.planned_start,
+                planned_end=row.planned_end,
+                actual_start=row.actual_start,
+                actual_end=row.actual_end,
+                actual_qty=float(row.actual_qty) if row.actual_qty else None,
+                material_load_at=row.material_load_at,
+                status=row.status or "PLANNED",
+                duration_minutes=duration,
+                is_carryover=True,
+            )
+
+            if eq_id not in groups_dict:
+                groups_dict[eq_id] = {
+                    "equipment_id": row.equipment_id,
+                    "equipment_name": str(row.equipment_name or "Unknown"),
+                    "equipment_code": row.equipment_code,
+                    "tasks": [],
+                }
+            groups_dict[eq_id]["tasks"].append(task)
+            carryover_count += 1
+
+    groups = [
+        ShiftTasksGrouped(
+            equipment_id=g["equipment_id"],
+            equipment_name=g["equipment_name"],
+            equipment_code=g["equipment_code"],
+            tasks=g["tasks"],
+        )
+        for g in groups_dict.values()
+    ]
+    groups.sort(key=lambda g: g.equipment_name)
+
+    return ShiftTasksResponse(
+        shift=shift,
+        groups=groups,
+        total_tasks=len(tasks) + carryover_count,
+        carryover_count=carryover_count,
+        done_count=done_count,
+    )
+
+
+@router.get("/{shift_id}/carryover", response_model=List[ShiftTaskResponse])
+async def get_carryover(
+        shift_id: UUID,
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
+):
+    """Переходящие задания из предыдущей рабочей смены."""
+    await _check_shift_planning_enabled(db, org_id)
+
+    prev_result = await db.execute(
+        text("""
+            SELECT id FROM shift
+            WHERE organization_id = :org_id
+              AND is_working = TRUE
+              AND starts_at < (SELECT starts_at FROM shift WHERE id = :shift_id)
+            ORDER BY starts_at DESC
+            LIMIT 1
+        """),
+        {"org_id": org_id, "shift_id": shift_id},
+    )
+    prev_row = prev_result.fetchone()
+    if not prev_row:
+        return []
+
+    result = await db.execute(
+        text("""
+            SELECT
+                st.id, st.batch_id, st.planned_start, st.planned_end,
+                st.actual_start, st.actual_end, st.actual_qty, st.material_load_at,
+                st.task_role, st.status,
+                st.equipment_id, eq.name AS equipment_name,
+                st.linked_equipment_id, leq.name AS linked_equipment_name,
+                ot.name AS operation_name,
+                p.id AS product_id, p.code AS product_code, p.name AS product_name
+            FROM scheduled_task st
+            LEFT JOIN equipment eq ON st.equipment_id = eq.id
+            LEFT JOIN equipment leq ON st.linked_equipment_id = leq.id
+            LEFT JOIN operation_template ot ON st.operation_template_id = ot.id
+            LEFT JOIN batch b ON st.batch_id = b.id
+            LEFT JOIN product p ON b.product_id = p.id
+            WHERE st.shift_id = :prev_shift_id
+              AND st.organization_id = :org_id
+              AND st.actual_end IS NULL
+              AND st.status IN ('PLANNED', 'IN_PROGRESS')
+            ORDER BY eq.name, st.planned_start
+        """),
+        {"prev_shift_id": prev_row.id, "org_id": org_id},
+    )
+
+    return [
+        ShiftTaskResponse(
+            id=row.id,
+            batch_id=row.batch_id,
+            batch_name=f"Партия {str(row.batch_id)[:8]}" if row.batch_id else None,
+            product_id=row.product_id,
+            product_code=row.product_code,
+            product_name=row.product_name,
+            operation_name=str(row.operation_name or "Операция"),
+            task_role=row.task_role,
+            equipment_id=row.equipment_id,
+            equipment_name=str(row.equipment_name or "Unknown"),
+            linked_equipment_id=row.linked_equipment_id,
+            linked_equipment_name=row.linked_equipment_name,
+            planned_start=row.planned_start,
+            planned_end=row.planned_end,
+            actual_start=row.actual_start,
+            actual_end=row.actual_end,
+            actual_qty=float(row.actual_qty) if row.actual_qty else None,
+            material_load_at=row.material_load_at,
+            status=row.status or "PLANNED",
+            duration_minutes=int((row.planned_end - row.planned_start).total_seconds() / 60) if row.planned_start and row.planned_end else 0,
+            is_carryover=True,
+        )
+        for row in result.fetchall()
+    ]
+
+
+# ==========================================
+# ВНЕСЕНИЕ ФАКТА
+# ==========================================
+
+@router.post("/task/{task_id}/fact", response_model=TaskFactResponse)
+async def update_task_fact(
+        task_id: UUID,
+        fact: TaskFactRequest,
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
+):
+    """Мастер вносит факт выполнения задания."""
+    await _check_shift_planning_enabled(db, org_id)
+
+    # Проверяем, что задача существует
+    check_result = await db.execute(
+        text("""
+            SELECT id, status FROM scheduled_task
+            WHERE id = :task_id AND organization_id = :org_id
+        """),
+        {"task_id": task_id, "org_id": org_id},
+    )
+    check_row = check_result.fetchone()
+    if not check_row:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+
+    # Валидация status
+    allowed_statuses = {"PLANNED", "IN_PROGRESS", "DONE", "CANCELLED"}
+    if fact.status and fact.status not in allowed_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Недопустимый status: {fact.status}. Допустимые: {allowed_statuses}",
+        )
+
+    # Собираем set-выражение
+    update_fields = []
+    params = {"task_id": task_id, "org_id": org_id}
+
+    if fact.actual_start is not None:
+        update_fields.append("actual_start = :actual_start")
+        params["actual_start"] = fact.actual_start
+    if fact.actual_end is not None:
+        update_fields.append("actual_end = :actual_end")
+        params["actual_end"] = fact.actual_end
+    if fact.actual_qty is not None:
+        update_fields.append("actual_qty = :actual_qty")
+        params["actual_qty"] = fact.actual_qty
+    if fact.material_load_at is not None:
+        update_fields.append("material_load_at = :material_load_at")
+        params["material_load_at"] = fact.material_load_at
+    if fact.status is not None:
+        update_fields.append("status = :status")
+        params["status"] = fact.status
+
+    # Автопереход в IN_PROGRESS, если мастер внёс actual_start
+    if fact.actual_start is not None and not fact.status and check_row.status == "PLANNED":
+        update_fields.append("status = :auto_status")
+        params["auto_status"] = "IN_PROGRESS"
+
+    # Автопереход в DONE, если мастер внёс actual_end
+    if fact.actual_end is not None and not fact.status:
+        update_fields.append("status = :auto_done")
+        params["auto_done"] = "DONE"
+
+    if not update_fields:
+        raise HTTPException(status_code=400, detail="Нет данных для обновления")
+
+    query = text(f"""
+        UPDATE scheduled_task
+        SET {', '.join(update_fields)}
+        WHERE id = :task_id AND organization_id = :org_id
+        RETURNING id, status, actual_start, actual_end, actual_qty, material_load_at
+    """)
+
+    result = await db.execute(query, params)
+    row = result.fetchone()
+    if not row:
+        raise HTTPException(status_code=500, detail="Не удалось обновить задачу")
+
+    await db.commit()
+
+    log_with_context(
+        logger, logging.INFO,
+        f"Мастер внёс факт по задаче {str(task_id)[:8]}: "
+        f"status={row.status}, actual_qty={row.actual_qty}",
+        stage="shift_fact", org_id=str(org_id),
+    )
+
+    return TaskFactResponse(
+        id=row.id,
+        status=row.status,
+        actual_start=row.actual_start,
+        actual_end=row.actual_end,
+        actual_qty=float(row.actual_qty) if row.actual_qty else None,
+        material_load_at=row.material_load_at,
+        message="Факт успешно внесён",
+    )

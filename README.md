@@ -1,11 +1,8 @@
-# 📄 ФАЙЛ: `README.md`
-
-```markdown
 # 🏭 APS Production Scheduler
 
 **Система автоматического планирования производства на базе OR-Tools CP-SAT**
 
-Версия: **1.3.0** (Итерации 0–2 завершены)
+Версия: **1.4.0** (Итерации 0–3 завершены)
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -17,22 +14,19 @@
 
 ## ⚡ TL;DR — запуск за 60 секунд
 
-```powershell
-# Из корня проекта (household-aps\):
-.\quickstart.ps1
-```
+Из корня проекта (household-aps):
+
+    .\quickstart.ps1
 
 Скрипт сделает всё: поднимет PostgreSQL в Docker, применит схему и демо-данные, поставит Python/npm-зависимости, создаст админа.
 
 После — в двух терминалах:
 
-```powershell
-# Терминал 1 (Backend)
-cd backend; .\.venv\Scripts\Activate.ps1; python run_server.py
+    Терминал 1 (Backend):
+    cd backend; .\.venv\Scripts\Activate.ps1; python run_server.py
 
-# Терминал 2 (Frontend)
-cd frontend; npm run dev
-```
+    Терминал 2 (Frontend):
+    cd frontend; npm run dev
 
 **Открыть:** http://localhost:5173  
 **Логин:** `admin@household.ru` / `admin123`
@@ -52,6 +46,7 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 - **Календаря простоев** (выходные, плановые ремонты, аварии)
 - **Ресурсных ограничений** (аппаратчики, бойлер, зона охлаждения, лаборатория)
 - **Остатков сырья** и графика поставок
+- **Сменного планирования** (одна смена в день, 08:00–20:00)
 - **Мульти-тенантности** и **версионирования планов** (снапшоты справочников)
 
 ## 🎯 Ключевые возможности
@@ -76,14 +71,27 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 ### Итерация 2 — Материальные ограничения и Advisor
 - ✅ Модуль `materials.py` — расчёт потребности в сырье по всем партиям
 - ✅ Модуль `advisor.py` — 4 типа подсказок:
-    - 🔴 **MATERIAL_SHORTAGE** — дефицит сырья
-    - 🟡 **UNDERLOAD** — неполная загрузка реактора
-    - 🔵 **ROUTE_MISMATCH** — VIA_TANK без танка
-    - 🔵 **EQUIPMENT_GAP** — простои оборудования
+  - 🔴 **MATERIAL_SHORTAGE** — дефицит сырья
+  - 🟡 **UNDERLOAD** — неполная загрузка реактора
+  - 🔵 **ROUTE_MISMATCH** — VIA_TANK без танка
+  - 🔵 **EQUIPMENT_GAP** — простои оборудования
 - ✅ Модуль `feasibility.py` — оценка исполнимости плана
 - ✅ API: `GET /api/v1/schedule/advice`, `POST /api/v1/schedule/feasibility`
 - ✅ UI: панель Advisor с фильтрацией по severity
 - ✅ **Обнаружение дефицита отдушки (150 кг) и соли (1500 кг)** — ключевые кейсы ТЗ
+
+### Итерация 3 — Сменное планирование и РМ мастера
+- ✅ Таблица `shift` — смены (одна в день, 08:00–20:00)
+- ✅ Поля в `scheduled_task`: `shift_id`, `actual_qty`, `material_load_at`, `status`
+- ✅ Модуль `shifts.py` — работа со сменами
+- ✅ API `shift.py` — 5 эндпоинтов
+- ✅ Frontend `ShiftPage.tsx` — **рабочее место мастера**:
+  - Задания смены по рабочим центрам
+  - **Переходящие** задачи из предыдущей смены
+  - Отметка загрузки сырья в реактор
+  - Внесение факта (start/end/qty/status)
+- ✅ Пункт меню **«Мастер смены»**
+- ✅ Все 282 задачи привязаны к сменам
 
 ### Общие возможности
 - ✅ JWT авторизация и ролевая модель (ADMIN, PLANNER, MASTER, LAB, VIEWER)
@@ -127,65 +135,68 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 
 ## 📁 Структура проекта
 
-```text
-household-aps/
-├── quickstart.ps1                   # ⚡ Скрипт быстрого старта
-├── README.md
-├── backend/
-│   ├── app/
-│   │   ├── api/v1/                  # REST API endpoints
-│   │   │   ├── auth.py
-│   │   │   ├── equipment.py
-│   │   │   ├── products.py
-│   │   │   ├── materials.py
-│   │   │   ├── recipes.py
-│   │   │   ├── operations.py
-│   │   │   ├── orders.py
-│   │   │   ├── schedule.py
-│   │   │   ├── gantt.py
-│   │   │   ├── calendar.py
-│   │   │   ├── advisor.py           # Итерация 2
-│   │   │   └── models.py
-│   │   ├── auth/                    # JWT + RBAC
-│   │   ├── core/                    # Конфигурация
-│   │   ├── scheduler/               # Ядро планировщика
-│   │   │   ├── core.py              # Оркестратор планирования
-│   │   │   ├── data_loader.py       # Загрузка данных из БД
-│   │   │   ├── routing.py           # Цепочки операций (Итерация 1)
-│   │   │   ├── materials.py         # Потребность в сырье (Итерация 2)
-│   │   │   ├── advisor.py           # Подсказки (Итерация 2)
-│   │   │   ├── feasibility.py       # Оценка исполнимости (Итерация 2)
-│   │   │   ├── saver.py             # Сохранение плана
-│   │   │   ├── feature_flags.py     # Feature-флаги
-│   │   │   ├── logging_config.py    # Structured logging
-│   │   │   ├── duration/            # Стратегии длительностей
-│   │   │   └── constraints/         # Плагины ограничений
-│   │   └── main.py
-│   ├── .env
-│   ├── init_schema.sql              # Полная схема БД (v1.3.0)
-│   ├── seed_demo.py                 # Python-скрипт демо-данных
-│   ├── seed_demo_data.sql           # SQL-версия демо-данных (v1.3.0)
-│   ├── migrations/ — История миграций БД
-    │   ├── add_history_0_2.sql — Склейка Итераций 0–2
-    │   └── README.md — Описание миграций
-│   ├── scripts/create_admin_user.py
-│   ├── requirements.txt
-│   ├── requirements-dev.txt
-│   ├── pyproject.toml
-│   └── run_server.py
-├── frontend/
-│   ├── src/
-│   │   ├── components/layout/       # MainLayout
-│   │   ├── context/                 # AuthContext, PlanContext
-│   │   ├── pages/                   # Login, Equipment, Products, Materials, Recipes, Operations, Orders, Schedule, Gantt
-│   │   ├── services/api.ts          # Axios с интерсепторами
-│   │   ├── types/                   # TypeScript интерфейсы
-│   │   ├── App.tsx                  # Роутинг
-│   │   └── main.tsx
-│   ├── package.json
-│   └── vite.config.ts
-└── README.md
-```
+- **quickstart.ps1** — ⚡ Скрипт быстрого старта
+- **README.md**
+- **backend/**
+  - **app/**
+    - **api/v1/** — REST API endpoints
+      - auth.py
+      - equipment.py
+      - products.py
+      - materials.py
+      - recipes.py
+      - operations.py
+      - orders.py
+      - schedule.py
+      - gantt.py
+      - calendar.py
+      - advisor.py (Итерация 2)
+      - shift.py (Итерация 3)
+      - shift_models.py (Итерация 3)
+      - models.py
+    - **auth/** — JWT + RBAC
+    - **core/** — Конфигурация
+    - **scheduler/** — Ядро планировщика
+      - core.py — Оркестратор планирования
+      - data_loader.py — Загрузка данных из БД
+      - routing.py — Цепочки операций (Итерация 1)
+      - materials.py — Потребность в сырье (Итерация 2)
+      - advisor.py — Подсказки (Итерация 2)
+      - feasibility.py — Оценка исполнимости (Итерация 2)
+      - shifts.py — Смены (Итерация 3)
+      - saver.py — Сохранение плана
+      - feature_flags.py — Feature-флаги
+      - logging_config.py — Structured logging
+      - **duration/** — Стратегии длительностей
+      - **constraints/** — Плагины ограничений
+    - main.py
+  - **migrations/** — История миграций
+    - add_history_0_2.sql — Склейка Итераций 0–2
+    - add_06.sql — Сменное планирование
+    - add_06b.sql — Фикс снапшотов
+    - fix_shift_names.sql — Фикс кириллицы
+    - README.md — Описание миграций
+  - .env
+  - init_schema.sql — Полная схема БД (v1.4.0)
+  - seed_demo.py — Python-скрипт демо-данных
+  - seed_demo_data.sql — SQL-версия демо-данных (v1.4.0)
+  - **scripts/**create_admin_user.py
+  - requirements.txt
+  - requirements-dev.txt
+  - pyproject.toml
+  - run_server.py
+- **frontend/**
+  - **src/**
+    - **components/layout/** — MainLayout
+    - **context/** — AuthContext, PlanContext
+    - **pages/** — Login, Equipment, Products, Materials, Recipes, Operations, Orders, Schedule, Gantt, Shift
+    - **services/**api.ts — Axios с интерсепторами
+    - **types/** — TypeScript интерфейсы
+    - App.tsx — Роутинг
+    - main.tsx
+  - package.json
+  - vite.config.ts
+- **README.md**
 
 ## 🚀 Быстрый старт
 
@@ -193,30 +204,24 @@ household-aps/
 
 Из корня проекта:
 
-```powershell
-.\quickstart.ps1
-```
+    .\quickstart.ps1
 
 Скрипт делает всё:
 1. Поднимает PostgreSQL в контейнере `aps_postgres`
-2. Применяет `init_schema.sql` + `seed_demo_data.sql`
+2. Применяет `init_schema.sql` + `seed_demo_data.sql` (через `docker cp` + `psql -f`)
 3. Создаёт `.venv` и ставит Python-зависимости
 4. Создаёт администратора `admin@household.ru`
 5. Устанавливает npm-зависимости
 
 **Флаги:**
-- `-SkipDb` — пропустить PostgreSQL (уже запущен)
+- `-SkipDb` — пропустить PostgreSQL
 - `-SkipSeed` — пропустить схему и демо-данные
 - `-SkipFrontend` — пропустить npm-зависимости
 - `-Help` — справка
 
 **Если PowerShell блокирует запуск скриптов:**
 
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-```
-
-Затем — запустить backend и frontend в двух терминалах (см. ниже).
+    Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 
 ### Ручной (если нужен контроль)
 
@@ -227,75 +232,61 @@ Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 
 #### Шаг 1: Запуск PostgreSQL
 
-```bash
-docker run --name aps_postgres \
-  -e POSTGRES_USER=aps \
-  -e POSTGRES_PASSWORD=aps_secret \
-  -e POSTGRES_DB=household \
-  -p 5432:5432 \
-  -d postgres:16
-```
+    docker run --name aps_postgres -e POSTGRES_USER=aps -e POSTGRES_PASSWORD=aps_secret -e POSTGRES_DB=household -p 5432:5432 -d postgres:16
 
 #### Шаг 2: Инициализация схемы и демо-данных
 
-```powershell
-Get-Content -Raw backend\init_schema.sql    | docker exec -i aps_postgres psql -U aps -d household
-Get-Content -Raw backend\seed_demo_data.sql | docker exec -i aps_postgres psql -U aps -d household
-```
+**⚠️ ВАЖНО:** применять SQL-файлы через `docker cp` + `psql -f`, а не через `Get-Content | docker exec` — иначе PowerShell испортит кириллицу в именах смен.
+
+    # Копируем файлы в контейнер (сохраняет UTF-8)
+    docker cp backend\init_schema.sql    aps_postgres:/tmp/init_schema.sql
+    docker cp backend\seed_demo_data.sql aps_postgres:/tmp/seed_demo_data.sql
+
+    # Применяем
+    docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema.sql
+    docker exec -i aps_postgres psql -U aps -d household -f /tmp/seed_demo_data.sql
 
 **Или через Python-скрипт:**
 
-```powershell
-cd backend
-python seed_demo.py
-```
+    cd backend
+    python seed_demo.py
 
 #### Шаг 3: Создание администратора
 
-```powershell
-cd backend
-python -m scripts.create_admin_user
-```
+    cd backend
+    python -m scripts.create_admin_user
 
 #### Шаг 4: Запуск Backend
 
-```powershell
-cd backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt -r requirements-dev.txt
-python run_server.py
-```
+    cd backend
+    python -m venv .venv
+    .\.venv\Scripts\Activate.ps1
+    pip install -r requirements.txt -r requirements-dev.txt
+    python run_server.py
 
 *Swagger UI: http://localhost:8000/docs*
 
 #### Шаг 5: Запуск Frontend
 
-```powershell
-cd frontend
-npm install
-npm run dev
-```
+    cd frontend
+    npm install
+    npm run dev
 
 *Приложение: http://localhost:5173*  
 *Демо-доступ: `admin@household.ru` / `admin123`*
 
 ### Запуск в двух терминалах
 
-После `quickstart.ps1` (или ручной настройки):
-
 **Терминал 1 — Backend:**
-```powershell
-cd backend
-.\.venv\Scripts\Activate.ps1
-python run_server.py
-```
+
+    cd backend
+    .\.venv\Scripts\Activate.ps1
+    python run_server.py
 
 **Терминал 2 — Frontend:**
-```powershell
-cd frontend
-npm run dev
-```
+
+    cd frontend
+    npm run dev
 
 **Открыть:**
 - Frontend: http://localhost:5173
@@ -333,6 +324,13 @@ npm run dev
 - `GET /api/v1/schedule/advice` — подсказки
 - `POST /api/v1/schedule/feasibility` — оценка исполнимости
 
+**Сменное планирование (Итерация 3):**
+- `GET /api/v1/shift/list` — список смен
+- `GET /api/v1/shift/by-date/{date}` — смена на дату
+- `GET /api/v1/shift/{shift_id}/tasks` — задания смены
+- `GET /api/v1/shift/{shift_id}/carryover` — переходящие задания
+- `POST /api/v1/shift/task/{task_id}/fact` — внести факт
+
 **Гант:**
 - `GET /api/v1/gantt/` — данные диаграммы
 - `GET /api/v1/gantt/export` — экспорт в Excel
@@ -351,14 +349,12 @@ npm run dev
 ### Цепочки рабочих центров (Итерация 1)
 
 **DIRECT:** реактор → линия
-```
-REACTOR_1 → LINE_1
-```
+
+    REACTOR_1 → LINE_1
 
 **VIA_TANK:** реактор → накопительная ёмкость → линия
-```
-REACTOR_1 → TANK_1 → LINE_1
-```
+
+    REACTOR_1 → TANK_1 → LINE_1
 
 **Особенности:**
 - Операции слива занимают **два ресурса** одновременно
@@ -369,9 +365,14 @@ REACTOR_1 → TANK_1 → LINE_1
 - **PF** (полуфабрикат) — `route_type`: DIRECT | VIA_TANK
 - **GP** (готовая продукция) — привязана к ПФ через `parent_pf_id`
 
-### Advisor (Итерация 2)
+### Смены (Итерация 3)
 
-Модуль `advisor.py` выдаёт подсказки:
+- **Одна смена в день:** 08:00–20:00 (12 часов).
+- **Выходные** (сб, вс) — смены создаются, `is_working = false`.
+- Задачи автоматически привязываются к смене по `planned_start` (с fallback на ближайшую).
+- **Переходящие** задачи — не завершённые в предыдущей смене.
+
+### Advisor (Итерация 2)
 
 | Код | Severity | Описание |
 |-----|----------|----------|
@@ -387,7 +388,7 @@ REACTOR_1 → TANK_1 → LINE_1
 | enable_tank_routing | ✅ ON | 1 |
 | enable_advisor | ✅ ON | 2 |
 | enable_material_constraints | ✅ ON | 2 |
-| enable_shift_planning | ❌ OFF | 3 |
+| enable_shift_planning | ✅ ON | 3 |
 | enable_rescheduling | ❌ OFF | 4 |
 | enable_lab_blocking | ❌ OFF | 5 |
 | enable_operator_pools | ❌ OFF | 6 |
@@ -397,12 +398,10 @@ REACTOR_1 → TANK_1 → LINE_1
 
 ## 🧪 Тестирование
 
-```powershell
-cd backend
-pytest tests/ -v
-```
+    cd backend
+    pytest tests/ -v
 
-**Текущее состояние:** 99 passed.
+**Текущее состояние:** 115 passed.
 
 | Файл | Тестов | Что проверяет |
 |------|--------|---------------|
@@ -410,6 +409,7 @@ pytest tests/ -v
 | `test_materials.py` | 11 | Расчёт потребности в сырье |
 | `test_advisor.py` | 9 | Подсказки Advisor |
 | `test_routing.py` | 11 | Цепочки операций |
+| `test_shifts.py` | 16 | Смены и API смен |
 | `test_dependencies.py` | 9 | FastAPI dependencies |
 | `test_auth_models.py` | 9 | Pydantic-модели авторизации |
 | `test_security.py` | 5 | JWT и bcrypt |
@@ -418,55 +418,40 @@ pytest tests/ -v
 ## 🔧 Полезные команды
 
 ### Проверить статус PostgreSQL
-```powershell
-docker ps --filter "name=aps_postgres"
-```
+
+    docker ps --filter "name=aps_postgres"
 
 ### Подключиться к БД
-```powershell
-docker exec -it aps_postgres psql -U aps -d household
-```
+
+    docker exec -it aps_postgres psql -U aps -d household
 
 ### Пересоздать БД с нуля
-```powershell
-docker exec aps_postgres psql -U aps -d household -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
-Get-Content -Raw backend\init_schema.sql    | docker exec -i aps_postgres psql -U aps -d household
-Get-Content -Raw backend\seed_demo_data.sql | docker exec -i aps_postgres psql -U aps -d household
-```
+
+    docker exec aps_postgres psql -U aps -d household -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+    docker cp backend\init_schema.sql    aps_postgres:/tmp/init_schema.sql
+    docker cp backend\seed_demo_data.sql aps_postgres:/tmp/seed_demo_data.sql
+    docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema.sql
+    docker exec -i aps_postgres psql -U aps -d household -f /tmp/seed_demo_data.sql
+
+### Применить SQL-миграцию (правильный способ)
+
+    docker cp backend\migrations\add_07.sql aps_postgres:/tmp/add_07.sql
+    docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_07.sql
 
 ### Остановить/запустить PostgreSQL
-```powershell
-docker stop aps_postgres
-docker start aps_postgres
-```
+
+    docker stop aps_postgres
+    docker start aps_postgres
 
 ### Полная очистка (снести контейнер и БД)
-```powershell
-docker rm -f aps_postgres
-```
+
+    docker rm -f aps_postgres
 
 ### Экспорт данных из БД
-```powershell
-docker exec aps_postgres pg_dump -U aps household > backup.sql
-```
 
-## 🗺️ Roadmap
+    docker exec aps_postgres pg_dump -U aps household > backup.sql
 
-| # | Итерация | Длит. | Приоритет | Статус |
-|---|----------|-------|-----------|--------|
-| 0 | Подготовка | 4 дня | 🔥 | ✅ |
-| 1 | Цепочки рабочих центров | 2 нед | 🔥🔥🔥 | ✅ |
-| 2 | Материальные ограничения и Advisor | 2 нед | 🔥🔥🔥 | ✅ |
-| 3 | Сменное планирование и РМ мастера | 2 нед | 🔥🔥🔥 | 📋 Next |
-| 4 | Перепланирование | 2 нед | 🔥🔥🔥 | ⏳ |
-| 5 | Лаборатория и блокировки | 1.5 нед | 🔥🔥 | ⏳ |
-| 6 | Люди как ресурс | 2 нед | 🔥🔥 | ⏳ |
-| 7 | Охлаждение с деградацией | 1.5 нед | 🔥 | ⏳ |
-| 8 | ЧЗ и интеграции | 2 нед | 🔥 | ⏳ |
-| 9 | Рефакторинг и качество | 2 нед | 🟡 | ⏳ |
-| 10 | Multi-objective и what-if | 2 нед | 🟡 | ⏳ |
-
-## 🐛 Известные ограничения
+## ⚠️ Известные ограничения
 
 1. **Слив на линию** добавляется в конец цепочки (после замыва). Семантически неверно (по ТЗ замыв после слива), но структурно работает: NoOverlap не даёт им пересечься. Исправим в Итерации 4 (перепланирование).
 
@@ -476,6 +461,28 @@ docker exec aps_postgres pg_dump -U aps household > backup.sql
 
 4. **Крем-мыло 5л (Р2)** имеет `route_type=VIA_TANK`, но Р2 не связан с танком. Слив идёт DIRECT. Advisor подсвечивает это как ROUTE_MISMATCH.
 
+5. **Кириллица в SQL-файлах:** применять через `docker cp` + `psql -f`, а не через `Get-Content | docker exec` (PowerShell портит UTF-8).
+
+## 🗺️ Roadmap
+
+| # | Итерация | Длит. | Приоритет | Статус |
+|---|----------|-------|-----------|--------|
+| 0 | Подготовка | 4 дня | 🔥 | ✅ |
+| 1 | Цепочки рабочих центров | 2 нед | 🔥🔥🔥 | ✅ |
+| 2 | Материальные ограничения и Advisor | 2 нед | 🔥🔥🔥 | ✅ |
+| 3 | Сменное планирование и РМ мастера | 2 нед | 🔥🔥🔥 | ✅ |
+| 4 | Перепланирование | 2 нед | 🔥🔥🔥 | 📋 Next |
+| 5 | Лаборатория и блокировки | 1.5 нед | 🔥🔥 | ⏳ |
+| 6 | Люди как ресурс | 2 нед | 🔥🔥 | ⏳ |
+| 7 | Охлаждение с деградацией | 1.5 нед | 🔥 | ⏳ |
+| 8 | ЧЗ и интеграции | 2 нед | 🔥 | ⏳ |
+| 9 | Рефакторинг и качество | 2 нед | 🟡 | ⏳ |
+| 10 | Multi-objective и what-if | 2 нед | 🟡 | ⏳ |
+
 ## 📄 Лицензия
 
 Внутренний проект.
+
+---
+
+**Итерации 0, 1, 2, 3 завершены. Готовы к Итерации 4 — Перепланирование.**

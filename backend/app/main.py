@@ -13,12 +13,13 @@ from app.api.v1.calendar import router as calendar_router
 from app.api.v1.materials import router as materials_router
 from app.api.v1.recipes import router as recipes_router
 from app.api.v1.orders import router as orders_router
-from app.api.v1.advisor import router as advisor_router  # NEW
+from app.api.v1.advisor import router as advisor_router
+from app.api.v1.shift import router as shift_router  # NEW
 
 app = FastAPI(
     title="APS Production Scheduler",
     description="REST API для построения оптимальных планов производства с использованием OR-Tools CP-SAT.",
-    version="1.3.0",
+    version="1.4.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -41,14 +42,15 @@ app.include_router(calendar_router)
 app.include_router(materials_router)
 app.include_router(recipes_router)
 app.include_router(orders_router)
-app.include_router(advisor_router)  # NEW
+app.include_router(advisor_router)
+app.include_router(shift_router)  # NEW
 
 
 @app.get("/health", tags=["Система"])
 async def health_check():
     return {
         "status": "healthy",
-        "version": "1.3.0",
+        "version": "1.4.0",
         "timestamp": datetime.now().isoformat(),
     }
 

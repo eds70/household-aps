@@ -2,7 +2,7 @@
 -- APS СИСТЕМА: ПОЛНАЯ СХЕМА БД
 -- PostgreSQL 16+
 -- Для производства бытовой химии
--- Версия: 1.3.0 (после Итераций 0-2)
+-- Версия: 1.4.0 (после Итераций 0-3)
 -- ==========================================
 -- Включает:
 --   - Мульти-тенантность и авторизацию
@@ -11,14 +11,10 @@
 --   - Рецептуры и материалы
 --   - Технологические карты с operator_pool
 --   - Цепочки рабочих центров (linked_equipment_id, task_role)
+--   - Сменное планирование (shift, shift_id, actual_*, status)
 --   - Версионирование планов через snapshots
 --   - Feature-флаги для поэтапного внедрения
 -- ==========================================
-
--- ⚠️ ВАЖНО: Этот файл — АКТУАЛЬНАЯ СХЕМА на текущую версию (v1.3.0).
--- Применяется ТОЛЬКО на пустую БД.
--- Для апгрейда существующих БД см. цепочку migrations/add_*.sql
--- НЕ ПРИМЕНЯТЬ повторно на существующую БД — упадёт с "relation already exists".
 
 -- ==========================================
 -- 1. МУЛЬТИ-ТЕНАНТНОСТЬ И АВТОРИЗАЦИЯ
@@ -67,7 +63,7 @@ CREATE INDEX idx_org_settings_org_id ON organization_settings(organization_id);
 CREATE TABLE equipment (
                            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                            organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
-                           code VARCHAR(50),                    -- REACTOR_1, TANK_1, LINE_1, BOILER (с add_04)
+                           code VARCHAR(50),                    -- REACTOR_1, TANK_1, LINE_1, BOILER
                            name VARCHAR(100) NOT NULL,
                            type VARCHAR(30) NOT NULL,           -- REACTOR, TANK, FILLING_LINE, BOILER, MANUAL_STATION
                            volume_kg NUMERIC(10,2),
@@ -80,7 +76,7 @@ CREATE TABLE equipment (
                            CONSTRAINT equipment_org_code_unique UNIQUE (organization_id, code)
 );
 COMMENT ON TABLE equipment IS 'Оборудование производственной линии.';
-COMMENT ON COLUMN equipment.code IS 'Уникальный код оборудования внутри организации (REACTOR_1, TANK_1, LINE_1, BOILER)';
+COMMENT ON COLUMN equipment.code IS 'Уникальный код оборудования (REACTOR_1, TANK_1, LINE_1, BOILER)';
 COMMENT ON COLUMN equipment.type IS 'REACTOR | TANK | FILLING_LINE | BOILER | MANUAL_STATION';
 
 CREATE INDEX idx_equipment_org ON equipment(organization_id);
@@ -155,7 +151,7 @@ CREATE TABLE product (
                          bottle_volume_l NUMERIC(5,2),
                          fill_speed_per_min NUMERIC(8,2),
                          parent_pf_id UUID REFERENCES product(id),
-                         route_type VARCHAR(20) DEFAULT 'DIRECT',  -- DIRECT | VIA_TANK (с add_03)
+                         route_type VARCHAR(20) DEFAULT 'DIRECT',  -- DIRECT | VIA_TANK
                          comment TEXT,
                          UNIQUE (organization_id, code)
 );
@@ -209,11 +205,11 @@ CREATE TABLE operation_template (
                                     needs_operator BOOLEAN DEFAULT FALSE,
                                     needs_lab BOOLEAN DEFAULT FALSE,
                                     duration_formula VARCHAR(200),       -- water_loading, heating, mixing, cooling, pumping, washing
-                                    operator_pool VARCHAR(50),           -- REACTOR_OPERATOR | LINE_OPERATOR (с add_03)
+                                    operator_pool VARCHAR(50),           -- REACTOR_OPERATOR | LINE_OPERATOR
                                     comment TEXT
 );
 COMMENT ON TABLE operation_template IS 'Технологическая карта: этапы производства полуфабриката.';
-COMMENT ON COLUMN operation_template.operator_pool IS 'Пул операторов: REACTOR_OPERATOR (аппаратчики) или LINE_OPERATOR (операторы линий)';
+COMMENT ON COLUMN operation_template.operator_pool IS 'Пул операторов: REACTOR_OPERATOR или LINE_OPERATOR';
 
 CREATE TABLE setup_matrix (
                               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -241,7 +237,25 @@ CREATE TABLE calendar_event (
 COMMENT ON TABLE calendar_event IS 'Календарь простоев оборудования.';
 
 -- ==========================================
--- 7. ПЛАНИРОВАНИЕ: ЗАКАЗЫ, ПАРТИИ, ГАНТ
+-- 7. СМЕНЫ (Итерация 3)
+-- ==========================================
+CREATE TABLE shift (
+                       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                       organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+                       name VARCHAR(50) NOT NULL,
+                       starts_at TIMESTAMPTZ NOT NULL,
+                       ends_at TIMESTAMPTZ NOT NULL,
+                       is_working BOOLEAN DEFAULT TRUE,
+                       comment TEXT,
+                       CONSTRAINT chk_shift_dates CHECK (ends_at > starts_at)
+);
+COMMENT ON TABLE shift IS 'Производственные смены (одна в день, 08:00-20:00)';
+
+CREATE INDEX idx_shift_org_start ON shift(organization_id, starts_at);
+CREATE INDEX idx_shift_org_date ON shift(organization_id, starts_at, ends_at);
+
+-- ==========================================
+-- 8. ПЛАНИРОВАНИЕ: ЗАКАЗЫ, ПАРТИИ, ГАНТ
 -- ==========================================
 CREATE TABLE production_order (
                                   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -293,22 +307,31 @@ CREATE TABLE scheduled_task (
                                 batch_id UUID REFERENCES batch(id) ON DELETE CASCADE,
                                 operation_template_id UUID NOT NULL REFERENCES operation_template(id),
                                 equipment_id UUID NOT NULL REFERENCES equipment(id),
-                                linked_equipment_id UUID REFERENCES equipment(id),   -- второй ресурс (с add_03)
+                                linked_equipment_id UUID REFERENCES equipment(id),   -- второй ресурс (Итерация 1)
                                 resource_pool_id UUID REFERENCES resource_pool(id),
-                                task_role VARCHAR(30),               -- REACTOR_OP | TANK_TRANSFER | LINE_FILL | WASH | SETUP (с add_03)
+                                task_role VARCHAR(30),               -- REACTOR_OP | TANK_TRANSFER | LINE_FILL | WASH | SETUP
+                                shift_id UUID REFERENCES shift(id) ON DELETE SET NULL,  -- смена (Итерация 3)
                                 planned_start TIMESTAMPTZ NOT NULL,
                                 planned_end TIMESTAMPTZ NOT NULL,
                                 actual_start TIMESTAMPTZ,
                                 actual_end TIMESTAMPTZ,
+                                actual_qty NUMERIC(12,3),            -- факт. количество (Итерация 3)
+                                material_load_at TIMESTAMPTZ,        -- загрузка сырья (Итерация 3)
+                                status VARCHAR(20) DEFAULT 'PLANNED',-- PLANNED | IN_PROGRESS | DONE | CANCELLED
                                 is_pinned BOOLEAN DEFAULT FALSE,
                                 comment TEXT
 );
 COMMENT ON TABLE scheduled_task IS 'Задача на диаграмме Ганта.';
 COMMENT ON COLUMN scheduled_task.linked_equipment_id IS 'Второй ресурс задачи (слив занимает реактор+линию, перекачка — реактор+танк)';
 COMMENT ON COLUMN scheduled_task.task_role IS 'Роль задачи в цепочке: REACTOR_OP, TANK_TRANSFER, LINE_FILL, WASH, SETUP';
+COMMENT ON COLUMN scheduled_task.shift_id IS 'Смена, к которой относится задача';
+COMMENT ON COLUMN scheduled_task.actual_qty IS 'Фактическое количество (для слива — бутылок)';
+COMMENT ON COLUMN scheduled_task.material_load_at IS 'Когда мастер отметил загрузку сырья в реактор';
+COMMENT ON COLUMN scheduled_task.status IS 'PLANNED | IN_PROGRESS | DONE | CANCELLED';
 
 CREATE INDEX idx_scheduled_task_org ON scheduled_task(organization_id);
 CREATE INDEX idx_scheduled_task_linked_eq ON scheduled_task(linked_equipment_id) WHERE linked_equipment_id IS NOT NULL;
+CREATE INDEX idx_scheduled_task_shift ON scheduled_task(shift_id) WHERE shift_id IS NOT NULL;
 CREATE INDEX idx_task_equipment_time ON scheduled_task USING GIST (
     organization_id,
     equipment_id,
@@ -316,12 +339,12 @@ CREATE INDEX idx_task_equipment_time ON scheduled_task USING GIST (
     );
 
 -- ==========================================
--- 8. SNAPSHOT-ТАБЛИЦЫ ДЛЯ ВЕРСИОНИРОВАНИЯ
+-- 9. SNAPSHOT-ТАБЛИЦЫ ДЛЯ ВЕРСИОНИРОВАНИЯ
 -- ==========================================
 CREATE TABLE equipment_snapshot (
                                     id UUID NOT NULL,
                                     organization_id UUID NOT NULL,
-                                    code VARCHAR(50),
+                                    code VARCHAR(50),                    -- Итерация 3
                                     name VARCHAR(100) NOT NULL,
                                     type VARCHAR(30) NOT NULL,
                                     volume_kg NUMERIC(10,2),
@@ -343,7 +366,7 @@ CREATE TABLE product_snapshot (
                                   bottle_volume_l NUMERIC(5,2),
                                   fill_speed_per_min NUMERIC(8,2),
                                   parent_pf_id UUID,
-                                  route_type VARCHAR(20),
+                                  route_type VARCHAR(20),              -- Итерация 3
                                   version_id UUID NOT NULL REFERENCES schedule_version(id) ON DELETE CASCADE,
                                   PRIMARY KEY (id, version_id)
 );
@@ -363,7 +386,7 @@ CREATE TABLE operation_snapshot (
                                     needs_operator BOOLEAN,
                                     needs_lab BOOLEAN,
                                     duration_formula VARCHAR(200),
-                                    operator_pool VARCHAR(50),
+                                    operator_pool VARCHAR(50),           -- Итерация 3
                                     comment TEXT,
                                     version_id UUID NOT NULL REFERENCES schedule_version(id) ON DELETE CASCADE,
                                     PRIMARY KEY (id, version_id)
@@ -387,10 +410,12 @@ CREATE INDEX idx_oper_snap_ver ON operation_snapshot(version_id);
 CREATE INDEX idx_cal_snap_ver ON calendar_snapshot(version_id);
 
 -- ==========================================
--- 9. ДЕМО-НАСТРОЙКИ ОРГАНИЗАЦИИ
+-- 10. НАСТРОЙКИ ОРГАНИЗАЦИИ
 -- ==========================================
--- Базовые параметры (добавлены в add_01.sql)
--- Feature-флаги (добавлены в add_02.sql, активированы в add_03/add_05)
+-- Базовые параметры + feature-флаги.
+-- Итерации 0-3 завершены. Активны:
+--   enable_tank_routing, enable_advisor,
+--   enable_material_constraints, enable_shift_planning.
 -- ==========================================
 
 INSERT INTO organization_settings (organization_id, setting_key, setting_value, description) VALUES
@@ -410,8 +435,10 @@ INSERT INTO organization_settings (organization_id, setting_key, setting_value, 
                                                                                                  ('00000000-0000-0000-0000-000000000001', 'enable_advisor',             'true',                     'Подсказки планировщика (Итерация 2)'),
                                                                                                  ('00000000-0000-0000-0000-000000000001', 'enable_material_constraints','true',                     'Учёт остатков сырья (Итерация 2)'),
 
+                                                                                                 -- Feature-флаги Итерации 3 (ВКЛЮЧЕНО)
+                                                                                                 ('00000000-0000-0000-0000-000000000001', 'enable_shift_planning',      'true',                     'Посменное планирование и РМ мастера (Итерация 3)'),
+
                                                                                                  -- Feature-флаги будущих итераций (ВЫКЛЮЧЕНО)
-                                                                                                 ('00000000-0000-0000-0000-000000000001', 'enable_shift_planning',      'false',                    'Посменное планирование (Итерация 3)'),
                                                                                                  ('00000000-0000-0000-0000-000000000001', 'enable_rescheduling',        'false',                    'Перепланирование (Итерация 4)'),
                                                                                                  ('00000000-0000-0000-0000-000000000001', 'enable_lab_blocking',        'false',                    'Блокировка лабой (Итерация 5)'),
                                                                                                  ('00000000-0000-0000-0000-000000000001', 'enable_operator_pools',      'false',                    'Пулы операторов (Итерация 6)'),
@@ -421,5 +448,5 @@ INSERT INTO organization_settings (organization_id, setting_key, setting_value, 
     ON CONFLICT (organization_id, setting_key) DO NOTHING;
 
 -- ==========================================
--- ГОТОВО! Схема создана.
+-- ГОТОВО! Схема создана (v1.4.0).
 -- ==========================================

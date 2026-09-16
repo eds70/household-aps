@@ -198,3 +198,76 @@ export interface FeasibilityResponse {
     issues: FeasibilityIssue[];
     warnings: FeasibilityIssue[];
 }
+
+// ==========================================
+// SHIFT PLANNING
+// ==========================================
+
+export interface Shift {
+    id: string;
+    name: string;
+    starts_at: string;
+    ends_at: string;
+    is_working: boolean;
+    comment?: string | null;
+}
+
+export type ShiftTaskStatus = 'PLANNED' | 'IN_PROGRESS' | 'DONE' | 'CANCELLED';
+
+export interface ShiftTask {
+    id: string;
+    batch_id?: string | null;
+    batch_name?: string | null;
+    product_id?: string | null;
+    product_code?: string | null;
+    product_name?: string | null;
+    operation_name: string;
+    task_role?: string | null;
+    equipment_id: string;
+    equipment_name: string;
+    linked_equipment_id?: string | null;
+    linked_equipment_name?: string | null;
+    planned_start: string;
+    planned_end: string;
+    actual_start?: string | null;
+    actual_end?: string | null;
+    actual_qty?: number | null;
+    material_load_at?: string | null;
+    status: ShiftTaskStatus;
+    duration_minutes: number;
+    is_carryover: boolean;
+}
+
+export interface ShiftTasksGrouped {
+    equipment_id: string;
+    equipment_name: string;
+    equipment_code?: string | null;
+    tasks: ShiftTask[];
+}
+
+export interface ShiftTasksResponse {
+    shift: Shift;
+    groups: ShiftTasksGrouped[];
+    total_tasks: number;
+    carryover_count: number;
+    done_count: number;
+}
+
+export interface TaskFactRequest {
+    actual_start?: string | null;
+    actual_end?: string | null;
+    actual_qty?: number | null;
+    material_load_at?: string | null;
+    status?: ShiftTaskStatus | null;
+    comment?: string | null;
+}
+
+export interface TaskFactResponse {
+    id: string;
+    status: ShiftTaskStatus;
+    actual_start?: string | null;
+    actual_end?: string | null;
+    actual_qty?: number | null;
+    material_load_at?: string | null;
+    message: string;
+}

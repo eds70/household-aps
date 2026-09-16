@@ -33,6 +33,7 @@ import {
     Science as ScienceIcon,
     Logout as LogoutIcon,
     Person as PersonIcon,
+    Assignment as AssignmentIcon,  // NEW
 } from '@mui/icons-material';
 import { useAuth } from '../../context/AuthContext';
 
@@ -47,6 +48,7 @@ const MENU_ITEMS = [
     { path: '/orders', label: 'Заказы', icon: <ShoppingCartIcon /> },
     { path: '/schedule', label: 'Планирование', icon: <ScheduleIcon /> },
     { path: '/gantt', label: 'Диаграмма Ганта', icon: <TimelineIcon /> },
+    { path: '/shift', label: 'Мастер смены', icon: <AssignmentIcon /> },  // NEW
 ];
 
 const ROLE_LABELS: Record<string, string> = {
@@ -123,7 +125,6 @@ const MainLayout: React.FC = () => {
         <Box sx={{ display: 'flex', minHeight: '100vh' }}>
             <CssBaseline />
 
-            {/* AppBar */}
             <AppBar
                 position="fixed"
                 sx={{
@@ -146,7 +147,6 @@ const MainLayout: React.FC = () => {
                         {MENU_ITEMS.find((item) => item.path === location.pathname)?.label || 'APS Scheduler'}
                     </Typography>
 
-                    {/* Профиль пользователя */}
                     {user && (
                         <>
                             <Tooltip title="Профиль">
@@ -193,7 +193,6 @@ const MainLayout: React.FC = () => {
                 </Toolbar>
             </AppBar>
 
-            {/* Drawer */}
             <Box component="nav" sx={{ width: { md: DRAWER_WIDTH }, flexShrink: { md: 0 } }}>
                 <Drawer
                     variant="temporary"
@@ -219,7 +218,6 @@ const MainLayout: React.FC = () => {
                 </Drawer>
             </Box>
 
-            {/* Main content */}
             <Box
                 component="main"
                 sx={{

@@ -15,105 +15,102 @@ import OperationsPage from './pages/OperationsPage';
 import OrdersPage from './pages/OrdersPage';
 import SchedulePage from './pages/SchedulePage';
 import GanttPage from './pages/GanttPage';
+import ShiftPage from './pages/ShiftPage';  // NEW
 import { CircularProgress, Box } from '@mui/material';
 
 const theme = createTheme({
-  palette: {
-    primary: { main: '#2c3e50' },
-    secondary: { main: '#3498db' },
-  },
+    palette: {
+        primary: { main: '#2c3e50' },
+        secondary: { main: '#3498db' },
+    },
 });
 
-// Компонент-обёртка для защиты маршрутов
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isAuthenticated, isLoading } = useAuth();
+    const { isAuthenticated, isLoading } = useAuth();
 
-  if (isLoading) {
-    return (
-        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>
-          <CircularProgress />
-        </Box>
-    );
-  }
+    if (isLoading) {
+        return (
+            <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>
+                <CircularProgress />
+            </Box>
+        );
+    }
 
-  if (!isAuthenticated) {
-    return <Navigate to="/login" replace />;
-  }
+    if (!isAuthenticated) {
+        return <Navigate to="/login" replace />;
+    }
 
-  return <>{children}</>;
+    return <>{children}</>;
 };
 
-// Компонент-обёртка для публичных маршрутов (редирект если уже залогинен)
 const PublicRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isAuthenticated, isLoading } = useAuth();
+    const { isAuthenticated, isLoading } = useAuth();
 
-  if (isLoading) {
-    return (
-        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>
-          <CircularProgress />
-        </Box>
-    );
-  }
+    if (isLoading) {
+        return (
+            <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>
+                <CircularProgress />
+            </Box>
+        );
+    }
 
-  if (isAuthenticated) {
-    return <Navigate to="/equipment" replace />;
-  }
+    if (isAuthenticated) {
+        return <Navigate to="/equipment" replace />;
+    }
 
-  return <>{children}</>;
+    return <>{children}</>;
 };
 
 const AppRoutes: React.FC = () => {
-  return (
-      <Routes>
-        {/* Публичный маршрут — логин */}
-        <Route
-            path="/login"
-            element={
-              <PublicRoute>
-                <LoginPage />
-              </PublicRoute>
-            }
-        />
+    return (
+        <Routes>
+            <Route
+                path="/login"
+                element={
+                    <PublicRoute>
+                        <LoginPage />
+                    </PublicRoute>
+                }
+            />
 
-        {/* Защищённые маршруты */}
-        <Route
-            path="/"
-            element={
-              <ProtectedRoute>
-                <MainLayout />
-              </ProtectedRoute>
-            }
-        >
-          <Route index element={<Navigate to="/equipment" replace />} />
-          <Route path="equipment" element={<EquipmentPage />} />
-          <Route path="products" element={<ProductsPage />} />
-          <Route path="materials" element={<MaterialsPage />} />
-          <Route path="recipes" element={<RecipesPage />} />
-          <Route path="operations" element={<OperationsPage />} />
-          <Route path="orders" element={<OrdersPage />} />
-          <Route path="schedule" element={<SchedulePage />} />
-          <Route path="gantt" element={<GanttPage />} />
-        </Route>
+            <Route
+                path="/"
+                element={
+                    <ProtectedRoute>
+                        <MainLayout />
+                    </ProtectedRoute>
+                }
+            >
+                <Route index element={<Navigate to="/equipment" replace />} />
+                <Route path="equipment" element={<EquipmentPage />} />
+                <Route path="products" element={<ProductsPage />} />
+                <Route path="materials" element={<MaterialsPage />} />
+                <Route path="recipes" element={<RecipesPage />} />
+                <Route path="operations" element={<OperationsPage />} />
+                <Route path="orders" element={<OrdersPage />} />
+                <Route path="schedule" element={<SchedulePage />} />
+                <Route path="gantt" element={<GanttPage />} />
+                <Route path="shift" element={<ShiftPage />} />  {/* NEW */}
+            </Route>
 
-        {/* Fallback */}
-        <Route path="*" element={<Navigate to="/equipment" replace />} />
-      </Routes>
-  );
+            <Route path="*" element={<Navigate to="/equipment" replace />} />
+        </Routes>
+    );
 };
 
 const App: React.FC = () => {
-  return (
-      <ThemeProvider theme={theme}>
-        <CssBaseline />
-        <AuthProvider>
-          <PlanProvider>
-            <BrowserRouter>
-              <AppRoutes />
-            </BrowserRouter>
-          </PlanProvider>
-        </AuthProvider>
-      </ThemeProvider>
-  );
+    return (
+        <ThemeProvider theme={theme}>
+            <CssBaseline />
+            <AuthProvider>
+                <PlanProvider>
+                    <BrowserRouter>
+                        <AppRoutes />
+                    </BrowserRouter>
+                </PlanProvider>
+            </AuthProvider>
+        </ThemeProvider>
+    );
 };
 
 export default App;
