@@ -271,3 +271,60 @@ export interface TaskFactResponse {
     material_load_at?: string | null;
     message: string;
 }
+
+// ==========================================
+// RESCHEDULING
+// ==========================================
+
+export type RescheduleReason = 'DELAY' | 'BREAKDOWN' | 'QTY_CHANGE' | 'MANUAL';
+
+export interface RescheduleRequest {
+    from_version_id: string;
+    reason: RescheduleReason;
+    changes: Record<string, any>;
+    frozen_before?: string | null;
+    comment?: string | null;
+}
+
+export interface RescheduleResponse {
+    status: string;
+    from_version_id?: string | null;
+    to_version_id?: string | null;
+    affected_tasks: number;
+    moved_tasks: number;
+    frozen_tasks: number;
+    message: string;
+    diff: Record<string, any>;
+}
+
+export interface MovedTaskInfo {
+    task_id: string;
+    batch_id?: string | null;
+    old_start: string;
+    old_end: string;
+    new_start: string;
+    new_end: string;
+    delta_minutes: number;
+}
+
+export interface CompareResponse {
+    v1_id: string;
+    v2_id: string;
+    v1_task_count: number;
+    v2_task_count: number;
+    only_in_v1: string[];
+    only_in_v2: string[];
+    moved: MovedTaskInfo[];
+    unchanged_count: number;
+    moved_count: number;
+}
+
+export interface PinTaskRequest {
+    is_pinned: boolean;
+}
+
+export interface PinTaskResponse {
+    task_id: string;
+    is_pinned: boolean;
+    message: string;
+}

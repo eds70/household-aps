@@ -365,4 +365,33 @@ export const shiftApi = {
     },
 };
 
+// ==========================================
+// Reschedule API
+// ==========================================
+export const rescheduleApi = {
+    reschedule: async (
+        data: import('../types').RescheduleRequest
+    ): Promise<import('../types').RescheduleResponse> => {
+        const response = await api.post('/api/v1/schedule/reschedule', data);
+        return response.data;
+    },
+
+    compare: async (v1: string, v2: string): Promise<import('../types').CompareResponse> => {
+        const response = await api.get('/api/v1/schedule/compare', {
+            params: { v1, v2 },
+        });
+        return response.data;
+    },
+
+    pinTask: async (
+        taskId: string,
+        isPinned: boolean
+    ): Promise<import('../types').PinTaskResponse> => {
+        const response = await api.put(`/api/v1/schedule/task/${taskId}/pin`, {
+            is_pinned: isPinned,
+        });
+        return response.data;
+    },
+};
+
 export default api;

@@ -1,9 +1,11 @@
 // frontend/src/components/layout/MainLayout.tsx
-import React, { useState } from 'react';
-import { Outlet, useNavigate, useLocation } from 'react-router-dom';
+import React, {useEffect, useState} from 'react';
+import {Outlet, useLocation, useNavigate} from 'react-router-dom';
 import {
     AppBar,
+    Avatar,
     Box,
+    Button,
     CssBaseline,
     Divider,
     Drawer,
@@ -13,31 +15,33 @@ import {
     ListItemButton,
     ListItemIcon,
     ListItemText,
-    Toolbar,
-    Typography,
-    Tooltip,
-    Avatar,
     Menu,
     MenuItem,
-    Button,
+    Toolbar,
+    Tooltip,
+    Typography,
 } from '@mui/material';
 import {
-    Menu as MenuIcon,
+    AccountTree as AccountTreeIcon,
+    Assignment as AssignmentIcon,
+    ChevronLeft as ChevronLeftIcon,
     Factory as FactoryIcon,
     Inventory as InventoryIcon,
-    Settings as SettingsIcon,
-    Timeline as TimelineIcon,
-    Schedule as ScheduleIcon,
-    AccountTree as AccountTreeIcon,
-    ShoppingCart as ShoppingCartIcon,
-    Science as ScienceIcon,
     Logout as LogoutIcon,
+    Menu as MenuIcon,
+    MenuOpen as MenuOpenIcon,
     Person as PersonIcon,
-    Assignment as AssignmentIcon,  // NEW
+    Schedule as ScheduleIcon,
+    Science as ScienceIcon,
+    Settings as SettingsIcon,
+    ShoppingCart as ShoppingCartIcon,
+    Timeline as TimelineIcon,
 } from '@mui/icons-material';
-import { useAuth } from '../../context/AuthContext';
+import {useAuth} from '../../context/AuthContext';
 
-const DRAWER_WIDTH = 260;
+const DRAWER_WIDTH_EXPANDED = 240;
+const DRAWER_WIDTH_COLLAPSED = 56;
+const STORAGE_KEY = 'aps_sidebar_collapsed';
 
 const MENU_ITEMS = [
     { path: '/equipment', label: 'Оборудование', icon: <SettingsIcon /> },
@@ -48,7 +52,7 @@ const MENU_ITEMS = [
     { path: '/orders', label: 'Заказы', icon: <ShoppingCartIcon /> },
     { path: '/schedule', label: 'Планирование', icon: <ScheduleIcon /> },
     { path: '/gantt', label: 'Диаграмма Ганта', icon: <TimelineIcon /> },
-    { path: '/shift', label: 'Мастер смены', icon: <AssignmentIcon /> },  // NEW
+    { path: '/shift', label: 'Мастер смены', icon: <AssignmentIcon /> },
 ];
 
 const ROLE_LABELS: Record<string, string> = {
@@ -66,6 +70,15 @@ const MainLayout: React.FC = () => {
     const [mobileOpen, setMobileOpen] = useState(false);
     const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
 
+    const [collapsed, setCollapsed] = useState<boolean>(() => {
+        return localStorage.getItem(STORAGE_KEY) === 'true';
+    });
+
+    useEffect(() => {
+        localStorage.setItem(STORAGE_KEY, String(collapsed));
+    }, [collapsed]);
+
+    const handleToggleCollapse = () => setCollapsed((prev) => !prev);
     const handleDrawerToggle = () => setMobileOpen(!mobileOpen);
 
     const handleProfileClick = (event: React.MouseEvent<HTMLElement>) => {
@@ -82,58 +95,128 @@ const MainLayout: React.FC = () => {
         navigate('/login');
     };
 
-    const drawer = (
-        <Box>
-            <Toolbar sx={{ bgcolor: '#2c3e50', color: 'white' }}>
-                <FactoryIcon sx={{ mr: 1 }} />
-                <Typography variant="h6" noWrap sx={{ fontWeight: 700 }}>
-                    APS Scheduler
-                </Typography>
+    const currentDrawerWidth = collapsed ? DRAWER_WIDTH_COLLAPSED : DRAWER_WIDTH_EXPANDED;
+
+    const drawerContent = (
+        <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+            <Toolbar
+                sx={{
+                    bgcolor: '#2c3e50',
+                    color: 'white',
+                    minHeight: '64px !important',
+                    justifyContent: collapsed ? 'center' : 'flex-start',
+                    px: collapsed ? 0 : 2,
+                }}
+            >
+                <FactoryIcon sx={{ mr: collapsed ? 0 : 1, fontSize: 24 }} />
+                {!collapsed && (
+                    <Typography variant="h6" noWrap sx={{ fontWeight: 700, fontSize: '1.1rem' }}>
+                        APS Scheduler
+                    </Typography>
+                )}
             </Toolbar>
             <Divider />
-            <List>
+
+            <List sx={{ flexGrow: 1, pt: 1, px: collapsed ? 0.5 : 1 }}>
                 {MENU_ITEMS.map((item) => {
                     const isActive = location.pathname === item.path;
-                    return (
-                        <ListItem key={item.path} disablePadding>
-                            <ListItemButton
-                                selected={isActive}
-                                onClick={() => {
-                                    navigate(item.path);
-                                    setMobileOpen(false);
-                                }}
+                    const button = (
+                        <ListItemButton
+                            selected={isActive}
+                            onClick={() => {
+                                navigate(item.path);
+                                setMobileOpen(false);
+                            }}
+                            sx={{
+                                minHeight: 44,
+                                justifyContent: collapsed ? 'center' : 'flex-start',
+                                px: collapsed ? 1 : 2,
+                                borderRadius: 1,
+                                mb: 0.5,
+                                '&.Mui-selected': {
+                                    backgroundColor: '#3498db',
+                                    color: 'white',
+                                    '& .MuiListItemIcon-root': { color: 'white' },
+                                    '&:hover': { backgroundColor: '#2980b9' },
+                                },
+                            }}
+                        >
+                            <ListItemIcon
                                 sx={{
-                                    '&.Mui-selected': {
-                                        backgroundColor: '#3498db',
-                                        color: 'white',
-                                        '& .MuiListItemIcon-root': { color: 'white' },
-                                        '&:hover': { backgroundColor: '#2980b9' },
-                                    },
+                                    minWidth: collapsed ? 0 : 40,
+                                    justifyContent: 'center',
+                                    color: isActive ? 'inherit' : '#2c3e50',
                                 }}
                             >
-                                <ListItemIcon>{item.icon}</ListItemIcon>
-                                <ListItemText primary={item.label} />
-                            </ListItemButton>
+                                {item.icon}
+                            </ListItemIcon>
+                            {!collapsed && (
+                                <ListItemText
+                                    primary={item.label}
+                                    slotProps={{
+                                        primary: { sx: { fontSize: '0.9rem' } },
+                                    }}
+                                />
+                            )}
+                        </ListItemButton>
+                    );
+
+                    return (
+                        <ListItem key={item.path} disablePadding sx={{ display: 'block' }}>
+                            {collapsed ? (
+                                <Tooltip title={item.label} placement="right" arrow>
+                                    {button}
+                                </Tooltip>
+                            ) : (
+                                button
+                            )}
                         </ListItem>
                     );
                 })}
             </List>
+
+            <Divider />
+            <Box sx={{ p: collapsed ? 0.5 : 1 }}>
+                <Tooltip title={collapsed ? 'Развернуть меню' : 'Свернуть меню'} placement="right" arrow>
+                    <IconButton
+                        onClick={handleToggleCollapse}
+                        sx={{
+                            width: '100%',
+                            borderRadius: 1,
+                            justifyContent: collapsed ? 'center' : 'flex-start',
+                            px: collapsed ? 1 : 2,
+                            py: 1,
+                            color: '#2c3e50',
+                            '&:hover': { backgroundColor: '#ecf0f1' },
+                        }}
+                    >
+                        {collapsed ? <MenuIcon /> : <ChevronLeftIcon />}
+                        {!collapsed && (
+                            <Typography variant="body2" sx={{ ml: 1, fontSize: '0.85rem' }}>
+                                Свернуть
+                            </Typography>
+                        )}
+                    </IconButton>
+                </Tooltip>
+            </Box>
         </Box>
     );
 
     return (
-        <Box sx={{ display: 'flex', minHeight: '100vh' }}>
+        <Box sx={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
             <CssBaseline />
 
             <AppBar
                 position="fixed"
                 sx={{
-                    width: { md: `calc(100% - ${DRAWER_WIDTH}px)` },
-                    ml: { md: `${DRAWER_WIDTH}px` },
+                    width: { md: `calc(100% - ${currentDrawerWidth}px)` },
+                    ml: { md: `${currentDrawerWidth}px` },
                     bgcolor: '#2c3e50',
+                    transition: 'width 0.2s, margin-left 0.2s',
+                    zIndex: (theme) => theme.zIndex.drawer + 1,
                 }}
             >
-                <Toolbar>
+                <Toolbar sx={{ minHeight: '64px !important' }}>
                     <IconButton
                         color="inherit"
                         edge="start"
@@ -142,6 +225,17 @@ const MainLayout: React.FC = () => {
                     >
                         <MenuIcon />
                     </IconButton>
+
+                    <Tooltip title={collapsed ? 'Развернуть меню' : 'Свернуть меню'}>
+                        <IconButton
+                            color="inherit"
+                            edge="start"
+                            onClick={handleToggleCollapse}
+                            sx={{ mr: 2, display: { xs: 'none', md: 'inline-flex' } }}
+                        >
+                            {collapsed ? <MenuOpenIcon /> : <MenuIcon />}
+                        </IconButton>
+                    </Tooltip>
 
                     <Typography variant="h6" noWrap sx={{ flexGrow: 1 }}>
                         {MENU_ITEMS.find((item) => item.path === location.pathname)?.label || 'APS Scheduler'}
@@ -193,7 +287,7 @@ const MainLayout: React.FC = () => {
                 </Toolbar>
             </AppBar>
 
-            <Box component="nav" sx={{ width: { md: DRAWER_WIDTH }, flexShrink: { md: 0 } }}>
+            <Box component="nav" sx={{ width: { md: currentDrawerWidth }, flexShrink: { md: 0 } }}>
                 <Drawer
                     variant="temporary"
                     open={mobileOpen}
@@ -201,20 +295,30 @@ const MainLayout: React.FC = () => {
                     ModalProps={{ keepMounted: true }}
                     sx={{
                         display: { xs: 'block', md: 'none' },
-                        '& .MuiDrawer-paper': { boxSizing: 'border-box', width: DRAWER_WIDTH },
+                        '& .MuiDrawer-paper': {
+                            boxSizing: 'border-box',
+                            width: DRAWER_WIDTH_EXPANDED,
+                        },
                     }}
                 >
-                    {drawer}
+                    {drawerContent}
                 </Drawer>
+
                 <Drawer
                     variant="permanent"
                     sx={{
                         display: { xs: 'none', md: 'block' },
-                        '& .MuiDrawer-paper': { boxSizing: 'border-box', width: DRAWER_WIDTH },
+                        '& .MuiDrawer-paper': {
+                            boxSizing: 'border-box',
+                            width: currentDrawerWidth,
+                            overflowX: 'hidden',
+                            transition: 'width 0.2s',
+                            borderRight: '1px solid #e0e0e0',
+                        },
                     }}
                     open
                 >
-                    {drawer}
+                    {drawerContent}
                 </Drawer>
             </Box>
 
@@ -222,14 +326,28 @@ const MainLayout: React.FC = () => {
                 component="main"
                 sx={{
                     flexGrow: 1,
-                    p: 3,
-                    width: { md: `calc(100% - ${DRAWER_WIDTH}px)` },
-                    minHeight: '100vh',
+                    width: { md: `calc(100% - ${currentDrawerWidth}px)` },
+                    height: '100vh',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    overflow: 'hidden',
                     bgcolor: '#f5f6fa',
+                    transition: 'width 0.2s',
                 }}
             >
-                <Toolbar />
-                <Outlet />
+                <Toolbar sx={{ minHeight: '64px !important', flexShrink: 0 }} />
+                <Box
+                    sx={{
+                        flexGrow: 1,
+                        minHeight: 0,
+                        overflow: 'hidden',
+                        p: 3,
+                        display: 'flex',
+                        flexDirection: 'column',
+                    }}
+                >
+                    <Outlet />
+                </Box>
             </Box>
         </Box>
     );

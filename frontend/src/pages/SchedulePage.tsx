@@ -1,33 +1,53 @@
 // src/pages/SchedulePage.tsx
-import React, { useState, useEffect } from 'react';
-import { usePlan, type PlanVersion } from '../context/PlainContext';
-import { AgGridReact } from 'ag-grid-react';
-import { ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
+import React, {useEffect, useState} from 'react';
+import {type PlanVersion, usePlan} from '../context/PlainContext';
+import {AgGridReact} from 'ag-grid-react';
+import type {ColDef, GridReadyEvent} from 'ag-grid-community';
+import {AllCommunityModule, ModuleRegistry} from 'ag-grid-community';
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-alpine.css';
-import type { ColDef, GridReadyEvent } from 'ag-grid-community';
 import {
-    Box, Button, Card, CardContent, TextField, Typography, Alert,
-    CircularProgress, Dialog, DialogTitle, DialogContent, DialogActions,
-    FormControl, InputLabel, Select, MenuItem, IconButton, Tooltip,
-    Accordion, AccordionSummary, AccordionDetails, Chip, Divider,
+    Accordion,
+    AccordionDetails,
+    AccordionSummary,
+    Alert,
+    Box,
+    Button,
+    Card,
+    CardContent,
+    Chip,
+    CircularProgress,
+    Dialog,
+    DialogActions,
+    DialogContent,
+    DialogTitle,
+    Divider,
+    FormControl,
+    IconButton,
+    InputLabel,
+    MenuItem,
+    Select,
+    TextField,
+    Tooltip,
+    Typography,
 } from '@mui/material';
 import {
-    PlayArrow as PlayIcon,
     Add as AddIcon,
+    Autorenew as RescheduleIcon,
     Delete as DeleteIcon,
-    Visibility as ViewIcon,
-    History as HistoryIcon,
-    ExpandMore as ExpandMoreIcon,
-    Warning as WarningIcon,
     Error as ErrorIcon,
+    ExpandMore as ExpandMoreIcon,
+    History as HistoryIcon,
     Info as InfoIcon,
+    PlayArrow as PlayIcon,
     Refresh as RefreshIcon,
+    Visibility as ViewIcon,
+    Warning as WarningIcon,
 } from '@mui/icons-material';
-import { scheduleApi, advisorApi } from '../services/api';
-import type { AdvisorResponse, AdvisorSeverity } from '../types';
-import axios from 'axios';
-import { API_BASE_URL } from '../config';
+import {Allotment} from 'allotment';
+import 'allotment/dist/style.css';
+import {advisorApi, rescheduleApi, scheduleApi} from '../services/api';
+import type {AdvisorResponse, AdvisorSeverity, RescheduleReason, RescheduleResponse,} from '../types';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -69,6 +89,7 @@ const SchedulePage: React.FC = () => {
     const [advisorLoading, setAdvisorLoading] = useState(false);
     const [advisorError, setAdvisorError] = useState<string | null>(null);
 
+    // Новый план
     const [newPlanDialogOpen, setNewPlanDialogOpen] = useState(false);
     const [newPlanForm, setNewPlanForm] = useState({
         name: '',
@@ -76,6 +97,20 @@ const SchedulePage: React.FC = () => {
         comment: '',
     });
     const [creatingPlan, setCreatingPlan] = useState(false);
+
+    // Перепланирование
+    const [rescheduleDialogOpen, setRescheduleDialogOpen] = useState(false);
+    const [rescheduleForm, setRescheduleForm] = useState<{
+        reason: RescheduleReason;
+        frozen_before: string;
+        comment: string;
+    }>({
+        reason: 'DELAY',
+        frozen_before: '',
+        comment: '',
+    });
+    const [rescheduling, setRescheduling] = useState(false);
+    const [rescheduleResult, setRescheduleResult] = useState<RescheduleResponse | null>(null);
 
     useEffect(() => {
         loadVersions();
@@ -125,18 +160,6 @@ const SchedulePage: React.FC = () => {
         }
     };
 
-    const handleSavePlan = async () => {
-        setError(null);
-        try {
-            const res = await axios.post(`${API_BASE_URL}/api/v1/schedule/save`);
-            await loadVersions();
-            setPlan(res.data.version_id, res.data.message.replace("План '", "").replace("' успешно сохранен", ""));
-            alert("План успешно сохранен!");
-        } catch (err: any) {
-            setError(err.response?.data?.detail || 'Ошибка сохранения плана');
-        }
-    };
-
     const handleCreatePlan = async () => {
         if (!newPlanForm.name.trim()) {
             setError('Введите название плана');
@@ -158,7 +181,7 @@ const SchedulePage: React.FC = () => {
     };
 
     const handleDeletePlan = async (version: PlanVersion) => {
-        if (!window.confirm(`Удалить план "${version.name}"? Это действие необратимо и удалит все связанные задачи.`)) return;
+        if (!window.confirm(`Удалить план "${version.name}"?`)) return;
         try {
             await scheduleApi.deleteVersion(version.id);
             if (currentVersionId === version.id) {
@@ -172,6 +195,47 @@ const SchedulePage: React.FC = () => {
 
     const handleOpenPlan = (version: PlanVersion) => {
         setPlan(version.id, version.name);
+    };
+
+    // ---------- Перепланирование ----------
+    const handleOpenReschedule = () => {
+        if (!currentVersionId) {
+            setError('Сначала откройте сохранённую версию плана');
+            return;
+        }
+        setRescheduleForm({
+            reason: 'DELAY',
+            frozen_before: '',
+            comment: '',
+        });
+        setRescheduleResult(null);
+        setRescheduleDialogOpen(true);
+    };
+
+    const handleDoReschedule = async () => {
+        if (!currentVersionId) return;
+        setRescheduling(true);
+        setError(null);
+        try {
+            const payload = {
+                from_version_id: currentVersionId,
+                reason: rescheduleForm.reason,
+                changes: {},
+                frozen_before: rescheduleForm.frozen_before || null,
+                comment: rescheduleForm.comment || null,
+            };
+            const res = await rescheduleApi.reschedule(payload);
+            setRescheduleResult(res);
+            await loadVersions();
+            if (res.to_version_id) {
+                setPlan(res.to_version_id, `Перепланировано от ${new Date().toLocaleString('ru-RU')}`);
+            }
+        } catch (err: any) {
+            const detail = err.response?.data?.detail;
+            setError(typeof detail === 'string' ? detail : 'Ошибка перепланирования');
+        } finally {
+            setRescheduling(false);
+        }
     };
 
     const columnDefs: ColDef[] = [
@@ -230,46 +294,25 @@ const SchedulePage: React.FC = () => {
         },
     ];
 
+    // ==========================================
+    // Advisor Panel
+    // ==========================================
     const renderAdvisorPanel = () => {
-        if (advisorLoading) {
-            return (
-                <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
-                    <CircularProgress size={24} />
-                </Box>
-            );
-        }
-
-        if (advisorError) {
-            return (
-                <Alert severity="error" sx={{ mb: 2 }} onClose={() => setAdvisorError(null)}>
-                    {advisorError}
-                </Alert>
-            );
-        }
-
-        if (!advisorData || advisorData.tips.length === 0) {
-            return (
-                <Alert severity="success" sx={{ mb: 2 }}>
-                    Подсказок нет. Все проверки пройдены.
-                </Alert>
-            );
-        }
-
         return (
-            <Card sx={{ mb: 2, boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}>
-                <CardContent>
-                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+            <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column', m: 0.5 }}>
+                <CardContent sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', minHeight: 0, p: 2 }}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5, flexShrink: 0 }}>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                            <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                            <Typography variant="h6" sx={{ fontWeight: 600, fontSize: '1rem' }}>
                                 Подсказки Advisor
                             </Typography>
-                            {advisorData.critical_count > 0 && (
+                            {advisorData && advisorData.critical_count > 0 && (
                                 <Chip label={`Критично: ${advisorData.critical_count}`} color="error" size="small" />
                             )}
-                            {advisorData.warning_count > 0 && (
+                            {advisorData && advisorData.warning_count > 0 && (
                                 <Chip label={`Внимание: ${advisorData.warning_count}`} color="warning" size="small" />
                             )}
-                            {advisorData.info_count > 0 && (
+                            {advisorData && advisorData.info_count > 0 && (
                                 <Chip label={`Инфо: ${advisorData.info_count}`} color="info" size="small" variant="outlined" />
                             )}
                         </Box>
@@ -283,128 +326,82 @@ const SchedulePage: React.FC = () => {
                         </Button>
                     </Box>
 
-                    <Divider sx={{ mb: 2 }} />
+                    <Divider sx={{ mb: 1.5, flexShrink: 0 }} />
 
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                        {advisorData.tips.map((tip, index) => (
-                            <Accordion key={`${tip.code}-${index}`} sx={{ boxShadow: 'none', border: '1px solid #e0e0e0' }}>
-                                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
-                                        <Chip
-                                            icon={SEVERITY_ICONS[tip.severity] as any}
-                                            label={SEVERITY_LABELS[tip.severity]}
-                                            color={SEVERITY_COLORS[tip.severity]}
-                                            size="small"
-                                        />
-                                        <Typography variant="body2" sx={{ fontWeight: 600, flexGrow: 1 }}>
-                                            {tip.title}
-                                        </Typography>
-                                    </Box>
-                                </AccordionSummary>
-                                <AccordionDetails>
-                                    <Typography variant="body2" sx={{ mb: 1 }}>
-                                        {tip.message}
-                                    </Typography>
-                                    {tip.details && Object.keys(tip.details).length > 0 && (
-                                        <Box sx={{ mt: 1, p: 1, bgcolor: '#f5f5f5', borderRadius: 1 }}>
-                                            <Typography variant="caption" sx={{ fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>
-                                                {Object.entries(tip.details)
-                                                    .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
-                                                    .join('\n')}
-                                            </Typography>
-                                        </Box>
-                                    )}
-                                </AccordionDetails>
-                            </Accordion>
-                        ))}
+                    <Box sx={{ flexGrow: 1, overflow: 'auto', minHeight: 0 }}>
+                        {advisorLoading && (
+                            <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
+                                <CircularProgress size={24} />
+                            </Box>
+                        )}
+
+                        {!advisorLoading && advisorError && (
+                            <Alert severity="error" onClose={() => setAdvisorError(null)}>
+                                {advisorError}
+                            </Alert>
+                        )}
+
+                        {!advisorLoading && !advisorError && (!advisorData || advisorData.tips.length === 0) && (
+                            <Alert severity="success">
+                                Подсказок нет. Все проверки пройдены.
+                            </Alert>
+                        )}
+
+                        {!advisorLoading && !advisorError && advisorData && advisorData.tips.length > 0 && (
+                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                                {advisorData.tips.map((tip, index) => (
+                                    <Accordion
+                                        key={`${tip.code}-${index}`}
+                                        sx={{
+                                            boxShadow: 'none',
+                                            border: '1px solid #e0e0e0',
+                                            '&:before': { display: 'none' },
+                                            '&.Mui-expanded': { margin: 0 },
+                                        }}
+                                    >
+                                        <AccordionSummary
+                                            expandIcon={<ExpandMoreIcon />}
+                                            sx={{ minHeight: 40, '& .MuiAccordionSummary-content': { my: 0.5 } }}
+                                        >
+                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
+                                                <Chip
+                                                    icon={SEVERITY_ICONS[tip.severity] as any}
+                                                    label={SEVERITY_LABELS[tip.severity]}
+                                                    color={SEVERITY_COLORS[tip.severity]}
+                                                    size="small"
+                                                />
+                                                <Typography variant="body2" sx={{ fontWeight: 600, flexGrow: 1 }}>
+                                                    {tip.title}
+                                                </Typography>
+                                            </Box>
+                                        </AccordionSummary>
+                                        <AccordionDetails sx={{ pt: 0 }}>
+                                            <Typography variant="body2">{tip.message}</Typography>
+                                        </AccordionDetails>
+                                    </Accordion>
+                                ))}
+                            </Box>
+                        )}
                     </Box>
                 </CardContent>
             </Card>
         );
     };
 
-    return (
-        <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                <Typography variant="h4" component="h1" sx={{ fontWeight: 600, color: '#2c3e50' }}>
-                    Планирование производства
-                </Typography>
-                <Box sx={{ display: 'flex', gap: 1 }}>
-                    <Button
-                        variant="outlined"
-                        startIcon={<AddIcon />}
-                        onClick={() => setNewPlanDialogOpen(true)}
-                        sx={{ textTransform: 'none' }}
-                    >
-                        Новый план
-                    </Button>
-                </Box>
-            </Box>
-
-            {error && <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>{error}</Alert>}
-
-            <Card sx={{ mb: 2 }}>
-                <CardContent>
-                    <Typography variant="h6" gutterBottom sx={{ fontWeight: 600 }}>
-                        Параметры расчёта
-                    </Typography>
-                    <Box sx={{ display: 'flex', gap: 2, mb: 2, flexWrap: 'wrap' }}>
-                        <TextField
-                            label="Горизонт (часы)"
-                            type="number"
-                            value={horizonHours}
-                            onChange={(e) => setHorizonHours(Number(e.target.value))}
-                            size="small"
-                        />
-                        <TextField
-                            label="Таймаут solver (сек)"
-                            type="number"
-                            value={solverTimeout}
-                            onChange={(e) => setSolverTimeout(Number(e.target.value))}
-                            size="small"
-                        />
-                    </Box>
-                    <Box sx={{ display: 'flex', gap: 2 }}>
-                        <Button
-                            variant="contained"
-                            size="large"
-                            startIcon={loading ? <CircularProgress size={20} /> : <PlayIcon />}
-                            onClick={handleBuildSchedule}
-                            disabled={loading}
-                        >
-                            {loading ? 'Расчёт...' : 'Построить план'}
-                        </Button>
-                        {result && (
-                            <Button
-                                variant="outlined"
-                                color="success"
-                                size="large"
-                                onClick={handleSavePlan}
-                            >
-                                Сохранить как версию
-                            </Button>
-                        )}
-                    </Box>
-                </CardContent>
-            </Card>
-
-            {result && (
-                <Alert severity="success" sx={{ mb: 2 }}>
-                    Расчёт завершён: {result.total_tasks} задач, Makespan: {result.makespan_hours.toFixed(1)} ч
-                </Alert>
-            )}
-
-            {renderAdvisorPanel()}
-
-            <Card sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                <CardContent sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', p: 2 }}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+    // ==========================================
+    // AgGrid Panel
+    // ==========================================
+    const renderPlansGrid = () => {
+        return (
+            <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column', m: 0.5 }}>
+                <CardContent sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', minHeight: 0, p: 2 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1, flexShrink: 0 }}>
                         <HistoryIcon color="primary" />
-                        <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                        <Typography variant="h6" sx={{ fontWeight: 600, fontSize: '1rem' }}>
                             История планов ({versions.length})
                         </Typography>
                     </Box>
-                    <Box className="ag-theme-alpine" sx={{ flexGrow: 1, width: '100%' }}>
+                    <Box className="ag-theme-alpine" sx={{ flexGrow: 1, width: '100%', minHeight: 0 }}>
                         <AgGridReact
                             rowData={versions}
                             columnDefs={columnDefs}
@@ -419,7 +416,108 @@ const SchedulePage: React.FC = () => {
                     </Box>
                 </CardContent>
             </Card>
+        );
+    };
 
+    // ==========================================
+    // Основной рендер
+    // ==========================================
+    return (
+        <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            {/* Заголовок */}
+            <Box
+                sx={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    mb: 2,
+                    flexShrink: 0,
+                }}
+            >
+                <Typography variant="h4" component="h1" sx={{ fontWeight: 600, color: '#2c3e50' }}>
+                    Планирование производства
+                </Typography>
+                <Box sx={{ display: 'flex', gap: 1 }}>
+                    <Button
+                        variant="outlined"
+                        startIcon={<RescheduleIcon />}
+                        onClick={handleOpenReschedule}
+                        disabled={!currentVersionId}
+                        sx={{ textTransform: 'none' }}
+                    >
+                        Перепланировать
+                    </Button>
+                    <Button
+                        variant="outlined"
+                        startIcon={<AddIcon />}
+                        onClick={() => setNewPlanDialogOpen(true)}
+                        sx={{ textTransform: 'none' }}
+                    >
+                        Новый план
+                    </Button>
+                </Box>
+            </Box>
+
+            {error && (
+                <Alert severity="error" sx={{ mb: 2, flexShrink: 0 }} onClose={() => setError(null)}>
+                    {error}
+                </Alert>
+            )}
+
+            {/* Параметры расчёта */}
+            <Card sx={{ mb: 2, flexShrink: 0 }}>
+                <CardContent sx={{ py: 2, '&:last-child': { pb: 2 } }}>
+                    <Typography variant="h6" gutterBottom sx={{ fontWeight: 600, fontSize: '1rem' }}>
+                        Параметры расчёта
+                    </Typography>
+                    <Box sx={{ display: 'flex', gap: 2, mb: 1.5, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <TextField
+                            label="Горизонт (часы)"
+                            type="number"
+                            value={horizonHours}
+                            onChange={(e) => setHorizonHours(Number(e.target.value))}
+                            size="small"
+                            sx={{ width: 160 }}
+                        />
+                        <TextField
+                            label="Таймаут solver (сек)"
+                            type="number"
+                            value={solverTimeout}
+                            onChange={(e) => setSolverTimeout(Number(e.target.value))}
+                            size="small"
+                            sx={{ width: 180 }}
+                        />
+                        <Button
+                            variant="contained"
+                            startIcon={loading ? <CircularProgress size={20} /> : <PlayIcon />}
+                            onClick={handleBuildSchedule}
+                            disabled={loading}
+                            sx={{ textTransform: 'none' }}
+                        >
+                            {loading ? 'Расчёт...' : 'Построить план'}
+                        </Button>
+                    </Box>
+                    {result && (
+                        <Alert severity="success" sx={{ mt: 1 }}>
+                            Расчёт завершён: {result.total_tasks} задач, Makespan: {result.makespan_hours.toFixed(1)} ч
+                        </Alert>
+                    )}
+                </CardContent>
+            </Card>
+
+            {/* Allotment: Advisor сверху, планы снизу */}
+            <Box sx={{ flexGrow: 1, minHeight: 0, mx: -0.5 }}>
+                <Allotment vertical defaultSizes={[30, 70]}>
+                    <Allotment.Pane minSize={180} preferredSize="30%">
+                        {renderAdvisorPanel()}
+                    </Allotment.Pane>
+                    <Allotment.Pane minSize={200}>
+                        {renderPlansGrid()}
+                    </Allotment.Pane>
+                </Allotment>
+            </Box>
+
+            {/* ---------- Диалог нового плана ---------- */}
             <Dialog open={newPlanDialogOpen} onClose={() => setNewPlanDialogOpen(false)} maxWidth="sm" fullWidth>
                 <DialogTitle sx={{ fontWeight: 600 }}>Создать новый план</DialogTitle>
                 <DialogContent>
@@ -429,7 +527,6 @@ const SchedulePage: React.FC = () => {
                             fullWidth
                             value={newPlanForm.name}
                             onChange={(e) => setNewPlanForm({ ...newPlanForm, name: e.target.value })}
-                            placeholder="Например: План на октябрь 2026"
                         />
                         <FormControl fullWidth>
                             <InputLabel>Тип плана</InputLabel>
@@ -462,6 +559,98 @@ const SchedulePage: React.FC = () => {
                     >
                         {creatingPlan ? 'Создание...' : 'Создать'}
                     </Button>
+                </DialogActions>
+            </Dialog>
+
+            {/* ---------- Диалог перепланирования ---------- */}
+            <Dialog
+                open={rescheduleDialogOpen}
+                onClose={() => setRescheduleDialogOpen(false)}
+                maxWidth="sm"
+                fullWidth
+            >
+                <DialogTitle sx={{ fontWeight: 600 }}>Перепланирование</DialogTitle>
+                <DialogContent>
+                    {!rescheduleResult ? (
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
+                            <Alert severity="info">
+                                Перепланирование создаст новую версию плана. Задачи до <b>frozen_before</b> и
+                                задачи с флагом <b>is_pinned</b> не будут двигаться.
+                            </Alert>
+                            <FormControl fullWidth>
+                                <InputLabel>Причина перепланирования</InputLabel>
+                                <Select
+                                    value={rescheduleForm.reason}
+                                    label="Причина перепланирования"
+                                    onChange={(e) =>
+                                        setRescheduleForm({ ...rescheduleForm, reason: e.target.value as RescheduleReason })
+                                    }
+                                >
+                                    <MenuItem value="DELAY">Задержка операции</MenuItem>
+                                    <MenuItem value="BREAKDOWN">Поломка оборудования</MenuItem>
+                                    <MenuItem value="QTY_CHANGE">Изменение объёма</MenuItem>
+                                    <MenuItem value="MANUAL">Ручное изменение</MenuItem>
+                                </Select>
+                            </FormControl>
+                            <TextField
+                                label="Заморозить до (frozen_before)"
+                                type="datetime-local"
+                                fullWidth
+                                value={rescheduleForm.frozen_before}
+                                onChange={(e) =>
+                                    setRescheduleForm({ ...rescheduleForm, frozen_before: e.target.value })
+                                }
+                                slotProps={{ inputLabel: { shrink: true } }}
+                                helperText="Задачи, начавшиеся до этого момента, не будут двигаться"
+                            />
+                            <TextField
+                                label="Комментарий"
+                                fullWidth
+                                multiline
+                                rows={2}
+                                value={rescheduleForm.comment}
+                                onChange={(e) =>
+                                    setRescheduleForm({ ...rescheduleForm, comment: e.target.value })
+                                }
+                            />
+                        </Box>
+                    ) : (
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
+                            <Alert severity="success">{rescheduleResult.message}</Alert>
+                            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                                <Chip
+                                    label={`Затронуто задач: ${rescheduleResult.affected_tasks}`}
+                                    color="warning"
+                                />
+                                <Chip
+                                    label={`Перенесено: ${rescheduleResult.moved_tasks}`}
+                                    color="primary"
+                                />
+                                <Chip
+                                    label={`Заморожено: ${rescheduleResult.frozen_tasks}`}
+                                    variant="outlined"
+                                />
+                            </Box>
+                            <Typography variant="caption" color="text.secondary">
+                                Новая версия: {rescheduleResult.to_version_id}
+                            </Typography>
+                        </Box>
+                    )}
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setRescheduleDialogOpen(false)}>
+                        {rescheduleResult ? 'Закрыть' : 'Отмена'}
+                    </Button>
+                    {!rescheduleResult && (
+                        <Button
+                            onClick={handleDoReschedule}
+                            variant="contained"
+                            disabled={rescheduling}
+                            startIcon={rescheduling ? <CircularProgress size={20} /> : <RescheduleIcon />}
+                        >
+                            {rescheduling ? 'Перепланирование...' : 'Перепланировать'}
+                        </Button>
+                    )}
                 </DialogActions>
             </Dialog>
         </Box>

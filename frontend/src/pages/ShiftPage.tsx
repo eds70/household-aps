@@ -3,7 +3,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
     Box, Typography, Card, CardContent, Alert, CircularProgress,
     TextField, Button, Chip, Divider, Dialog, DialogTitle,
-    DialogContent, DialogActions, Grid, IconButton, Tooltip,
+    DialogContent, DialogActions, IconButton, Tooltip,
     Accordion, AccordionSummary, AccordionDetails, FormControl,
     InputLabel, Select, MenuItem,
 } from '@mui/material';
@@ -13,7 +13,6 @@ import {
     Schedule as ScheduleIcon,
     PlayArrow as PlayIcon,
     CheckCircle as CheckCircleIcon,
-    Cancel as CancelIcon,
     History as HistoryIcon,
     Save as SaveIcon,
 } from '@mui/icons-material';
@@ -57,12 +56,10 @@ const ShiftPage: React.FC = () => {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    // Диалог редактирования задачи
     const [editDialogOpen, setEditDialogOpen] = useState(false);
     const [selectedTask, setSelectedTask] = useState<ShiftTask | null>(null);
     const [factForm, setFactForm] = useState<TaskFactRequest>({});
 
-    // ---------- Загрузка смены на дату ----------
     const loadShift = useCallback(async (dateStr: string) => {
         setLoading(true);
         setError(null);
@@ -86,7 +83,6 @@ const ShiftPage: React.FC = () => {
         loadShift(selectedDate);
     }, [selectedDate, loadShift]);
 
-    // ---------- Открыть диалог факта ----------
     const handleOpenFactDialog = (task: ShiftTask) => {
         setSelectedTask(task);
         setFactForm({
@@ -99,13 +95,11 @@ const ShiftPage: React.FC = () => {
         setEditDialogOpen(true);
     };
 
-    // ---------- Сохранить факт ----------
     const handleSaveFact = async () => {
         if (!selectedTask) return;
         try {
             await shiftApi.updateTaskFact(selectedTask.id, factForm);
             setEditDialogOpen(false);
-            // Перезагружаем смену
             if (currentShift) {
                 const tasks = await shiftApi.getTasks(currentShift.id);
                 setTasksData(tasks);
@@ -116,7 +110,6 @@ const ShiftPage: React.FC = () => {
         }
     };
 
-    // ---------- Быстрая отметка загрузки сырья ----------
     const handleMaterialLoad = async (task: ShiftTask) => {
         try {
             await shiftApi.updateTaskFact(task.id, {
@@ -132,7 +125,6 @@ const ShiftPage: React.FC = () => {
         }
     };
 
-    // ---------- Быстрая отметка завершения ----------
     const handleComplete = async (task: ShiftTask) => {
         try {
             await shiftApi.updateTaskFact(task.id, {
@@ -148,7 +140,6 @@ const ShiftPage: React.FC = () => {
         }
     };
 
-    // ---------- Рендер одной задачи ----------
     const renderTask = (task: ShiftTask) => {
         const startTime = new Date(task.planned_start).toLocaleTimeString('ru-RU', {
             hour: '2-digit', minute: '2-digit',
@@ -273,10 +264,8 @@ const ShiftPage: React.FC = () => {
         );
     };
 
-    // ---------- Основной рендер ----------
     return (
         <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-            {/* Заголовок */}
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, flexWrap: 'wrap', gap: 2 }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                     <ScheduleIcon color="primary" sx={{ fontSize: 32 }} />
@@ -317,7 +306,6 @@ const ShiftPage: React.FC = () => {
 
             {!loading && currentShift && tasksData && (
                 <>
-                    {/* Инфо о смене */}
                     <Card sx={{ mb: 2, bgcolor: '#f8f9fa' }}>
                         <CardContent sx={{ py: 1.5 }}>
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
@@ -352,7 +340,6 @@ const ShiftPage: React.FC = () => {
                         </CardContent>
                     </Card>
 
-                    {/* Группы по рабочим центрам */}
                     {tasksData.groups.length === 0 ? (
                         <Card>
                             <CardContent>
@@ -410,7 +397,6 @@ const ShiftPage: React.FC = () => {
                 </Card>
             )}
 
-            {/* ---------- Диалог редактирования факта ---------- */}
             <Dialog open={editDialogOpen} onClose={() => setEditDialogOpen(false)} maxWidth="sm" fullWidth>
                 <DialogTitle sx={{ fontWeight: 600 }}>
                     {selectedTask && `${selectedTask.operation_name} — внести факт`}
