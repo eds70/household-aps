@@ -2,7 +2,7 @@
 -- APS СИСТЕМА: ПОЛНАЯ СХЕМА БД
 -- PostgreSQL 16+
 -- Для производства бытовой химии
--- Версия: 1.7.0 (после Итераций 0-6)
+-- Версия: 1.8.0 (после Итераций 0-7 + hotfix Итерации 7)
 -- ==========================================
 -- Включает:
 --   - Мульти-тенантность и авторизацию
@@ -17,6 +17,7 @@
 --   - Перепланирование
 --   - Лабораторные блокировки
 --   - Пулы операторов (люди как ресурс)
+--   - Охлаждение с деградацией (cooling_mode: fast/slow)
 -- ==========================================
 
 -- ==========================================
@@ -88,7 +89,6 @@ CREATE TABLE equipment_link (
 );
 COMMENT ON TABLE equipment_link IS 'Физические связи между оборудованием.';
 
--- Итерация 6: updated_at + UNIQUE (organization_id, type)
 CREATE TABLE resource_pool (
                                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                                organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
@@ -207,7 +207,7 @@ CREATE TABLE operation_template (
                                     comment TEXT
 );
 COMMENT ON TABLE operation_template IS 'Технологическая карта.';
-COMMENT ON COLUMN operation_template.operator_pool IS 'REACTOR_OPERATOR | LINE_OPERATOR | MANUAL_OPERATOR | LAB';
+COMMENT ON COLUMN operation_template.operator_pool IS 'REACTOR_OPERATOR | LINE_OPERATOR | MANUAL_OPERATOR | LAB | COOLING_ZONE';
 
 CREATE TABLE setup_matrix (
                               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -325,15 +325,18 @@ CREATE TABLE scheduled_task (
                                 status VARCHAR(20) DEFAULT 'PLANNED',
                                 is_pinned BOOLEAN DEFAULT FALSE,
                                 operator_pool VARCHAR(50),
+                                cooling_mode VARCHAR(10),
                                 comment TEXT
 );
 COMMENT ON TABLE scheduled_task IS 'Задача на диаграмме Ганта.';
 COMMENT ON COLUMN scheduled_task.operator_pool IS 'REACTOR_OPERATOR | LINE_OPERATOR | MANUAL_OPERATOR | LAB (Итерация 6)';
+COMMENT ON COLUMN scheduled_task.cooling_mode IS 'fast (обычное) | slow (×1.3, при 2+ параллельных охлаждениях) | NULL (не охлаждение). Итерация 7';
 
 CREATE INDEX idx_scheduled_task_org ON scheduled_task(organization_id);
 CREATE INDEX idx_scheduled_task_linked_eq ON scheduled_task(linked_equipment_id) WHERE linked_equipment_id IS NOT NULL;
 CREATE INDEX idx_scheduled_task_shift ON scheduled_task(shift_id) WHERE shift_id IS NOT NULL;
 CREATE INDEX idx_scheduled_task_operator_pool ON scheduled_task(organization_id, schedule_version_id, operator_pool) WHERE operator_pool IS NOT NULL;
+CREATE INDEX idx_scheduled_task_cooling_mode ON scheduled_task(organization_id, schedule_version_id, cooling_mode) WHERE cooling_mode IS NOT NULL;
 CREATE INDEX idx_task_equipment_time ON scheduled_task USING GIST (
     organization_id,
     equipment_id,
@@ -461,6 +464,10 @@ CREATE INDEX idx_cal_snap_ver ON calendar_snapshot(version_id);
 --   enable_material_constraints, enable_shift_planning,
 --   enable_rescheduling, enable_lab_blocking,
 --   enable_operator_pools, enable_manual_station.
+--
+-- Итерация 7 завершена (+ hotfix модели деградации):
+--   enable_cooling_degradation = true
+--   cooling_degradation_factor = 1.3
 -- ==========================================
 
 INSERT INTO organization_settings (organization_id, setting_key, setting_value, description) VALUES
@@ -481,10 +488,11 @@ INSERT INTO organization_settings (organization_id, setting_key, setting_value, 
                                                                                                  ('00000000-0000-0000-0000-000000000001', 'enable_operator_pools',      'true',                     'Пулы операторов (Итерация 6)'),
                                                                                                  ('00000000-0000-0000-0000-000000000001', 'enable_manual_station',      'true',                     'Ручная станция (Итерация 6)'),
 
-                                                                                                 ('00000000-0000-0000-0000-000000000001', 'enable_cooling_degradation', 'false',                    'Деградация охлаждения (Итерация 7)'),
+                                                                                                 ('00000000-0000-0000-0000-000000000001', 'enable_cooling_degradation', 'true',                     'Деградация охлаждения (Итерация 7)'),
+                                                                                                 ('00000000-0000-0000-0000-000000000001', 'cooling_degradation_factor', '1.3',                      'Коэффициент замедления охлаждения ×1.3 (Итерация 7)'),
                                                                                                  ('00000000-0000-0000-0000-000000000001', 'enable_cz_integration',      'false',                    'Интеграция с ЧЗ (Итерация 8)')
     ON CONFLICT (organization_id, setting_key) DO NOTHING;
 
 -- ==========================================
--- ГОТОВО! Схема создана (v1.7.0).
+-- ГОТОВО! Схема создана (v1.8.0).
 -- ==========================================

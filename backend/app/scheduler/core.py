@@ -2,20 +2,19 @@
 """
 Ядро планировщика на OR-Tools CP-SAT.
 
-Итерация 1 (исправление 2):
-- В build_routing передаётся gp_product (ГП) для корректного расчёта
-  длительности слива (бутылки / скорость).
-
-Итерация 5:
-- Пропуск заблокированных партий (is_lab_blocked = TRUE) при построении
-  цепочек операций.
-- Логирование пропущенных партий.
-- Возврат списка исключённых партий в результате.
-
-Итерация 6:
-- Передача operator_pool в задачи.
-- Передача resource_pools в плагины (для AddCumulative по пулам).
-- Логирование загруженных пулов.
+Итерация 1: build_routing с gp_product.
+Итерация 5: пропуск заблокированных партий.
+Итерация 6: operator_pool + resource_pools в плагины.
+Итерация 7: дискретизация охлаждения (fast/slow) для деградации.
+Итерация 7 (fix #1): связывание b_slow с пересечением cooling-интервалов.
+Итерация 7 (fix #2): overlap_ij вычисляется через fast_end, а не через
+                     chosen_end. Иначе циклическая зависимость:
+                     chosen_end ← b_slow ← overlap ← chosen_end.
+Итерация 7 (fix #3): fast_end и slow_end жёстко связаны с start + duration
+                     явным Add(...). Иначе при отсутствии минимизации
+                     (или при поиске FEASIBLE вместо OPTIMAL)
+                     solver может выбрать произвольные end, из-за чего
+                     overlap всегда = 1, и все cooling-задачи становятся slow.
 """
 
 import asyncio
@@ -36,6 +35,10 @@ from .saver import ScheduleSaver
 
 logger = setup_scheduler_logging(level=logging.INFO)
 
+# Итерация 7: типы ресурсов, для которых НЕ создаём NoOverlap
+# (обрабатываются плагинами отдельно).
+PLUGIN_MANAGED_RESOURCE_TYPES = {"COOLING_ZONE"}
+
 
 class ProductionScheduler:
     def __init__(self, horizon_hours: int = 2160, org_id: UUID = None):
@@ -46,6 +49,8 @@ class ProductionScheduler:
         self.t0: Optional[datetime] = None
         self.flags: Optional[FeatureFlags] = None
         self.skipped_batches: List[Dict[str, Any]] = []
+        # Итерация 7
+        self.cooling_degradation_factor: float = 1.3
 
     def _calculate_duration(
             self,
@@ -87,14 +92,130 @@ class ProductionScheduler:
         return datetime(2026, 9, 1, 8, 0, 0)
 
     def _is_batch_blocked(self, batch: Dict) -> bool:
-        """
-        Проверяет, заблокирована ли партия лабораторией.
-
-        Итерация 5.
-        """
+        """Проверяет, заблокирована ли партия лабораторией."""
         if not self.flags or not self.flags.enable_lab_blocking:
             return False
         return bool(batch.get("is_lab_blocked", False))
+
+    def _resolve_cooling_degradation_factor(self, org_settings: Dict[str, Any]) -> float:
+        """Читает cooling_degradation_factor из настроек."""
+        raw = org_settings.get("cooling_degradation_factor")
+        if raw is None:
+            return 1.3
+        try:
+            if isinstance(raw, str):
+                return float(raw.strip().strip('"').strip("'"))
+            return float(raw)
+        except (ValueError, TypeError):
+            return 1.3
+
+    def _apply_cooling_degradation_model(
+            self,
+            model: cp_model.CpModel,
+            cooling_tasks: List[Dict],
+    ) -> None:
+        """
+        Итерация 7 (fix #2): корректная модель деградации охлаждения.
+
+        Логика по ТЗ:
+          - 1 реактор охлаждается  → fast (base duration).
+          - 2+ реактора охлаждаются → каждый slow (base × factor).
+
+        КРИТИЧНО: overlap_ij определяется через `fast_end` (фиксированную
+        длительность), а НЕ через `chosen_end`. Иначе возникает
+        циклическая зависимость:
+            chosen_end зависит от b_slow,
+            b_slow зависит от overlap,
+            overlap зависит от chosen_end.
+        Solver находит фиктивное решение, где все задачи slow,
+        даже если они последовательны.
+
+        Модель:
+          Для каждой cooling-задачи i:
+            b_slow_i = 1  ⟺  ∃ j ≠ i: cooling_j пересекается с cooling_i
+            b_fast_i = 1  ⟺  не существует такого j
+            b_fast_i + b_slow_i == 1  (уже задано при создании задачи)
+        """
+        if not cooling_tasks:
+            return
+
+        n = len(cooling_tasks)
+        log_with_context(
+            logger, logging.INFO,
+            f"Итерация 7 (fix): применяем модель деградации для {n} cooling-задач",
+            stage="build", org_id=str(self.org_id),
+        )
+
+        # ==========================================
+        # Вычисляем "fast end" для каждой задачи.
+        #
+        # Если у задачи сохранён fast_end (мы добавили его в self.tasks),
+        # используем его. Если нет — создаём переменную
+        # fast_end = start + duration (fallback для тестов).
+        # ==========================================
+
+        for i, ti in enumerate(cooling_tasks):
+            # Получаем "fast end" как fixed end для сравнения
+            ti_fast_end = ti.get("fast_end")
+
+            if ti_fast_end is None:
+                duration_i = ti.get("duration", 0)
+                ti_fast_end = model.NewIntVar(
+                    0, self.horizon_minutes,
+                    f"fast_end_fallback_i_{i}"
+                )
+                model.Add(ti_fast_end == ti["start"] + duration_i)
+
+            overlaps = []
+
+            for j, tj in enumerate(cooling_tasks):
+                if i == j:
+                    continue
+
+                tj_fast_start = tj["start"]
+                tj_fast_end_fixed = tj.get("fast_end")
+
+                if tj_fast_end_fixed is None:
+                    duration_j = tj.get("duration", 0)
+                    tj_fast_end_fixed = model.NewIntVar(
+                        0, self.horizon_minutes,
+                        f"fast_end_fallback_j_{j}"
+                    )
+                    model.Add(tj_fast_end_fixed == tj["start"] + duration_j)
+
+                # overlap_ij = (tj.start < ti.fast_end) AND (ti.start < tj.fast_end)
+                # Используем fast_end для ОБЕИХ задач — это фиксированные
+                # значения, не зависящие от b_fast / b_slow.
+                overlap_ij = model.NewBoolVar(f"ov_cool_{i}_{j}")
+
+                # tj.start < ti.fast_end
+                b1 = model.NewBoolVar(f"b1_{i}_{j}")
+                model.Add(tj_fast_start < ti_fast_end).OnlyEnforceIf(b1)
+                model.Add(tj_fast_start >= ti_fast_end).OnlyEnforceIf(b1.Not())
+
+                # ti.start < tj.fast_end
+                b2 = model.NewBoolVar(f"b2_{i}_{j}")
+                model.Add(ti["start"] < tj_fast_end_fixed).OnlyEnforceIf(b2)
+                model.Add(ti["start"] >= tj_fast_end_fixed).OnlyEnforceIf(b2.Not())
+
+                # overlap_ij = b1 AND b2
+                model.AddBoolAnd([b1, b2]).OnlyEnforceIf(overlap_ij)
+                model.AddBoolOr([b1.Not(), b2.Not()]).OnlyEnforceIf(overlap_ij.Not())
+
+                overlaps.append(overlap_ij)
+
+            if not overlaps:
+                # Единственная cooling-задача — всегда fast
+                model.Add(ti["b_fast"] == 1)
+                continue
+
+            # b_slow_i >= overlap_ij для каждого j
+            for ov in overlaps:
+                model.Add(ti["b_slow"] >= ov)
+
+            # b_slow_i <= sum(overlaps):
+            # если все overlaps = 0, то b_slow_i = 0
+            model.Add(ti["b_slow"] <= sum(overlaps))
 
     async def build_schedule(self) -> Dict[str, Any]:
         log_with_context(
@@ -129,6 +250,15 @@ class ProductionScheduler:
             stage="init", org_id=str(self.org_id),
         )
 
+        # Итерация 7: коэффициент деградации
+        self.cooling_degradation_factor = self._resolve_cooling_degradation_factor(org_settings)
+        log_with_context(
+            logger, logging.INFO,
+            f"Cooling degradation: enable={self.flags.enable_cooling_degradation}, "
+            f"factor={self.cooling_degradation_factor}",
+            stage="init", org_id=str(self.org_id),
+        )
+
         log_with_context(
             logger, logging.INFO,
             f"Загружено: партий={len(batches)}, оборудования={len(equipment_map)}, "
@@ -137,7 +267,6 @@ class ProductionScheduler:
             stage="load", org_id=str(self.org_id),
         )
 
-        # Итерация 6: логирование пулов ресурсов
         pool_types = [p.get("type") for p in resource_pools]
         log_with_context(
             logger, logging.INFO,
@@ -167,7 +296,6 @@ class ProductionScheduler:
         routing_steps: Dict[str, List[RoutingStep]] = {}
         use_tank_routing = self.flags.enable_tank_routing
 
-        # Итерация 5: сбрасываем список пропущенных партий
         self.skipped_batches = []
 
         for batch in batches:
@@ -175,7 +303,6 @@ class ProductionScheduler:
             product_id = str(batch["product_id"])
             equipment_id = str(batch["assigned_equipment_id"])
 
-            # === Итерация 5: пропуск заблокированных партий ===
             if self._is_batch_blocked(batch):
                 skip_info = {
                     "batch_id": batch_id,
@@ -192,7 +319,6 @@ class ProductionScheduler:
                     stage="routing", org_id=str(self.org_id),
                 )
                 continue
-            # === /Итерация 5 ===
 
             gp_product_id = batch.get("gp_product_id")
             gp_product = gp_products.get(str(gp_product_id)) if gp_product_id else None
@@ -237,7 +363,6 @@ class ProductionScheduler:
                 stage="routing", org_id=str(self.org_id),
             )
 
-        # Если все партии заблокированы — вернуть пустой результат
         if not routing_steps:
             log_with_context(
                 logger, logging.WARNING,
@@ -253,38 +378,144 @@ class ProductionScheduler:
                 "message": "Нет доступных партий для планирования",
             }
 
-        # Переменные
+        # ==========================================
+        # СОЗДАНИЕ ПЕРЕМЕННЫХ
+        # ==========================================
+        # Итерация 7: для cooling-операций создаём fast/slow интервалы,
+        # если feature-флаг enable_cooling_degradation включён.
+
+        cooling_count = 0
         for batch_id, steps in routing_steps.items():
             for step in steps:
                 key = (batch_id, step.op_id)
-                start_var = model.NewIntVar(0, self.horizon_minutes, f"start_{batch_id}_{step.op_id}")
-                end_var = model.NewIntVar(0, self.horizon_minutes, f"end_{batch_id}_{step.op_id}")
-                interval = model.NewIntervalVar(
-                    start_var, step.duration, end_var, f"interval_{batch_id}_{step.op_id}"
+                needs_cooling = step.op.get("needs_cooling_zone", False)
+                use_degradation = (
+                        self.flags.enable_cooling_degradation and needs_cooling
                 )
 
-                self.tasks[key] = {
-                    "interval": interval,
-                    "start": start_var,
-                    "end": end_var,
-                    "duration": step.duration,
-                    "batch_id": batch_id,
-                    "op_id": step.op_id,
-                    "role": step.role,
-                    "primary_equipment_id": step.primary_equipment_id,
-                    "secondary_equipment_id": step.secondary_equipment_id,
-                    "op": step.op,
-                    "depends_on_op_ids": step.depends_on_op_ids,
-                    "is_parallel_with": step.is_parallel_with,
-                    "is_first_in_batch": step.is_first_in_batch,
-                    "is_last_in_batch": step.is_last_in_batch,
-                    "needs_boiler": step.op.get("needs_boiler", False),
-                    "needs_cooling": step.op.get("needs_cooling_zone", False),
-                    "needs_operator": step.op.get("needs_operator", False),
-                    "operator_pool": step.operator_pool,   # Итерация 6
-                }
+                start_var = model.NewIntVar(0, self.horizon_minutes, f"start_{batch_id}_{step.op_id}")
 
-        # Зависимости
+                if use_degradation:
+                    # === Итерация 7: fast/slow ===
+                    slow_duration = int(step.duration * self.cooling_degradation_factor)
+                    if slow_duration < step.duration:
+                        slow_duration = step.duration
+
+                    b_fast = model.NewBoolVar(f"b_fast_{batch_id}_{step.op_id}")
+                    b_slow = model.NewBoolVar(f"b_slow_{batch_id}_{step.op_id}")
+                    model.Add(b_fast + b_slow == 1)
+
+                    fast_end = model.NewIntVar(0, self.horizon_minutes, f"fast_end_{batch_id}_{step.op_id}")
+                    slow_end = model.NewIntVar(0, self.horizon_minutes, f"slow_end_{batch_id}_{step.op_id}")
+
+                    fast_interval = model.NewOptionalIntervalVar(
+                        start_var, step.duration, fast_end,
+                        b_fast, f"fast_interval_{batch_id}_{step.op_id}",
+                    )
+                    slow_interval = model.NewOptionalIntervalVar(
+                        start_var, slow_duration, slow_end,
+                        b_slow, f"slow_interval_{batch_id}_{step.op_id}",
+                    )
+
+                    # Итерация 7 (fix #3): ЯВНАЯ связь end = start + duration.
+                    # NewOptionalIntervalVar формально задаёт эту связь, но без
+                    # явного Add(...) solver может выбрать произвольное fast_end
+                    # при отсутствии минимизации (например, при поиске FEASIBLE
+                    # вместо OPTIMAL, или в unit-тестах).
+                    model.Add(fast_end == start_var + step.duration)
+                    model.Add(slow_end == start_var + slow_duration)
+
+                    # chosen_end — «реальная» длительность
+                    chosen_end = model.NewIntVar(0, self.horizon_minutes, f"chosen_end_{batch_id}_{step.op_id}")
+                    model.Add(chosen_end == fast_end).OnlyEnforceIf(b_fast)
+                    model.Add(chosen_end == slow_end).OnlyEnforceIf(b_slow)
+
+                    # interval — общий интервал для NoOverlap по реактору.
+                    # Используем chosen_end как конец, чтобы NoOverlap
+                    # учитывал реальную (возможно, увеличенную) длительность.
+                    interval = model.NewIntervalVar(
+                        start_var, step.duration, chosen_end,
+                        f"interval_{batch_id}_{step.op_id}",
+                    )
+
+                    self.tasks[key] = {
+                        "interval": interval,
+                        "start": start_var,
+                        "end": chosen_end,
+                        "fast_interval": fast_interval,
+                        "slow_interval": slow_interval,
+                        "fast_end": fast_end,           # ← Итерация 7 (fix #2)
+                        "b_fast": b_fast,
+                        "b_slow": b_slow,
+                        "chosen_end": chosen_end,
+                        "duration": step.duration,
+                        "slow_duration": slow_duration,
+                        "batch_id": batch_id,
+                        "op_id": step.op_id,
+                        "role": step.role,
+                        "primary_equipment_id": step.primary_equipment_id,
+                        "secondary_equipment_id": step.secondary_equipment_id,
+                        "op": step.op,
+                        "depends_on_op_ids": step.depends_on_op_ids,
+                        "is_parallel_with": step.is_parallel_with,
+                        "is_first_in_batch": step.is_first_in_batch,
+                        "is_last_in_batch": step.is_last_in_batch,
+                        "needs_boiler": step.op.get("needs_boiler", False),
+                        "needs_cooling": needs_cooling,
+                        "needs_operator": step.op.get("needs_operator", False),
+                        "operator_pool": step.operator_pool,
+                        "is_cooling_degraded": True,
+                    }
+                    cooling_count += 1
+                else:
+                    # === Обычная логика ===
+                    end_var = model.NewIntVar(0, self.horizon_minutes, f"end_{batch_id}_{step.op_id}")
+                    interval = model.NewIntervalVar(
+                        start_var, step.duration, end_var, f"interval_{batch_id}_{step.op_id}"
+                    )
+
+                    self.tasks[key] = {
+                        "interval": interval,
+                        "start": start_var,
+                        "end": end_var,
+                        "duration": step.duration,
+                        "batch_id": batch_id,
+                        "op_id": step.op_id,
+                        "role": step.role,
+                        "primary_equipment_id": step.primary_equipment_id,
+                        "secondary_equipment_id": step.secondary_equipment_id,
+                        "op": step.op,
+                        "depends_on_op_ids": step.depends_on_op_ids,
+                        "is_parallel_with": step.is_parallel_with,
+                        "is_first_in_batch": step.is_first_in_batch,
+                        "is_last_in_batch": step.is_last_in_batch,
+                        "needs_boiler": step.op.get("needs_boiler", False),
+                        "needs_cooling": needs_cooling,
+                        "needs_operator": step.op.get("needs_operator", False),
+                        "operator_pool": step.operator_pool,
+                        "is_cooling_degraded": False,
+                    }
+
+        if cooling_count > 0:
+            log_with_context(
+                logger, logging.INFO,
+                f"Итерация 7: создано {cooling_count} задач с деградацией охлаждения",
+                stage="build", org_id=str(self.org_id),
+            )
+
+        # ==========================================
+        # ИТЕРАЦИЯ 7 (FIX): МОДЕЛЬ ДЕГРАДАЦИИ ОХЛАЖДЕНИЯ
+        # ==========================================
+        # Собираем все cooling-задачи и связываем b_slow с фактическим
+        # пересечением fast-интервалов. Это делается ДО применения
+        # плагинов, т.к. плагины добавляют только общее ограничение capacity.
+        if self.flags.enable_cooling_degradation and cooling_count > 0:
+            cooling_tasks = [
+                t for t in self.tasks.values() if t.get("is_cooling_degraded")
+            ]
+            self._apply_cooling_degradation_model(model, cooling_tasks)
+
+        # Зависимости (используем task["end"], который равен chosen_end для cooling)
         deps_count = 0
         for batch_id, steps in routing_steps.items():
             for step in steps:
@@ -301,7 +532,7 @@ class ProductionScheduler:
             stage="build", org_id=str(self.org_id),
         )
 
-        # NoOverlap
+        # NoOverlap — исключаем cooling_zone (обрабатывается плагином)
         intervals_by_equipment: Dict[str, List] = {}
         for key, task in self.tasks.items():
             primary = task["primary_equipment_id"]
@@ -311,8 +542,17 @@ class ProductionScheduler:
             if secondary:
                 intervals_by_equipment.setdefault(secondary, []).append(task["interval"])
 
+        # Определяем ID cooling_zone оборудования (если есть)
+        cooling_zone_ids = set()
+        for eq_id, eq in equipment_map.items():
+            if eq.get("type") == "COOLING_ZONE":
+                cooling_zone_ids.add(str(eq_id))
+
         nooverlap_count = 0
         for eq_id, intervals in intervals_by_equipment.items():
+            if eq_id in cooling_zone_ids:
+                # Пропускаем — за это отвечает CoolingDegradationConstraint
+                continue
             if len(intervals) > 1:
                 model.AddNoOverlap(intervals)
                 nooverlap_count += 1
@@ -323,7 +563,7 @@ class ProductionScheduler:
             stage="build", org_id=str(self.org_id),
         )
 
-        # Setup-ограничения
+        # Setup-ограничения (используют task["start"] и task["end"])
         setup_count = 0
         last_by_reactor: Dict[str, List[Dict]] = {}
         first_by_reactor: Dict[str, List[Dict]] = {}
@@ -377,7 +617,7 @@ class ProductionScheduler:
             stage="build", org_id=str(self.org_id),
         )
 
-        # Календарь
+        # Календарь (использует task["start"] и task["end"])
         calendar_count = 0
         for cal_event in calendar_minutes:
             eq_id = cal_event["equipment_id"]
@@ -405,9 +645,7 @@ class ProductionScheduler:
             stage="build", org_id=str(self.org_id),
         )
 
-        # ==========================================
-        # Итерация 6: плагины ограничений с пулами ресурсов
-        # ==========================================
+        # Плагины
         plugin_tasks = {}
         for key, task in self.tasks.items():
             plugin_tasks[key] = {
@@ -415,15 +653,17 @@ class ProductionScheduler:
                 "needs_boiler": task["needs_boiler"],
                 "needs_cooling": task["needs_cooling"],
                 "needs_operator": task["needs_operator"],
-                "operator_pool": task.get("operator_pool"),   # Итерация 6
+                "operator_pool": task.get("operator_pool"),
+                "fast_interval": task.get("fast_interval"),
+                "slow_interval": task.get("slow_interval"),
+                "b_fast": task.get("b_fast"),
+                "b_slow": task.get("b_slow"),
             }
 
         for plugin in CONSTRAINT_PLUGINS:
             try:
-                # Итерация 6: пробуем передать resource_pools
                 plugin.apply(model, plugin_tasks, resource_pools=resource_pools)
             except TypeError:
-                # Fallback для старых плагинов без resource_pools
                 plugin.apply(model, plugin_tasks)
 
         log_with_context(
@@ -433,7 +673,7 @@ class ProductionScheduler:
             stage="build", org_id=str(self.org_id),
         )
 
-        # Целевая функция
+        # Целевая функция (использует task["end"] = chosen_end для cooling)
         makespan = model.NewIntVar(0, self.horizon_minutes, "makespan")
         for task in self.tasks.values():
             model.Add(makespan >= task["end"])
@@ -512,6 +752,14 @@ class ProductionScheduler:
             product_id = str(batch_info.get("product_id", ""))
             product_info = products_map.get(product_id, {})
 
+            # Итерация 7: для cooling — определить режим
+            cooling_mode = None
+            if task.get("is_cooling_degraded"):
+                b_fast_var = task.get("b_fast")
+                if b_fast_var is not None:
+                    b_fast_val = solver.Value(b_fast_var)
+                    cooling_mode = "fast" if b_fast_val == 1 else "slow"
+
             schedule.append({
                 "batch_id": batch_id,
                 "batch_name": f"Партия {batch_info.get('product_name', 'Unknown')}",
@@ -528,7 +776,8 @@ class ProductionScheduler:
                 "end": end_dt,
                 "duration": end - start,
                 "operation_name": task["op"].get("name", "Операция"),
-                "operator_pool": task.get("operator_pool"),   # Итерация 6
+                "operator_pool": task.get("operator_pool"),
+                "cooling_mode": cooling_mode,
             })
 
         schedule.sort(key=lambda x: x["start"])

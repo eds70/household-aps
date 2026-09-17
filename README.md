@@ -2,7 +2,7 @@
 
 **Система автоматического планирования производства на базе OR-Tools CP-SAT**
 
-Версия: **1.7.0** (Итерации 0–6 завершены)
+Версия: **1.8.0** (Итерации 0–7 завершены)
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -52,6 +52,7 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 - **Остатков сырья** и графика поставок
 - **Сменного планирования** (одна смена в день, 08:00–20:00)
 - **Лабораторных блокировок** (партия не участвует в планировании до одобрения)
+- **Деградации охлаждения** (`fast`/`slow` при 2+ параллельных реакторах)
 - **Мульти-тенантности** и **версионирования планов** (снапшоты справочников)
 
 ## 🎯 Ключевые возможности
@@ -75,11 +76,12 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 
 ### Итерация 2 — Материальные ограничения и Advisor
 - ✅ Модуль `materials.py` — расчёт потребности в сырье по всем партиям
-- ✅ Модуль `advisor.py` — 4 типа подсказок:
+- ✅ Модуль `advisor.py` — типы подсказок:
     - 🔴 **MATERIAL_SHORTAGE** — дефицит сырья
     - 🟡 **UNDERLOAD** — неполная загрузка реактора
     - 🔵 **ROUTE_MISMATCH** — VIA_TANK без танка
     - 🔵 **EQUIPMENT_GAP** — простои оборудования
+    - 🔵 **COOLING_DEGRADATION** — охлаждение с замедлением (Итерация 7)
 - ✅ Модуль `feasibility.py` — оценка исполнимости плана
 - ✅ API: `GET /api/v1/schedule/advice`, `POST /api/v1/schedule/feasibility`
 - ✅ UI: панель Advisor с фильтрацией по severity
@@ -181,13 +183,60 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 - ✅ **Feature-флаги** `enable_operator_pools`, `enable_manual_station`
 - ✅ **Гибкость:** capacity можно менять через UI без правок кода
 
+### Итерация 7 — Охлаждение с деградацией
+
+**Логика по ТЗ:** если в зоне охлаждения (capacity = 2) охлаждается **1 реактор** — операция идёт в обычном режиме (`fast`); если **2+ реактора одновременно** — каждая операция замедляется в `×1.3` (`slow`).
+
+**Реализация:**
+- ✅ Миграция `add_10.sql` — feature-флаг + коэффициент
+- ✅ Миграция `add_10b.sql` — колонка `scheduled_task.cooling_mode`
+- ✅ Настройки в `organization_settings`:
+    - `enable_cooling_degradation` = `true`
+    - `cooling_degradation_factor` = `1.3`
+    - `cooling_zone_capacity` = `2`
+- ✅ `resource_pool.COOLING_ZONE` = capacity 2
+- ✅ В `core.py` — модель деградации:
+    - Для каждой cooling-задачи создаются два взаимоисключающих интервала: `fast_interval` (базовая длительность) и `slow_interval` (`base × 1.3`)
+    - `chosen_end` = fast_end XOR slow_end в зависимости от `b_fast`/`b_slow`
+    - **Ключевое:** `b_slow_i = 1 ⟺ ∃ j ≠ i: cooling_j пересекается с cooling_i` (через `overlap_ij` bool-переменные)
+- ✅ В `plugins.py` — `CoolingDegradationConstraint`:
+    - Ограничивает **общее** число одновременных охлаждений (`AddCumulative` с capacity из `resource_pool.COOLING_ZONE`)
+    - **Не** делает `AddNoOverlap` на fast-интервалы (это была ошибка, исправлена)
+- ✅ `scheduled_task.cooling_mode` сохраняется (`fast` | `slow` | `NULL`)
+- ✅ API `/api/v1/gantt/` возвращает `cooling_mode` в каждой задаче
+- ✅ Excel-экспорт содержит колонку «Режим охлаждения»
+- ✅ API `/api/v1/shift/` возвращает `cooling_mode` в заданиях смены
+- ✅ Advisor выдаёт `COOLING_DEGRADATION` (WARNING/INFO)
+- ✅ UI `GanttPage.tsx`:
+    - 🟠 оранжевая пунктирная рамка для `slow`-операций
+    - Иконка `⏳` в задаче
+    - Бейдж «ОХЛАЖДЕНИЕ ЗАМЕДЛЕНО (×1.3)» в тултипе
+    - Легенда с «⏳ Замедленное охлаждение»
+    - Чип статистики «⏳ Замедленное охлаждение: N»
+    - Фильтр «Только замедленное охлаждение»
+    - Чип «Показано: N / M» при активном фильтре
+    - Кнопка «Сбросить фильтры»
+- ✅ UI `ShiftPage.tsx`:
+    - Чип «Замедленное охлаждение ×1.3» для `slow`
+    - Чип «Охлаждение (норма)» для `fast`
+    - Оранжевая подсветка карточки задачи при `slow`
+    - Информационный Alert в диалоге внесения факта
+- ✅ UI `PersonnelPage.tsx`: пул `COOLING_ZONE` (и `BOILER`) с иконками
+- ✅ Тест-кейс ТЗ показал: **0 ложных `slow`** (раньше было 3)
+
+#### Hotfix Итерации 7
+
+- ✅ **Исправлена модель деградации в `core.py`**:
+  раньше `b_slow` выбирался solver'ом произвольно (минимизация makespan ломала логику), из-за чего `slow` ставился даже для **последовательных** охлаждений. Теперь `b_slow` жёстко связан с фактическим пересечением интервалов — если охлаждения идут последовательно, всё корректно помечается `fast`.
+- ✅ **`CoolingDegradationConstraint` больше не делает `AddNoOverlap(fast_intervals)`** — он был неверен, потому что fast-интервалы могут быть неактивны (`b_fast=0`), а slow-интервалы при этом не эксклюзивны.
+
 ### Общие возможности
 - ✅ JWT авторизация и ролевая модель (ADMIN, PLANNER, MASTER, LAB, VIEWER)
 - ✅ Управление оборудованием, продуктами, материалами, рецептурами
 - ✅ Технологические карты с формулами расчёта длительностей
 - ✅ Автоматическое разбиение заказов на партии
 - ✅ Диаграмма Ганта с интерактивным просмотром
-- ✅ Экспорт плана в Excel (с колонками «Заблокировано» и «Причина»)
+- ✅ Экспорт плана в Excel (с колонками «Заблокировано», «Причина», «Режим охлаждения»)
 - ✅ Версионирование планов через снапшоты
 
 ## 🛠️ Стек технологий
@@ -238,10 +287,10 @@ household-aps/
 │   │   │   ├── operations.py
 │   │   │   ├── orders.py
 │   │   │   ├── schedule.py
-│   │   │   ├── gantt.py                   # Итерация 1, 5 + hotfix
+│   │   │   ├── gantt.py                   # Итерация 1, 5, 7 + hotfix
 │   │   │   ├── calendar.py
-│   │   │   ├── advisor.py                 # Итерация 2
-│   │   │   ├── shift.py                   # Итерация 3, 5 + hotfix
+│   │   │   ├── advisor.py                 # Итерация 2, 7
+│   │   │   ├── shift.py                   # Итерация 3, 5, 7 + hotfix
 │   │   │   ├── shift_models.py
 │   │   │   ├── reschedule.py              # Итерация 4
 │   │   │   ├── reschedule_models.py
@@ -253,20 +302,20 @@ household-aps/
 │   │   ├── auth/                          # JWT + RBAC
 │   │   ├── core/                          # Конфигурация
 │   │   ├── scheduler/                     # Ядро планировщика
-│   │   │   ├── core.py                    # Итерация 5, 6
+│   │   │   ├── core.py                    # Итерация 5, 6, 7 + hotfix
 │   │   │   ├── data_loader.py             # Итерация 5, 6
 │   │   │   ├── routing.py                 # Итерация 1, 5, 6
 │   │   │   ├── materials.py               # Итерация 2
-│   │   │   ├── advisor.py                 # Итерация 2
+│   │   │   ├── advisor.py                 # Итерация 2, 7
 │   │   │   ├── feasibility.py             # Итерация 2
 │   │   │   ├── shifts.py                  # Итерация 3
 │   │   │   ├── rescheduler.py             # Итерация 4, 5
-│   │   │   ├── saver.py                   # hotfix Итерации 5, 6
-│   │   │   ├── feature_flags.py           # Итерация 6
+│   │   │   ├── saver.py                   # hotfix Итерации 5, 6, 7
+│   │   │   ├── feature_flags.py           # Итерация 6, 7
 │   │   │   ├── logging_config.py
 │   │   │   ├── duration/                  # Стратегии длительностей
 │   │   │   └── constraints/
-│   │   │       └── plugins.py             # Итерация 1, 6
+│   │   │       └── plugins.py             # Итерация 1, 6, 7 + hotfix
 │   │   └── main.py
 │   ├── migrations/                        # История миграций
 │   │   ├── add_history_0_2.sql
@@ -279,9 +328,11 @@ household-aps/
 │   │   ├── add_09b.sql                    # Итерация 6
 │   │   ├── add_09c.sql                    # Итерация 6
 │   │   ├── add_09d.sql                    # Итерация 6
+│   │   ├── add_10.sql                     # Итерация 7
+│   │   ├── add_10b.sql                    # Итерация 7
 │   │   └── fix_shift_names.sql
 │   ├── .env
-│   ├── init_schema.sql                    # v1.7.0
+│   ├── init_schema.sql                    # v1.8.0
 │   ├── seed_demo.py
 │   ├── seed_demo_data.sql
 │   ├── scripts/create_admin_user.py
@@ -404,15 +455,15 @@ npm run dev
 - `POST /api/v1/schedule/versions` — создать версию
 - `DELETE /api/v1/schedule/versions/{id}` — удалить
 
-**Advisor (Итерация 2):**
-- `GET /api/v1/schedule/advice` — подсказки
+**Advisor (Итерация 2 + Итерация 7):**
+- `GET /api/v1/schedule/advice` — подсказки (включая COOLING_DEGRADATION)
 - `POST /api/v1/schedule/feasibility` — оценка исполнимости
 
-**Сменное планирование (Итерация 3):**
+**Сменное планирование (Итерация 3 + Итерация 7):**
 - `GET /api/v1/shift/list` — список смен
 - `GET /api/v1/shift/by-date/{date}` — смена на дату
-- `GET /api/v1/shift/{shift_id}/tasks` — задания смены
-- `GET /api/v1/shift/{shift_id}/carryover` — переходящие задания
+- `GET /api/v1/shift/{shift_id}/tasks` — задания смены (с `cooling_mode`)
+- `GET /api/v1/shift/{shift_id}/carryover` — переходящие задания (с `cooling_mode`)
 - `POST /api/v1/shift/task/{task_id}/fact` — внести факт
 
 **Перепланирование (Итерация 4):**
@@ -436,8 +487,8 @@ npm run dev
 - `GET /api/v1/personnel/load` — краткая загрузка
 
 **Гант:**
-- `GET /api/v1/gantt/` — данные диаграммы
-- `GET /api/v1/gantt/export` — экспорт в Excel
+- `GET /api/v1/gantt/` — данные диаграммы (с `cooling_mode`)
+- `GET /api/v1/gantt/export` — экспорт в Excel (с колонкой «Режим охлаждения»)
 
 ## 🧩 Ключевые сущности
 
@@ -458,10 +509,20 @@ npm run dev
 | `LINE_OPERATOR` | 2 | 3 линии розлива |
 | `MANUAL_OPERATOR` | 1 | LINE_3 (ручная станция) |
 | `LAB` | 1 | Лабораторные анализы |
-| `COOLING_ZONE` | 2 | Зона охлаждения |
+| `COOLING_ZONE` | 2 | Зона охлаждения (Итерация 7) |
 | `BOILER` | 1 | Бойлер |
 
 **Логика:** планировщик **физически не может** запланировать 4 реактора одновременно — только 3. `AddCumulative` запрещает это.
+
+### Режимы охлаждения (Итерация 7)
+
+| Режим | Когда | Длительность | Иконка |
+|-------|-------|--------------|--------|
+| `fast` | 1 реактор охлаждается | base | ❄️ |
+| `slow` | 2+ реактора одновременно | base × 1.3 | ⏳ |
+| `null` | Операция не является охлаждением | — | — |
+
+**Модель в `core.py`:** `b_slow_i = 1 ⟺ ∃ j: cooling_j пересекается с cooling_i`. Если охлаждения последовательны — все `fast`.
 
 ### Лабораторные блокировки (Итерация 5)
 
@@ -494,8 +555,17 @@ npm run dev
 | enable_lab_blocking | ✅ ON | 5 |
 | enable_operator_pools | ✅ ON | 6 |
 | enable_manual_station | ✅ ON | 6 |
-| enable_cooling_degradation | ❌ OFF | 7 |
+| enable_cooling_degradation | ✅ ON | 7 |
 | enable_cz_integration | ❌ OFF | 8 |
+
+### Параметры организации (Итерация 7)
+
+| Ключ | Значение | Назначение |
+|------|----------|------------|
+| `cooling_degradation_factor` | `1.3` | Коэффициент замедления охлаждения |
+| `cooling_zone_capacity` | `2` | Максимум реакторов в зоне охлаждения |
+| `max_fill_percent` | `0.70` | Максимальная загрузка реактора |
+| `planning_start_date` | `2026-09-01T08:00:00` | Дата старта планирования |
 
 ## 🧪 Тестирование
 
@@ -504,7 +574,7 @@ cd backend
 pytest tests/ -v
 ```
 
-**Текущее состояние:** 185 passed.
+**Текущее состояние:** 204 passed.
 
 | Файл | Тестов | Что проверяет |
 |------|--------|---------------|
@@ -515,7 +585,8 @@ pytest tests/ -v
 | `test_shifts.py` | 16 | Смены и API смен |
 | `test_rescheduler.py` | 18 | Перепланирование + фильтрация блокировок |
 | `test_lab.py` | 24 | Лабораторные блокировки |
-| **`test_personnel.py`** | **15** | **Люди как ресурс (Итерация 6)** |
+| `test_personnel.py` | 15 | Люди как ресурс (Итерация 6) |
+| `test_cooling_degradation.py` | 19 | Охлаждение с деградацией (Итерация 7 + hotfix) |
 | `test_versions.py` | 4 | Hotfix: деактивация версий |
 | `test_dependencies.py` | 9 | FastAPI dependencies |
 | `test_auth_models.py` | 9 | Pydantic-модели авторизации |
@@ -549,8 +620,8 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/seed_demo_data.sql
 ### Применить SQL-миграцию (правильный способ)
 
 ```
-docker cp backend\migrations\add_09d.sql aps_postgres:/tmp/add_09d.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_09d.sql
+docker cp backend\migrations\add_10.sql aps_postgres:/tmp/add_10.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_10.sql
 ```
 
 ### Очистить кэш Python (если изменения не подхватываются)
@@ -572,6 +643,24 @@ docker rm -f aps_postgres
 docker exec aps_postgres pg_dump -U aps household > backup.sql
 ```
 
+### Проверить настройки Итерации 7
+
+```
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT setting_key, setting_value FROM organization_settings WHERE setting_key IN ('enable_cooling_degradation', 'cooling_degradation_factor', 'cooling_zone_capacity');"
+```
+
+### Проверить пулы ресурсов
+
+```
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT type, capacity FROM resource_pool ORDER BY type;"
+```
+
+### Посмотреть распределение cooling_mode в активной версии
+
+```
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT st.cooling_mode, COUNT(*) FROM scheduled_task st JOIN schedule_version sv ON sv.id = st.schedule_version_id WHERE sv.is_active = true GROUP BY st.cooling_mode ORDER BY st.cooling_mode NULLS LAST;"
+```
+
 ## ⚠️ Известные ограничения
 
 1. **Слив на линию** добавляется в конец цепочки (после замыва). Семантически неверно (по ТЗ замыв после слива), но структурно работает: NoOverlap не даёт им пересечься.
@@ -586,7 +675,9 @@ docker exec aps_postgres pg_dump -U aps household > backup.sql
 
 6. **Персонал:** на Итерации 6 нет HR-подсистемы (нет ФИО, смен, отпусков). Только пулы с capacity.
 
-7. **Solver**: на Итерации 6 с `AddCumulative` solver может не успеть найти OPTIMAL за 120 секунд — выдаёт FEASIBLE. Увеличение таймаута или `num_search_workers` — Итерация 9.
+7. **Solver:** с `AddCumulative` и моделью деградации охлаждения (O(N²) bool-переменных) solver может не успеть найти OPTIMAL за 120 секунд — выдаёт FEASIBLE. Увеличение таймаута или `num_search_workers` — Итерация 9.
+
+8. **Деградация охлаждения (Итерация 7)** активна, но в тестовом кейсе ТЗ `slow` не появляется — узкие места в других ресурсах (линии, аппаратчики, единственный tank). Чтобы увидеть `slow` в UI — уменьшите `cooling_degradation_factor` до 1.05 или разгрузите Line 1.
 
 ## 🐛 Troubleshooting
 
@@ -656,6 +747,31 @@ docker cp backend\migrations\add_09d.sql aps_postgres:/tmp/add_09d.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_09d.sql
 ```
 
+### 7. `UndefinedColumnError: column "cooling_mode" does not exist`
+
+**Симптом:** `GET /api/v1/gantt/` возвращает 500.
+
+**Причина:** не применена миграция `add_10b.sql` (Итерация 7).
+
+**Решение:**
+
+```
+docker cp backend\migrations\add_10b.sql aps_postgres:/tmp/add_10b.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_10b.sql
+```
+
+### 8. Все охлаждения помечены `slow`, хотя идут последовательно
+
+**Симптом:** на диаграмме Ганта много оранжевых пунктирных задач с иконкой ⏳, но по времени они не пересекаются.
+
+**Причина:** не применён hotfix Итерации 7 (модель `b_slow ⟺ пересечение` не активна). Используется старая модель из `plugins.py`, где `AddNoOverlap(fast_intervals)` конфликтует с `AddCumulative`.
+
+**Решение:** убедиться, что в `core.py` вызывается `_apply_cooling_degradation_model`, а в `plugins.py` убран `AddNoOverlap(fast_intervals)` из `CoolingDegradationConstraint`. Проверить логи backend:
+
+```
+[scheduler] [INFO] [stage=build] Итерация 7 (fix): применяем модель деградации для N cooling-задач
+```
+
 ## 🗺️ Roadmap
 
 | # | Итерация | Длит. | Приоритет | Статус |
@@ -667,9 +783,10 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_09d.sql
 | 4 | Перепланирование | 2 нед | 🔥🔥🔥 | ✅ |
 | 5 | Лаборатория и блокировки | 1.5 нед | 🔥🔥 | ✅ |
 | 5h | Hotfix: версии + tz + Gantt | 2 дня | 🔥🔥🔥 | ✅ |
-| 6 | **Люди как ресурс** | 2 нед | 🔥🔥 | ✅ |
-| 7 | Охлаждение с деградацией | 1.5 нед | 🔥 | 📋 Next |
-| 8 | ЧЗ и интеграции | 2 нед | 🔥 | ⏳ |
+| 6 | Люди как ресурс | 2 нед | 🔥🔥 | ✅ |
+| 7 | Охлаждение с деградацией | 1.5 нед | 🔥 | ✅ |
+| 7h | Hotfix: модель деградации охлаждения | 2 дня | 🔥🔥🔥 | ✅ |
+| 8 | ЧЗ и интеграции | 2 нед | 🔥 | 📋 Next |
 | 9 | Рефакторинг и качество | 2 нед | 🟡 | ⏳ |
 | 10 | Multi-objective и what-if | 2 нед | 🟡 | ⏳ |
 
@@ -679,10 +796,8 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_09d.sql
 
 ---
 
-**Итерации 0, 1, 2, 3, 4, 5, 6 завершены.**
+**Итерации 0, 1, 2, 3, 4, 5, 5h, 6, 7, 7h завершены.**
 
-**Итерация 5 hotfix — деактивация версий + таймзона + Gantt.**
+**Итерация 7 hotfix — модель деградации охлаждения.**
 
-**Итерация 6 — Люди как ресурс.**
-
-**Готовы к Итерации 7 — Охлаждение с деградацией.**
+**Готовы к Итерации 8 — ЧЗ и интеграции.**

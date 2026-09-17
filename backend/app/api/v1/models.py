@@ -51,7 +51,8 @@ class GanttTask(BaseModel):
     is_lab_blocked: Optional[bool] = False
     lab_status: Optional[str] = None
     lab_block_reason: Optional[str] = None
-
+    # Итерация 7: режим охлаждения
+    cooling_mode: Optional[str] = None   # "fast" | "slow" | None
 
 class GanttResponse(BaseModel):
     tasks: List[GanttTask]

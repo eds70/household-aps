@@ -6,8 +6,9 @@ Feature-флаги планировщика.
 Позволяет включать/выключать функциональность поэтапно
 без изменения кода и пересборки.
 
-Итерация 5: активирован enable_lab_blocking.
-Итерация 6: добавлены enable_operator_pools, enable_manual_station.
+Итерация 5: enable_lab_blocking.
+Итерация 6: enable_operator_pools, enable_manual_station.
+Итерация 7: enable_cooling_degradation.
 """
 
 from typing import Dict, Any, Optional
@@ -20,7 +21,7 @@ class FeatureFlags:
     Использование:
         flags = FeatureFlags(org_settings)
         if flags.enable_tank_routing:
-            # включить цепочки через танк
+            ...
     """
 
     # Значения по умолчанию (если в БД нет ключа)
@@ -34,8 +35,9 @@ class FeatureFlags:
         # Итерация 6
         "enable_operator_pools": False,
         "enable_manual_station": False,
-        # Итерация 7+
+        # Итерация 7
         "enable_cooling_degradation": False,
+        # Итерация 8+
         "enable_cz_integration": False,
     }
 
@@ -57,7 +59,6 @@ class FeatureFlags:
         """
         Args:
             org_settings: словарь {setting_key: setting_value} из organization_settings.
-                          setting_value может быть JSONB (list/dict/str/bool/int).
         """
         self._settings = org_settings or {}
         self._flags: Dict[str, Any] = {}
@@ -87,12 +88,22 @@ class FeatureFlags:
         """Получить значение флага по ключу."""
         return self._flags.get(key, default)
 
+    def get_float(self, key: str, default: float = 0.0) -> float:
+        """
+        Получить числовое значение настройки.
+
+        Используется для cooling_degradation_factor и других числовых настроек.
+        """
+        raw = self._settings.get(key, default)
+        try:
+            if isinstance(raw, str):
+                return float(raw.strip().strip('"').strip("'"))
+            return float(raw)
+        except (ValueError, TypeError):
+            return default
+
     def __getattr__(self, item: str) -> Any:
-        """
-        Позволяет обращаться к флагам как к атрибутам:
-            flags.enable_tank_routing
-            flags.enable_advisor
-        """
+        """Позволяет обращаться к флагам как к атрибутам."""
         if item.startswith("_"):
             raise AttributeError(item)
         if item in self._flags:
@@ -100,7 +111,7 @@ class FeatureFlags:
         raise AttributeError(f"FeatureFlag '{item}' not found")
 
     def as_dict(self) -> Dict[str, Any]:
-        """Вернуть все флаги как dict (для логирования)."""
+        """Вернуть все флаги как dict."""
         return dict(self._flags)
 
     def __repr__(self) -> str:

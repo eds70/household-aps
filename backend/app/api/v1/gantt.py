@@ -4,16 +4,15 @@ API для диаграммы Ганта.
 
 Итерация 1:
 - Возвращает linked_equipment_id, linked_equipment_name, task_role
-- Группирует по primary_equipment_id (реактор), связанная задача отображается
-  отдельно (на линии)
 
 Итерация 5 (hotfix):
-- Добавлен параметр version_id. Если не задан — берётся последняя активная версия.
-  Это фиксит баг задвоения задач на Ганте.
+- Параметр version_id. Фильтрация по schedule_version_id.
 
 Итерация 5 (hotfix #3):
-- Добавлены поля is_lab_blocked, lab_status, lab_block_reason в SQL и в GanttTask.
-  Это фиксит баг с фильтром "Только заблокированные" на Ганте.
+- is_lab_blocked, lab_status, lab_block_reason
+
+Итерация 7:
+- cooling_mode (fast | slow) для операций охлаждения с деградацией.
 """
 
 import io
@@ -40,9 +39,7 @@ async def _resolve_version_id(
         org_id: UUID,
         version_id: UUID | None,
 ) -> UUID | None:
-    """
-    Определяет версию плана для отображения.
-    """
+    """Определяет версию плана для отображения."""
     if version_id is not None:
         result = await db.execute(
             text("""
@@ -125,7 +122,8 @@ async def get_gantt_data(
                     st.task_role,
                     COALESCE(b.is_lab_blocked, FALSE) AS is_lab_blocked,
                     b.lab_status AS lab_status,
-                    b.lab_block_reason AS lab_block_reason
+                    b.lab_block_reason AS lab_block_reason,
+                    st.cooling_mode
                 FROM scheduled_task st
                 LEFT JOIN equipment eq ON st.equipment_id = eq.id
                 LEFT JOIN equipment leq ON st.linked_equipment_id = leq.id
@@ -148,7 +146,8 @@ async def get_gantt_data(
                     NULL::text AS task_role,
                     COALESCE(b.is_lab_blocked, FALSE) AS is_lab_blocked,
                     b.lab_status AS lab_status,
-                    b.lab_block_reason AS lab_block_reason
+                    b.lab_block_reason AS lab_block_reason,
+                    st.cooling_mode
                 FROM scheduled_task st
                 LEFT JOIN equipment eq ON st.equipment_id = eq.id
                 LEFT JOIN operation_template ot ON st.operation_template_id = ot.id
@@ -199,6 +198,7 @@ async def get_gantt_data(
                 is_lab_blocked=bool(row.is_lab_blocked) if row.is_lab_blocked is not None else False,
                 lab_status=row.lab_status,
                 lab_block_reason=row.lab_block_reason,
+                cooling_mode=row.cooling_mode,   # Итерация 7
             ))
 
         makespan_hours = 0.0
@@ -270,6 +270,7 @@ async def get_gantt_data(
             is_lab_blocked=False,
             lab_status=None,
             lab_block_reason=None,
+            cooling_mode=task.get("cooling_mode"),   # Итерация 7
         ))
 
     return GanttResponse(
@@ -298,7 +299,7 @@ async def export_gantt_to_excel(
     headers = [
         "Оборудование", "Связанное оборудование", "Роль", "Операция",
         "Партия", "Продукт", "Начало", "Конец", "Длительность (мин)",
-        "Заблокировано", "Причина",
+        "Заблокировано", "Причина", "Режим охлаждения",
     ]
     ws_table.append(headers)
 
@@ -325,7 +326,8 @@ async def export_gantt_to_excel(
             task.duration_minutes,
             "Да" if task.is_lab_blocked else "Нет",
             task.lab_block_reason or "",
-            ])
+            task.cooling_mode or "",   # Итерация 7
+        ])
 
     for col in ws_table.columns:
         max_len = max(len(str(cell.value)) for cell in col if cell.value is not None)

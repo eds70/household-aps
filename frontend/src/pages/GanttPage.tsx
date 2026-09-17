@@ -25,7 +25,9 @@ import {
     Typography,
 } from '@mui/material';
 import {
+    Clear as ClearIcon,
     Download as DownloadIcon,
+    FilterAltOff as FilterAltOffIcon,
     Lock as LockIcon,
     Refresh as RefreshIcon,
     Search as SearchIcon,
@@ -39,6 +41,7 @@ import 'vis-timeline/styles/vis-timeline-graph2d.min.css';
 import {ganttApi} from '../services/api';
 import {API_BASE_URL} from '../config';
 import {usePlan} from '../context/PlainContext';
+import type {CoolingMode} from '../types';
 
 const OPERATION_COLORS: Record<string, string> = {
     'Нагрев': '#e74c3c',
@@ -76,6 +79,8 @@ interface TaskData {
     is_lab_blocked?: boolean;
     lab_status?: string | null;
     lab_block_reason?: string | null;
+    // Итерация 7: режим охлаждения
+    cooling_mode?: CoolingMode;
 }
 
 const GanttPage: React.FC = () => {
@@ -89,10 +94,19 @@ const GanttPage: React.FC = () => {
 
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    const [stats, setStats] = useState({ totalTasks: 0, makespanHours: 0, equipmentCount: 0, blockedCount: 0 });
+    const [stats, setStats] = useState({
+        totalTasks: 0,
+        makespanHours: 0,
+        equipmentCount: 0,
+        blockedCount: 0,
+        coolingSlowCount: 0,
+    });
     const [tasks, setTasks] = useState<TaskData[]>([]);
     const [equipmentList, setEquipmentList] = useState<string[]>([]);
     const [productList, setProductList] = useState<string[]>([]);
+
+    // Счётчик отфильтрованных задач (для чипа «Показано: N / M»)
+    const [filteredCount, setFilteredCount] = useState(0);
 
     // Фильтры
     const [searchQuery, setSearchQuery] = useState('');
@@ -101,6 +115,15 @@ const GanttPage: React.FC = () => {
     const [showSetups, setShowSetups] = useState(true);
     const [showDowntimes, setShowDowntimes] = useState(true);
     const [showOnlyBlocked, setShowOnlyBlocked] = useState(false);
+    const [showOnlySlowCooling, setShowOnlySlowCooling] = useState(false);
+
+    // Активен ли хотя бы один фильтр (для индикации в чипе и кнопке сброса)
+    const hasActiveFilters =
+        searchQuery.length > 0 ||
+        equipmentFilter.length > 0 ||
+        productFilter.length > 0 ||
+        showOnlyBlocked ||
+        showOnlySlowCooling;
 
     // Редактирование задачи
     const [editDialogOpen, setEditDialogOpen] = useState(false);
@@ -115,9 +138,13 @@ const GanttPage: React.FC = () => {
         try {
             const data = await ganttApi.getData(currentVersionId || undefined);
 
-            // Подсчитаем заблокированные
-            const blockedCount = (data.tasks as TaskData[]).filter(
+            const typedTasks = data.tasks as TaskData[];
+
+            const blockedCount = typedTasks.filter(
                 (t) => t.is_lab_blocked === true
+            ).length;
+            const coolingSlowCount = typedTasks.filter(
+                (t) => t.cooling_mode === 'slow'
             ).length;
 
             setStats({
@@ -125,6 +152,7 @@ const GanttPage: React.FC = () => {
                 makespanHours: data.makespan_hours,
                 equipmentCount: data.equipment_list.length,
                 blockedCount,
+                coolingSlowCount,
             });
             setTasks(data.tasks);
             setEquipmentList(data.equipment_list);
@@ -149,6 +177,15 @@ const GanttPage: React.FC = () => {
             }
         };
     }, [loadGanttData]);
+
+    // Сброс всех фильтров одним кликом
+    const handleResetFilters = () => {
+        setSearchQuery('');
+        setEquipmentFilter([]);
+        setProductFilter([]);
+        setShowOnlyBlocked(false);
+        setShowOnlySlowCooling(false);
+    };
 
     // Генерация замывок между задачами на одном оборудовании
     const generateSetups = (tasksData: TaskData[]): TaskData[] => {
@@ -259,6 +296,11 @@ const GanttPage: React.FC = () => {
                 filteredTasks = filteredTasks.filter((task) => task.is_lab_blocked === true);
             }
 
+            // Итерация 7: фильтр только по slow-охлаждению
+            if (showOnlySlowCooling) {
+                filteredTasks = filteredTasks.filter((task) => task.cooling_mode === 'slow');
+            }
+
             if (searchQuery) {
                 const query = searchQuery.toLowerCase();
                 filteredTasks = filteredTasks.filter(
@@ -277,9 +319,20 @@ const GanttPage: React.FC = () => {
                 filteredTasks = filteredTasks.filter((task) => productFilter.includes(task.product_id));
             }
 
+            // ✅ Обновляем счётчик отфильтрованного
+            setFilteredCount(filteredTasks.length);
+
             const setups = showSetups ? generateSetups(filteredTasks) : [];
             const weekends = showDowntimes ? generateWeekends(filteredTasks, equipment) : [];
             const allItems = [...filteredTasks, ...setups, ...weekends];
+
+            // Если после фильтрации ничего не осталось — не строим timeline, оставляем контейнер пустым
+            if (allItems.length === 0) {
+                if (containerRef.current) {
+                    containerRef.current.innerHTML = '';
+                }
+                return;
+            }
 
             const groupsArray = equipment.map((eq: string) => ({
                 id: eq,
@@ -295,11 +348,14 @@ const GanttPage: React.FC = () => {
 
                 if (itemType === 'task') {
                     const isBlocked = task.is_lab_blocked === true;
+                    const isSlowCooling = task.cooling_mode === 'slow';
 
                     if (isBlocked) {
-                        // Итерация 5: заблокированные — красная рамка
                         style = `background-color: #ffebee; border: 2px solid #e74c3c; border-radius: 4px;`;
                         className = 'item-blocked';
+                    } else if (isSlowCooling) {
+                        style = `background-color: #fff3e0; border: 2px dashed #e67e22; border-radius: 4px;`;
+                        className = 'item-cooling-slow';
                     } else {
                         style = `background-color: ${color}30; border-left: 4px solid ${color}; border-radius: 4px;`;
                     }
@@ -309,9 +365,29 @@ const GanttPage: React.FC = () => {
                            ${task.lab_block_reason ? `<div style="color: #e74c3c; font-size: 11px; margin-top: 2px;">Причина: ${task.lab_block_reason}</div>` : ''}`
                         : '';
 
+                    let coolingBadge = '';
+                    if (task.cooling_mode === 'slow') {
+                        coolingBadge = `
+                            <div style="color: #e67e22; font-weight: bold; margin-top: 4px;">
+                                ⏳ ОХЛАЖДЕНИЕ ЗАМЕДЛЕНО (×1.3)
+                            </div>
+                            <div style="color: #e67e22; font-size: 11px; margin-top: 2px;">
+                                Зона охлаждения перегружена (2+ реактора одновременно)
+                            </div>
+                        `;
+                    } else if (task.cooling_mode === 'fast') {
+                        coolingBadge = `
+                            <div style="color: #3498db; font-size: 11px; margin-top: 4px;">
+                                ❄️ Охлаждение в обычном режиме
+                            </div>
+                        `;
+                    }
+
                     title = `
             <div style="padding: 8px; min-width: 280px;">
-              <b style="font-size: 14px; color: ${isBlocked ? '#e74c3c' : '#2c3e50'};">${isBlocked ? '🔒 ' : ''}${task.operation_name}</b><br>
+              <b style="font-size: 14px; color: ${isBlocked ? '#e74c3c' : '#2c3e50'};">
+                ${isBlocked ? '🔒 ' : ''}${isSlowCooling ? '⏳ ' : ''}${task.operation_name}
+              </b><br>
               <hr style="margin: 8px 0; border: none; border-top: 1px solid #ecf0f1;">
               <div style="font-size: 12px; line-height: 1.6;">
                 <b>Партия:</b> ${task.batch_id}<br>
@@ -321,6 +397,7 @@ const GanttPage: React.FC = () => {
                 <b>Начало:</b> ${new Date(task.start).toLocaleString('ru-RU')}<br>
                 <b>Конец:</b> ${new Date(task.end).toLocaleString('ru-RU')}
                 ${blockedBadge}
+                ${coolingBadge}
               </div>
             </div>
           `;
@@ -360,14 +437,15 @@ const GanttPage: React.FC = () => {
                 }
 
                 const blockedIcon = task.is_lab_blocked ? '🔒 ' : '';
+                const slowCoolingIcon = task.cooling_mode === 'slow' ? '⏳ ' : '';
 
                 return {
                     id: task.id,
                     group: task.equipment_id,
                     content: `
             <div style="padding: 4px; font-size: 11px;">
-              <div style="font-weight: bold; color: ${task.is_lab_blocked ? '#e74c3c' : '#2c3e50'}; margin-bottom: 2px;">
-                ${blockedIcon}${task.operation_name}
+              <div style="font-weight: bold; color: ${task.is_lab_blocked ? '#e74c3c' : (task.cooling_mode === 'slow' ? '#e67e22' : '#2c3e50')}; margin-bottom: 2px;">
+                ${blockedIcon}${slowCoolingIcon}${task.operation_name}
               </div>
               <div style="font-size: 10px; color: #555;">
                 ${task.duration_minutes} мин
@@ -438,7 +516,7 @@ const GanttPage: React.FC = () => {
 
             timelineRef.current.fit();
         },
-        [searchQuery, equipmentFilter, productFilter, showSetups, showDowntimes, showOnlyBlocked, isReadOnly]
+        [searchQuery, equipmentFilter, productFilter, showSetups, showDowntimes, showOnlyBlocked, showOnlySlowCooling, isReadOnly]
     );
 
     useEffect(() => {
@@ -536,7 +614,16 @@ const GanttPage: React.FC = () => {
                 <>
                     <Card sx={{ mb: 2, p: 2, bgcolor: '#f8f9fa' }}>
                         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2, alignItems: 'center' }}>
-                            <Chip label={`Всего задач: ${stats.totalTasks}`} color="primary" variant="outlined" />
+                            {/* ✅ Чип счётчика: если фильтр активен — показываем «Показано: N / M», иначе «Всего задач: M» */}
+                            <Chip
+                                label={
+                                    hasActiveFilters
+                                        ? `Показано: ${filteredCount} / ${stats.totalTasks}`
+                                        : `Всего задач: ${stats.totalTasks}`
+                                }
+                                color={hasActiveFilters ? 'warning' : 'primary'}
+                                variant={hasActiveFilters ? 'filled' : 'outlined'}
+                            />
                             <Chip label={`Makespan: ${stats.makespanHours.toFixed(1)} ч`} color="secondary" variant="outlined" />
                             <Chip label={`Оборудование: ${stats.equipmentCount}`} variant="outlined" />
                             {stats.blockedCount > 0 && (
@@ -544,6 +631,13 @@ const GanttPage: React.FC = () => {
                                     icon={<LockIcon />}
                                     label={`Заблокировано: ${stats.blockedCount}`}
                                     color="error"
+                                    variant="filled"
+                                />
+                            )}
+                            {stats.coolingSlowCount > 0 && (
+                                <Chip
+                                    label={`⏳ Замедленное охлаждение: ${stats.coolingSlowCount}`}
+                                    color="warning"
                                     variant="filled"
                                 />
                             )}
@@ -557,7 +651,8 @@ const GanttPage: React.FC = () => {
                                 />
                             )}
 
-                            <Box sx={{ display: 'flex', gap: 1, ml: 'auto', flexWrap: 'wrap' }}>
+                            {/* ✅ Увеличен gap до 1.5, чтобы элементы легенды не сливались */}
+                            <Box sx={{ display: 'flex', gap: 1.5, ml: 'auto', flexWrap: 'wrap' }}>
                                 {Object.entries(OPERATION_COLORS)
                                     .slice(0, 5)
                                     .map(([name, color]) => (
@@ -569,6 +664,10 @@ const GanttPage: React.FC = () => {
                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, fontSize: '0.85rem' }}>
                                     <Box sx={{ width: 12, height: 12, bgcolor: '#ffebee', border: '2px solid #e74c3c', borderRadius: '2px' }} />
                                     🔒 Заблокировано
+                                </Box>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, fontSize: '0.85rem' }}>
+                                    <Box sx={{ width: 12, height: 12, bgcolor: '#fff3e0', border: '2px dashed #e67e22', borderRadius: '2px' }} />
+                                    ⏳ Замедленное охлаждение
                                 </Box>
                             </Box>
                         </Box>
@@ -657,6 +756,31 @@ const GanttPage: React.FC = () => {
                                 label={<Typography variant="body2" sx={{ fontWeight: showOnlyBlocked ? 600 : 400 }}>🔒 Только заблокированные</Typography>}
                             />
 
+                            <FormControlLabel
+                                control={
+                                    <Checkbox
+                                        checked={showOnlySlowCooling}
+                                        onChange={(e) => setShowOnlySlowCooling(e.target.checked)}
+                                        size="small"
+                                        color="warning"
+                                    />
+                                }
+                                label={<Typography variant="body2" sx={{ fontWeight: showOnlySlowCooling ? 600 : 400 }}>⏳ Только замедленное охлаждение</Typography>}
+                            />
+
+                            {/* ✅ Кнопка сброса всех фильтров */}
+                            <Button
+                                size="small"
+                                variant="outlined"
+                                color="inherit"
+                                startIcon={<FilterAltOffIcon />}
+                                onClick={handleResetFilters}
+                                disabled={!hasActiveFilters}
+                                sx={{ textTransform: 'none' }}
+                            >
+                                Сбросить фильтры
+                            </Button>
+
                             <ToggleButtonGroup size="small" aria-label="zoom">
                                 <ToggleButton value="zoomOut" onClick={handleZoomOut}>
                                     <ZoomOutIcon />
@@ -670,6 +794,22 @@ const GanttPage: React.FC = () => {
                             </ToggleButtonGroup>
                         </Box>
                     </Card>
+
+                    {/* ✅ Информативное сообщение, если фильтр «съел» все задачи */}
+                    {hasActiveFilters && filteredCount === 0 && (
+                        <Alert
+                            severity="info"
+                            icon={<ClearIcon />}
+                            sx={{ mb: 2 }}
+                            action={
+                                <Button color="inherit" size="small" onClick={handleResetFilters}>
+                                    Сбросить
+                                </Button>
+                            }
+                        >
+                            По заданным фильтрам ничего не найдено. Попробуйте ослабить условия.
+                        </Alert>
+                    )}
 
                     <Card
                         sx={{
@@ -711,6 +851,12 @@ const GanttPage: React.FC = () => {
                                             boxShadow: '0 0 12px rgba(231, 76, 60, 0.7)',
                                         },
                                     },
+                                    '& .item-cooling-slow': {
+                                        boxShadow: '0 0 8px rgba(230, 126, 34, 0.4)',
+                                        '&:hover': {
+                                            boxShadow: '0 0 12px rgba(230, 126, 34, 0.7)',
+                                        },
+                                    },
                                     '& .item-setup': {
                                         opacity: 0.85,
                                         '&:hover': { opacity: 1 },
@@ -740,7 +886,7 @@ const GanttPage: React.FC = () => {
                     </Card>
 
                     <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block', textAlign: 'center' }}>
-                        💡 Все операции по реактору в одной строке • Пунктир = замывки • Фиолетовый фон = выходные • 🔒 = заблокировано лабораторией
+                        💡 Все операции по реактору в одной строке • Пунктир = замывки • Фиолетовый фон = выходные • 🔒 = заблокировано лабораторией • ⏳ = замедленное охлаждение
                         {isReadOnly ? ' • Режим просмотра (редактирование недоступно)' : ' • Двойной клик для редактирования'}
                         • Колесико мыши для масштабирования
                     </Typography>

@@ -9,20 +9,8 @@ API сменного планирования и РМ мастера (Итера
   GET  /api/v1/shift/{shift_id}/carryover    — переходящие задания
   POST /api/v1/shift/task/{task_id}/fact     — внести факт
 
-Итерация 5: в задачи добавлены поля is_lab_blocked, lab_status, lab_block_reason
-            для отображения блокировок в РМ мастера.
-
-Итерация 5 (hotfix):
-  - Добавлен параметр version_id (опционально). Если не задан — берётся
-    последняя активная версия (is_active = TRUE, ORDER BY created_at DESC).
-  - SQL-запросы фильтруют по schedule_version_id. Это фиксит баг
-    задвоения задач в UI (Мастер смены собирал задачи из всех версий).
-
-Итерация 5 (hotfix #2):
-  - list_shifts и get_shift_by_date используют сравнение по UTC-дате
-    через (starts_at AT TIME ZONE 'UTC')::date. Это фиксит баг с таймзоной:
-    naive datetime из Python не находил смену, если сессия asyncpg была
-    не в UTC.
+Итерация 5: в задачи добавлены поля is_lab_blocked, lab_status, lab_block_reason.
+Итерация 7: в задачи добавлено поле cooling_mode.
 """
 
 import logging
@@ -88,7 +76,6 @@ async def _resolve_version_id(
       4. Если версий нет вообще — возвращаем None (UI покажет пустой список).
     """
     if version_id is not None:
-        # Проверяем, что такая версия существует
         result = await db.execute(
             text("""
                 SELECT id FROM schedule_version
@@ -104,7 +91,6 @@ async def _resolve_version_id(
             )
         return version_id
 
-    # Ищем последнюю активную
     result = await db.execute(
         text("""
             SELECT id FROM schedule_version
@@ -118,7 +104,6 @@ async def _resolve_version_id(
     if row:
         return row.id
 
-    # Fallback: последняя по created_at (даже если is_active = FALSE)
     result = await db.execute(
         text("""
             SELECT id FROM schedule_version
@@ -250,8 +235,6 @@ async def get_shift_tasks(
     """Задания смены, сгруппированные по рабочим центрам."""
     await _check_shift_planning_enabled(db, org_id)
 
-    # Итерация 5 (hotfix): определяем версию плана
-    # ВЫЗОВ #1
     resolved_version_id = await _resolve_version_id(db, org_id, version_id)
 
     # Смена
@@ -276,7 +259,6 @@ async def get_shift_tasks(
         comment=shift_row.comment,
     )
 
-    # Если версий нет — возвращаем пустой список
     if resolved_version_id is None:
         return ShiftTasksResponse(
             shift=shift,
@@ -286,7 +268,7 @@ async def get_shift_tasks(
             done_count=0,
         )
 
-    # Задачи смены (Итерация 5: + lab_status, is_lab_blocked; hotfix: + version_id)
+    # Задачи смены (+ cooling_mode, Итерация 7)
     tasks_result = await db.execute(
         text("""
             SELECT
@@ -300,7 +282,8 @@ async def get_shift_tasks(
                 b.volume_kg AS batch_volume,
                 COALESCE(b.is_lab_blocked, FALSE) AS is_lab_blocked,
                 b.lab_status AS lab_status,
-                b.lab_block_reason AS lab_block_reason
+                b.lab_block_reason AS lab_block_reason,
+                st.cooling_mode
             FROM scheduled_task st
             LEFT JOIN equipment eq ON st.equipment_id = eq.id
             LEFT JOIN equipment leq ON st.linked_equipment_id = leq.id
@@ -321,7 +304,6 @@ async def get_shift_tasks(
 
     tasks = tasks_result.fetchall()
 
-    # Группировка по equipment_id
     groups_dict: dict = {}
     done_count = 0
 
@@ -354,6 +336,7 @@ async def get_shift_tasks(
             is_lab_blocked=bool(row.is_lab_blocked) if row.is_lab_blocked is not None else False,
             lab_status=row.lab_status,
             lab_block_reason=row.lab_block_reason,
+            cooling_mode=row.cooling_mode,
         )
 
         if task.status == "DONE":
@@ -397,7 +380,8 @@ async def get_shift_tasks(
                     p.id AS product_id, p.code AS product_code, p.name AS product_name,
                     COALESCE(b.is_lab_blocked, FALSE) AS is_lab_blocked,
                     b.lab_status AS lab_status,
-                    b.lab_block_reason AS lab_block_reason
+                    b.lab_block_reason AS lab_block_reason,
+                    st.cooling_mode
                 FROM scheduled_task st
                 LEFT JOIN equipment eq ON st.equipment_id = eq.id
                 LEFT JOIN equipment leq ON st.linked_equipment_id = leq.id
@@ -447,6 +431,7 @@ async def get_shift_tasks(
                 is_lab_blocked=bool(row.is_lab_blocked) if row.is_lab_blocked is not None else False,
                 lab_status=row.lab_status,
                 lab_block_reason=row.lab_block_reason,
+                cooling_mode=row.cooling_mode,
             )
 
             if eq_id not in groups_dict:
@@ -492,8 +477,6 @@ async def get_carryover(
     """Переходящие задания из предыдущей рабочей смены."""
     await _check_shift_planning_enabled(db, org_id)
 
-    # Итерация 5 (hotfix): определяем версию плана
-    # ВЫЗОВ #2
     resolved_version_id = await _resolve_version_id(db, org_id, version_id)
     if resolved_version_id is None:
         return []
@@ -525,7 +508,8 @@ async def get_carryover(
                 p.id AS product_id, p.code AS product_code, p.name AS product_name,
                 COALESCE(b.is_lab_blocked, FALSE) AS is_lab_blocked,
                 b.lab_status AS lab_status,
-                b.lab_block_reason AS lab_block_reason
+                b.lab_block_reason AS lab_block_reason,
+                st.cooling_mode
             FROM scheduled_task st
             LEFT JOIN equipment eq ON st.equipment_id = eq.id
             LEFT JOIN equipment leq ON st.linked_equipment_id = leq.id
@@ -572,6 +556,7 @@ async def get_carryover(
             is_lab_blocked=bool(row.is_lab_blocked) if row.is_lab_blocked is not None else False,
             lab_status=row.lab_status,
             lab_block_reason=row.lab_block_reason,
+            cooling_mode=row.cooling_mode,
         )
         for row in result.fetchall()
     ]

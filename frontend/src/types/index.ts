@@ -108,6 +108,9 @@ export type BatchStatus = 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED' | 'BLOCKED
 // Итерация 5: статус лабораторной проверки партии
 export type LabStatus = 'NOT_REQUIRED' | 'PENDING_LAB' | 'APPROVED' | 'BLOCKED';
 
+// Итерация 7: режим охлаждения
+export type CoolingMode = 'fast' | 'slow' | null;
+
 export interface ProductionOrder {
     id: string;
     product_id: string;
@@ -249,6 +252,8 @@ export interface ShiftTask {
     is_lab_blocked?: boolean;
     lab_status?: LabStatus | null;
     lab_block_reason?: string | null;
+    // Итерация 7: режим охлаждения
+    cooling_mode?: CoolingMode;
 }
 
 export interface ShiftTasksGrouped {
@@ -426,14 +431,16 @@ export interface RequestAnalysisRequest {
 }
 
 // ==========================================
-// PERSONNEL (Итерация 6)
+// PERSONNEL (Итерация 6 + Итерация 7)
 // ==========================================
 
 export type PersonnelPoolType =
     | 'REACTOR_OPERATOR'
     | 'LINE_OPERATOR'
     | 'MANUAL_OPERATOR'
-    | 'LAB';
+    | 'LAB'
+    | 'COOLING_ZONE'
+    | 'BOILER';
 
 export interface PersonnelPool {
     id: string;

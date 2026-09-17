@@ -4,6 +4,7 @@ Pydantic-модели для API смен (Итерация 3).
 
 Итерация 5: добавлены поля is_lab_blocked, lab_status, lab_block_reason
             в ShiftTaskResponse.
+Итерация 7: добавлено поле cooling_mode в ShiftTaskResponse.
 """
 
 from datetime import datetime
@@ -58,6 +59,8 @@ class ShiftTaskResponse(BaseModel):
     is_lab_blocked: Optional[bool] = False
     lab_status: Optional[str] = None
     lab_block_reason: Optional[str] = None
+    # Итерация 7: режим охлаждения ("fast" | "slow" | None)
+    cooling_mode: Optional[str] = None
 
 
 class ShiftTasksGrouped(BaseModel):

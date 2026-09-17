@@ -1,7 +1,6 @@
 ﻿# backend/app/main.py
 from datetime import datetime
 
-from app.api.v1.personnel import router as personnel_router  # Итерация 6
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -14,6 +13,7 @@ from app.api.v1.lab import router as lab_router
 from app.api.v1.materials import router as materials_router
 from app.api.v1.operations import router as operations_router
 from app.api.v1.orders import router as orders_router
+from app.api.v1.personnel import router as personnel_router  # Итерация 6
 from app.api.v1.products import router as products_router
 from app.api.v1.recipes import router as recipes_router
 from app.api.v1.reschedule import router as reschedule_router
@@ -47,6 +47,7 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_tags=tags_metadata,
+    debug=True,  # ← временно, для получения traceback
 )
 
 app.add_middleware(

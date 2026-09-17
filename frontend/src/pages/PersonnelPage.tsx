@@ -26,9 +26,11 @@ import {
     Typography,
 } from '@mui/material';
 import {
+    AcUnit as AcUnitIcon,
     Cancel as CancelIcon,
     Edit as EditIcon,
     Factory as FactoryIcon,
+    LocalFireDepartment as LocalFireDepartmentIcon,
     Lock as LockIcon,
     Person as PersonIcon,
     PrecisionManufacturing as PrecisionManufacturingIcon,
@@ -49,6 +51,8 @@ const POOL_TYPE_LABELS: Record<PersonnelPoolType, string> = {
     LINE_OPERATOR: 'Операторы линий розлива',
     MANUAL_OPERATOR: 'Операторы ручной станции',
     LAB: 'Лаборатория',
+    COOLING_ZONE: 'Зона охлаждения',
+    BOILER: 'Бойлер',
 };
 
 const POOL_TYPE_COLORS: Record<PersonnelPoolType, string> = {
@@ -56,6 +60,8 @@ const POOL_TYPE_COLORS: Record<PersonnelPoolType, string> = {
     LINE_OPERATOR: '#2ecc71',
     MANUAL_OPERATOR: '#e67e22',
     LAB: '#9b59b6',
+    COOLING_ZONE: '#00bcd4',
+    BOILER: '#795548',
 };
 
 const POOL_TYPE_ICONS: Record<PersonnelPoolType, React.ReactNode> = {
@@ -63,6 +69,8 @@ const POOL_TYPE_ICONS: Record<PersonnelPoolType, React.ReactNode> = {
     LINE_OPERATOR: <PrecisionManufacturingIcon fontSize="small" />,
     MANUAL_OPERATOR: <PrecisionManufacturingIcon fontSize="small" />,
     LAB: <ScienceIcon fontSize="small" />,
+    COOLING_ZONE: <AcUnitIcon fontSize="small" />,
+    BOILER: <LocalFireDepartmentIcon fontSize="small" />,
 };
 
 // ==========================================

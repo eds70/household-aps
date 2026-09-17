@@ -3,23 +3,22 @@
 Advisor — модуль подсказок планировщика.
 
 Анализирует данные и план, возвращает список AdvisorTip'ов:
-  1. MATERIAL_SHORTAGE — нехватка сырья (на сколько хватает).
+  1. MATERIAL_SHORTAGE — нехватка сырья.
   2. UNDERLOAD — неполная загрузка реактора.
   3. ROUTE_MISMATCH — продукт помечен VIA_TANK, но реактор без танка.
   4. EQUIPMENT_GAP — простой оборудования.
-  5. OVERLOAD — перегрузка оборудования.
+  5. COOLING_DEGRADATION — охлаждение с деградацией (Итерация 7).
 
 Подсказки возвращаются в порядке приоритета: CRITICAL → WARNING → INFO.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Any, Optional
 
 from .materials import (
     analyze_materials,
     MaterialAnalysis,
-    MaterialRequirement,
 )
 
 
@@ -36,6 +35,7 @@ class TipCode:
     EQUIPMENT_GAP = "EQUIPMENT_GAP"
     OVERLOAD = "OVERLOAD"
     NO_REACTOR = "NO_REACTOR"
+    COOLING_DEGRADATION = "COOLING_DEGRADATION"   # Итерация 7
 
 
 @dataclass
@@ -79,7 +79,6 @@ def check_material_shortage(analysis: MaterialAnalysis) -> List[AdvisorTip]:
     tips: List[AdvisorTip] = []
 
     for req in analysis.shortages:
-        # На сколько партий хватит (приблизительно)
         coverage_pct = 0.0
         if req.required_kg > 0:
             coverage_pct = (req.available_qty / req.required_kg) * 100.0
@@ -106,10 +105,9 @@ def check_material_shortage(analysis: MaterialAnalysis) -> List[AdvisorTip]:
             },
         ))
 
-    # Информационные предупреждения о малом запасе (surplus < 10% required)
     for req in analysis.requirements:
         if req.deficit_kg > 0:
-            continue  # уже добавили
+            continue
         if req.required_kg <= 0:
             continue
         safety_margin = req.surplus_kg / req.required_kg
@@ -146,11 +144,9 @@ def check_underload(
         batches: List[Dict],
         equipment_map: Dict[str, Dict],
         max_fill_percent: float = 0.70,
-        threshold: float = 0.50,  # ниже 50% — подсказка
+        threshold: float = 0.50,
 ) -> List[AdvisorTip]:
-    """
-    Проверяет партии, которые загружают реактор менее чем на threshold от max_fill_percent.
-    """
+    """Проверяет партии с загрузкой реактора < threshold от max_fill."""
     tips: List[AdvisorTip] = []
 
     for batch in batches:
@@ -173,7 +169,6 @@ def check_underload(
         fill_ratio_of_max = volume_kg / max_fill_kg if max_fill_kg > 0 else 0
 
         if fill_ratio_of_max < threshold:
-            # Показываем, сколько ещё «влезло» бы
             headroom_kg = max_fill_kg - volume_kg
 
             tips.append(AdvisorTip(
@@ -211,13 +206,9 @@ def check_route_mismatch(
         equipment_map: Dict[str, Dict],
         equipment_links: List[Dict],
 ) -> List[AdvisorTip]:
-    """
-    Проверяет: продукт помечен VIA_TANK, но у реактора нет танка.
-    В этом случае план выполним, но не так эффективно.
-    """
+    """Проверяет: продукт VIA_TANK, но у реактора нет танка."""
     tips: List[AdvisorTip] = []
 
-    # Индекс: реактор → есть ли танк
     reactor_has_tank: Dict[str, bool] = {}
     for link in equipment_links:
         from_id = str(link["from_equipment_id"])
@@ -251,8 +242,7 @@ def check_route_mismatch(
                 message=(
                     f"Продукт {product.get('name', '?')} помечен VIA_TANK, "
                     f"но реактор {equipment.get('name', '?')} не подключён к накопительной ёмкости. "
-                    f"Слив пойдёт напрямую на линию. Партии этого продукта на этом реакторе "
-                    f"будут занимать реактор дольше."
+                    f"Слив пойдёт напрямую на линию."
                 ),
                 details={
                     "product_id": product_id,
@@ -274,10 +264,7 @@ def check_equipment_gaps(
         equipment_map: Dict[str, Dict],
         min_gap_hours: float = 8.0,
 ) -> List[AdvisorTip]:
-    """
-    Проверяет простои оборудования больше min_gap_hours.
-    Использует результат расписания из последнего расчёта.
-    """
+    """Проверяет простои оборудования > min_gap_hours."""
     if not schedule_result or "tasks" not in schedule_result:
         return []
 
@@ -285,7 +272,6 @@ def check_equipment_gaps(
     if not tasks:
         return []
 
-    # Группируем по primary_equipment_id
     by_equipment: Dict[str, List[Dict]] = {}
     for task in tasks:
         eq_id = str(task.get("equipment_id") or "")
@@ -326,10 +312,102 @@ def check_equipment_gaps(
                         "gap_hours": gap_minutes / 60,
                         "before_op": curr.get("operation_name"),
                         "after_op": next_task.get("operation_name"),
-                        "start": curr_end.isoformat() if isinstance(curr_end, datetime) else None,
-                        "end": next_start.isoformat() if isinstance(next_start, datetime) else None,
                     },
                 ))
+
+    return tips
+
+
+# ==========================================
+# ПРОВЕРКА 5: ОХЛАЖДЕНИЕ С ДЕГРАДАЦИЕЙ (Итерация 7)
+# ==========================================
+
+def check_cooling_degradation(
+        schedule_result: Optional[Dict],
+        cooling_degradation_factor: float = 1.3,
+) -> List[AdvisorTip]:
+    """
+    Проверяет операции охлаждения с деградацией.
+
+    Логика:
+      - Смотрим задачи с cooling_mode.
+      - fast: обычная скорость.
+      - slow: замедление ×factor.
+
+    Возвращает:
+      - WARNING, если есть slow (есть замедление).
+      - INFO, если все fast, но были cooling-операции.
+      - Пусто, если cooling нет.
+    """
+    if not schedule_result or "tasks" not in schedule_result:
+        return []
+
+    tasks = schedule_result["tasks"]
+    if not tasks:
+        return []
+
+    cooling_tasks = [t for t in tasks if t.get("cooling_mode") in ("fast", "slow")]
+    if not cooling_tasks:
+        return []
+
+    fast_tasks = [t for t in cooling_tasks if t.get("cooling_mode") == "fast"]
+    slow_tasks = [t for t in cooling_tasks if t.get("cooling_mode") == "slow"]
+
+    fast_count = len(fast_tasks)
+    slow_count = len(slow_tasks)
+    total = fast_count + slow_count
+
+    tips: List[AdvisorTip] = []
+
+    if slow_count > 0:
+        # Есть замедление — это WARNING
+        # Считаем, насколько замедлилось
+        delta_pct = (cooling_degradation_factor - 1.0) * 100.0
+
+        # Суммарная длительность slow
+        slow_total_mins = sum(t.get("duration", 0) for t in slow_tasks)
+        # Суммарная длительность slow, если бы было fast
+        slow_total_if_fast = sum(
+            int(t.get("duration", 0) / cooling_degradation_factor)
+            for t in slow_tasks
+        )
+        extra_mins = slow_total_mins - slow_total_if_fast
+
+        tips.append(AdvisorTip(
+            code=TipCode.COOLING_DEGRADATION,
+            severity=TipSeverity.WARNING,
+            title=f"Охлаждение с деградацией: {slow_count} операций",
+            message=(
+                f"{slow_count} из {total} операций охлаждения выполняются "
+                f"в замедленном режиме (×{cooling_degradation_factor}). "
+                f"Это добавляет ~{extra_mins} мин к общему расписанию "
+                f"({delta_pct:.0f}% замедление)."
+            ),
+            details={
+                "total_cooling": total,
+                "fast_count": fast_count,
+                "slow_count": slow_count,
+                "extra_minutes": extra_mins,
+                "degradation_factor": cooling_degradation_factor,
+                "slow_task_ids": [str(t.get("op_id") or t.get("id")) for t in slow_tasks],
+            },
+        ))
+    else:
+        # Все fast — это INFO (просто информируем)
+        tips.append(AdvisorTip(
+            code=TipCode.COOLING_DEGRADATION,
+            severity=TipSeverity.INFO,
+            title=f"Охлаждение без деградации: {fast_count} операций",
+            message=(
+                f"Все {fast_count} операций охлаждения выполняются "
+                f"в обычном режиме. Зона охлаждения не перегружена."
+            ),
+            details={
+                "total_cooling": total,
+                "fast_count": fast_count,
+                "slow_count": 0,
+            },
+        ))
 
     return tips
 
@@ -349,18 +427,11 @@ def analyze(
         material_supplies: Optional[List[Dict]] = None,
         schedule_result: Optional[Dict] = None,
         max_fill_percent: float = 0.70,
+        cooling_degradation_factor: float = 1.3,
         enable_material_constraints: bool = True,
         enable_advisor: bool = True,
 ) -> AdvisorResult:
-    """
-    Главная функция Advisor'а.
-
-    Проверки:
-      1. Нехватка сырья (если enable_material_constraints)
-      2. Неполная загрузка реактора (если enable_advisor)
-      3. ROUTE_MISMATCH (если enable_advisor)
-      4. Простои оборудования (если есть schedule_result)
-    """
+    """Главная функция Advisor'а."""
     result = AdvisorResult()
 
     if not enable_advisor:
@@ -399,6 +470,13 @@ def analyze(
     for tip in check_equipment_gaps(
             schedule_result=schedule_result,
             equipment_map=equipment_map,
+    ):
+        result.add(tip)
+
+    # 5. Итерация 7: охлаждение с деградацией
+    for tip in check_cooling_degradation(
+            schedule_result=schedule_result,
+            cooling_degradation_factor=cooling_degradation_factor,
     ):
         result.add(tip)
 

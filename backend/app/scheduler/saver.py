@@ -5,6 +5,7 @@
 Итерация 3: _find_shift_for_time имеет fallback.
 Итерация 5 (hotfix): деактивация старых версий.
 Итерация 6: сохранение operator_pool в scheduled_task.
+Итерация 7: сохранение cooling_mode в scheduled_task.
 """
 
 import logging
@@ -157,7 +158,8 @@ class ScheduleSaver:
             has_role = await self._has_column(session, "scheduled_task", "task_role")
             has_shift = await self._has_column(session, "scheduled_task", "shift_id")
             has_status = await self._has_column(session, "scheduled_task", "status")
-            has_operator_pool = await self._has_column(session, "scheduled_task", "operator_pool")  # Итерация 6
+            has_operator_pool = await self._has_column(session, "scheduled_task", "operator_pool")
+            has_cooling_mode = await self._has_column(session, "scheduled_task", "cooling_mode")  # Итерация 7
 
             shifts = await self._load_shifts(session) if has_shift else []
             log_with_context(
@@ -169,6 +171,8 @@ class ScheduleSaver:
             # 4. Сохраняем задачи
             shift_matched = 0
             shift_none = 0
+            cooling_fast_count = 0
+            cooling_slow_count = 0
 
             for task in tasks:
                 op_id = task["op_id"]
@@ -195,7 +199,13 @@ class ScheduleSaver:
                     else:
                         shift_none += 1
 
-                # Базовый набор
+                # Итерация 7: cooling_mode
+                cooling_mode = task.get("cooling_mode")
+                if cooling_mode == "fast":
+                    cooling_fast_count += 1
+                elif cooling_mode == "slow":
+                    cooling_slow_count += 1
+
                 insert_data = {
                     "org_id": self.org_id,
                     "version_id": version_id,
@@ -207,10 +217,10 @@ class ScheduleSaver:
                     "end": task["end"],
                     "role": task.get("role"),
                     "shift_id": shift_id,
-                    "operator_pool": task.get("operator_pool"),   # Итерация 6
+                    "operator_pool": task.get("operator_pool"),
+                    "cooling_mode": cooling_mode,
                 }
 
-                # Динамически собираем INSERT
                 columns = [
                     "organization_id", "schedule_version_id", "batch_id",
                     "operation_template_id", "equipment_id",
@@ -237,6 +247,9 @@ class ScheduleSaver:
                 if has_operator_pool:
                     columns.append("operator_pool")
                     values.append(":operator_pool")
+                if has_cooling_mode:
+                    columns.append("cooling_mode")
+                    values.append(":cooling_mode")
 
                 columns.append("is_pinned")
                 values.append("FALSE")
@@ -252,7 +265,8 @@ class ScheduleSaver:
 
             log_with_context(
                 logger, logging.INFO,
-                f"Привязка к сменам: matched={shift_matched}, none={shift_none}",
+                f"Привязка к сменам: matched={shift_matched}, none={shift_none}; "
+                f"cooling: fast={cooling_fast_count}, slow={cooling_slow_count}",
                 stage="save", org_id=str(self.org_id),
             )
 
@@ -261,4 +275,6 @@ class ScheduleSaver:
                 "name": plan_name,
                 "tasks_saved": len(tasks),
                 "deactivated_versions": deactivated_count,
+                "cooling_fast": cooling_fast_count,
+                "cooling_slow": cooling_slow_count,
             }

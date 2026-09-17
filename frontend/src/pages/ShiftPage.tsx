@@ -27,9 +27,11 @@ import {
     Typography,
 } from '@mui/material';
 import {
+    AcUnit as AcUnitIcon,
     CheckCircle as CheckCircleIcon,
     ExpandMore as ExpandMoreIcon,
     History as HistoryIcon,
+    HourglassEmpty as HourglassIcon,
     Lock as LockIcon,
     LockOpen as LockOpenIcon,
     PlayArrow as PlayIcon,
@@ -40,7 +42,15 @@ import {
     Warning as WarningIcon,
 } from '@mui/icons-material';
 import {labApi, shiftApi} from '../services/api';
-import type {LabStatus, Shift, ShiftTask, ShiftTasksResponse, ShiftTaskStatus, TaskFactRequest,} from '../types';
+import type {
+    CoolingMode,
+    LabStatus,
+    Shift,
+    ShiftTask,
+    ShiftTasksResponse,
+    ShiftTaskStatus,
+    TaskFactRequest,
+} from '../types';
 
 const STATUS_LABELS: Record<ShiftTaskStatus, string> = {
     PLANNED: 'Запланировано',
@@ -261,13 +271,18 @@ const ShiftPage: React.FC = () => {
         const isInProgress = task.status === 'IN_PROGRESS';
         const isLabBlocked = task.is_lab_blocked === true;
         const labStatus: LabStatus = (task.lab_status as LabStatus) || 'NOT_REQUIRED';
+        const coolingMode: CoolingMode = task.cooling_mode || null;
+        const isSlowCooling = coolingMode === 'slow';
 
-        // Цвет рамки: заблокировано > выполнено > в работе > переходящее
+        // Цвет рамки: заблокировано > slow-охлаждение > выполнено > в работе > переходящее
         let borderLeft = '1px solid #e0e0e0';
         let bgcolor = 'white';
         if (isLabBlocked) {
             borderLeft = '4px solid #e74c3c';
             bgcolor = '#ffebee';
+        } else if (isSlowCooling) {
+            borderLeft = '4px solid #e67e22';
+            bgcolor = '#fff3e0';
         } else if (isDone) {
             borderLeft = '4px solid #4caf50';
         } else if (isInProgress) {
@@ -294,6 +309,9 @@ const ShiftPage: React.FC = () => {
                                 {isLabBlocked && (
                                     <LockIcon fontSize="small" sx={{ color: '#e74c3c' }} />
                                 )}
+                                {isSlowCooling && (
+                                    <HourglassIcon fontSize="small" sx={{ color: '#e67e22' }} />
+                                )}
                                 <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
                                     {task.operation_name}
                                 </Typography>
@@ -319,6 +337,25 @@ const ShiftPage: React.FC = () => {
                                         size="small"
                                         color={LAB_STATUS_COLORS[labStatus]}
                                         variant={isLabBlocked ? 'filled' : 'outlined'}
+                                    />
+                                )}
+                                {/* Итерация 7: чип режима охлаждения */}
+                                {coolingMode === 'slow' && (
+                                    <Chip
+                                        icon={<HourglassIcon />}
+                                        label="Замедленное охлаждение ×1.3"
+                                        size="small"
+                                        color="warning"
+                                        variant="filled"
+                                    />
+                                )}
+                                {coolingMode === 'fast' && (
+                                    <Chip
+                                        icon={<AcUnitIcon />}
+                                        label="Охлаждение (норма)"
+                                        size="small"
+                                        color="info"
+                                        variant="outlined"
                                     />
                                 )}
                             </Box>
@@ -597,6 +634,19 @@ const ShiftPage: React.FC = () => {
                                     {selectedTask.linked_equipment_name && ` + ${selectedTask.linked_equipment_name}`}<br />
                                     <b>План:</b> {new Date(selectedTask.planned_start).toLocaleString('ru-RU')} — {new Date(selectedTask.planned_end).toLocaleString('ru-RU')}
                                 </Typography>
+                                {selectedTask.cooling_mode && (
+                                    <Alert
+                                        severity={selectedTask.cooling_mode === 'slow' ? 'warning' : 'info'}
+                                        sx={{ mt: 1 }}
+                                        icon={selectedTask.cooling_mode === 'slow' ? <HourglassIcon /> : <AcUnitIcon />}
+                                    >
+                                        <Typography variant="caption">
+                                            {selectedTask.cooling_mode === 'slow'
+                                                ? 'Режим охлаждения: замедленный (×1.3) — зона охлаждения была перегружена.'
+                                                : 'Режим охлаждения: обычный.'}
+                                        </Typography>
+                                    </Alert>
+                                )}
                             </Box>
 
                             <Divider />
