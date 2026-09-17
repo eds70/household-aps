@@ -11,6 +11,11 @@
   цепочек операций.
 - Логирование пропущенных партий.
 - Возврат списка исключённых партий в результате.
+
+Итерация 6:
+- Передача operator_pool в задачи.
+- Передача resource_pools в плагины (для AddCumulative по пулам).
+- Логирование загруженных пулов.
 """
 
 import asyncio
@@ -108,6 +113,7 @@ class ProductionScheduler:
         equipment_links = data.get("equipment_links", [])
         org_settings = data.get("org_settings", {})
         gp_products = data.get("gp_products", {})
+        resource_pools = data.get("resource_pools", [])
 
         self.flags = FeatureFlags(org_settings)
         log_with_context(
@@ -128,6 +134,14 @@ class ProductionScheduler:
             f"Загружено: партий={len(batches)}, оборудования={len(equipment_map)}, "
             f"связей={len(equipment_links)}, ГП={len(gp_products)}, "
             f"событий календаря={len(calendar_events)}",
+            stage="load", org_id=str(self.org_id),
+        )
+
+        # Итерация 6: логирование пулов ресурсов
+        pool_types = [p.get("type") for p in resource_pools]
+        log_with_context(
+            logger, logging.INFO,
+            f"Загружено пулов ресурсов: {len(resource_pools)} ({pool_types})",
             stage="load", org_id=str(self.org_id),
         )
 
@@ -211,7 +225,8 @@ class ProductionScheduler:
             log_with_context(
                 logger, logging.DEBUG,
                 f"Партия {batch_id[:8]}: {summary['total_steps']} шагов, "
-                f"роли={summary['roles']}, длительность={summary['total_duration']} мин",
+                f"роли={summary['roles']}, длительность={summary['total_duration']} мин, "
+                f"пулы={summary.get('operator_pools', [])}",
                 stage="routing", org_id=str(self.org_id),
             )
 
@@ -266,6 +281,7 @@ class ProductionScheduler:
                     "needs_boiler": step.op.get("needs_boiler", False),
                     "needs_cooling": step.op.get("needs_cooling_zone", False),
                     "needs_operator": step.op.get("needs_operator", False),
+                    "operator_pool": step.operator_pool,   # Итерация 6
                 }
 
         # Зависимости
@@ -389,7 +405,9 @@ class ProductionScheduler:
             stage="build", org_id=str(self.org_id),
         )
 
-        # Плагины
+        # ==========================================
+        # Итерация 6: плагины ограничений с пулами ресурсов
+        # ==========================================
         plugin_tasks = {}
         for key, task in self.tasks.items():
             plugin_tasks[key] = {
@@ -397,13 +415,21 @@ class ProductionScheduler:
                 "needs_boiler": task["needs_boiler"],
                 "needs_cooling": task["needs_cooling"],
                 "needs_operator": task["needs_operator"],
+                "operator_pool": task.get("operator_pool"),   # Итерация 6
             }
+
         for plugin in CONSTRAINT_PLUGINS:
-            plugin.apply(model, plugin_tasks)
+            try:
+                # Итерация 6: пробуем передать resource_pools
+                plugin.apply(model, plugin_tasks, resource_pools=resource_pools)
+            except TypeError:
+                # Fallback для старых плагинов без resource_pools
+                plugin.apply(model, plugin_tasks)
 
         log_with_context(
             logger, logging.INFO,
-            f"Применено плагинов: {len(CONSTRAINT_PLUGINS)}",
+            f"Применено плагинов: {len(CONSTRAINT_PLUGINS)}, "
+            f"пулов ресурсов: {len(resource_pools)}",
             stage="build", org_id=str(self.org_id),
         )
 
@@ -502,6 +528,7 @@ class ProductionScheduler:
                 "end": end_dt,
                 "duration": end - start,
                 "operation_name": task["op"].get("name", "Операция"),
+                "operator_pool": task.get("operator_pool"),   # Итерация 6
             })
 
         schedule.sort(key=lambda x: x["start"])

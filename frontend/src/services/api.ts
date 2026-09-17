@@ -464,4 +464,42 @@ export const labApi = {
     },
 };
 
+// ==========================================
+// Personnel API (Итерация 6)
+// ==========================================
+export const personnelApi = {
+    /** Список пулов операторов с загрузкой */
+    listPools: async (versionId?: string): Promise<import('../types').PersonnelPoolList> => {
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.get('/api/v1/personnel/pools', { params });
+        return response.data;
+    },
+
+    /** Один пул */
+    getPool: async (
+        poolId: string,
+        versionId?: string,
+    ): Promise<import('../types').PersonnelPool> => {
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.get(`/api/v1/personnel/pools/${poolId}`, { params });
+        return response.data;
+    },
+
+    /** Обновить capacity / name / comment */
+    updatePool: async (
+        poolId: string,
+        data: import('../types').PersonnelPoolUpdate,
+    ): Promise<import('../types').PersonnelPool> => {
+        const response = await api.put(`/api/v1/personnel/pools/${poolId}`, data);
+        return response.data;
+    },
+
+    /** Краткая информация о загрузке */
+    getLoad: async (versionId?: string): Promise<import('../types').PersonnelLoadItem[]> => {
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.get('/api/v1/personnel/load', { params });
+        return response.data;
+    },
+};
+
 export default api;

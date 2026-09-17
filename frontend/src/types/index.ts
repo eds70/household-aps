@@ -424,3 +424,47 @@ export interface ApproveBatchRequest {
 export interface RequestAnalysisRequest {
     comment?: string | null;
 }
+
+// ==========================================
+// PERSONNEL (Итерация 6)
+// ==========================================
+
+export type PersonnelPoolType =
+    | 'REACTOR_OPERATOR'
+    | 'LINE_OPERATOR'
+    | 'MANUAL_OPERATOR'
+    | 'LAB';
+
+export interface PersonnelPool {
+    id: string;
+    organization_id: string;
+    name: string;
+    type: PersonnelPoolType;
+    capacity: number;
+    comment?: string | null;
+    updated_at?: string | null;
+    scheduled_count: number;
+    peak_concurrent: number;
+    load_percent: number;
+}
+
+export interface PersonnelPoolList {
+    pools: PersonnelPool[];
+    total_capacity: number;
+    total_scheduled: number;
+    version_id?: string | null;
+    version_name?: string | null;
+}
+
+export interface PersonnelPoolUpdate {
+    name?: string;
+    capacity?: number;
+    comment?: string;
+}
+
+export interface PersonnelLoadItem {
+    type: PersonnelPoolType;
+    capacity: number;
+    peak: number;
+    load_percent: number;
+}

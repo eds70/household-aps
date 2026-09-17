@@ -1,10 +1,10 @@
 // frontend/src/App.tsx
 import React from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { ThemeProvider, createTheme } from '@mui/material/styles';
+import {BrowserRouter, Navigate, Route, Routes} from 'react-router-dom';
+import {createTheme, ThemeProvider} from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
-import { AuthProvider, useAuth } from './context/AuthContext';
-import { PlanProvider } from './context/PlainContext';
+import {AuthProvider, useAuth} from './context/AuthContext';
+import {PlanProvider} from './context/PlainContext';
 import MainLayout from './components/layout/MainLayout';
 import LoginPage from './pages/LoginPage';
 import EquipmentPage from './pages/EquipmentPage';
@@ -15,8 +15,9 @@ import OperationsPage from './pages/OperationsPage';
 import OrdersPage from './pages/OrdersPage';
 import SchedulePage from './pages/SchedulePage';
 import GanttPage from './pages/GanttPage';
-import ShiftPage from './pages/ShiftPage';  // NEW
-import { CircularProgress, Box } from '@mui/material';
+import ShiftPage from './pages/ShiftPage';
+import PersonnelPage from './pages/PersonnelPage'; // Итерация 6
+import {Box, CircularProgress} from '@mui/material';
 
 const theme = createTheme({
     palette: {
@@ -90,7 +91,8 @@ const AppRoutes: React.FC = () => {
                 <Route path="orders" element={<OrdersPage />} />
                 <Route path="schedule" element={<SchedulePage />} />
                 <Route path="gantt" element={<GanttPage />} />
-                <Route path="shift" element={<ShiftPage />} />  {/* NEW */}
+                <Route path="shift" element={<ShiftPage />} />
+                <Route path="personnel" element={<PersonnelPage />} />   {/* Итерация 6 */}
             </Route>
 
             <Route path="*" element={<Navigate to="/equipment" replace />} />

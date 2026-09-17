@@ -53,6 +53,7 @@ const MENU_ITEMS = [
     { path: '/schedule', label: 'Планирование', icon: <ScheduleIcon /> },
     { path: '/gantt', label: 'Диаграмма Ганта', icon: <TimelineIcon /> },
     { path: '/shift', label: 'Мастер смены', icon: <AssignmentIcon /> },
+    { path: '/personnel', label: 'Персонал', icon: <PersonIcon /> },
 ];
 
 const ROLE_LABELS: Record<string, string> = {

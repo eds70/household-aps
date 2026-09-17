@@ -7,6 +7,7 @@ Feature-флаги планировщика.
 без изменения кода и пересборки.
 
 Итерация 5: активирован enable_lab_blocking.
+Итерация 6: добавлены enable_operator_pools, enable_manual_station.
 """
 
 from typing import Dict, Any, Optional
@@ -30,9 +31,11 @@ class FeatureFlags:
         "enable_material_constraints": False,
         "enable_advisor": True,
         "enable_lab_blocking": False,
-        "enable_cooling_degradation": False,
+        # Итерация 6
         "enable_operator_pools": False,
         "enable_manual_station": False,
+        # Итерация 7+
+        "enable_cooling_degradation": False,
         "enable_cz_integration": False,
     }
 
@@ -44,9 +47,9 @@ class FeatureFlags:
         "enable_material_constraints",
         "enable_advisor",
         "enable_lab_blocking",
-        "enable_cooling_degradation",
         "enable_operator_pools",
         "enable_manual_station",
+        "enable_cooling_degradation",
         "enable_cz_integration",
     }
 

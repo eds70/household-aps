@@ -9,6 +9,11 @@
 Итерация 5:
 - Читает batch.is_lab_blocked, batch.lab_status для исключения
   заблокированных партий из планирования.
+
+Итерация 6:
+- Читает resource_pool с полным списком типов (REACTOR_OPERATOR,
+  LINE_OPERATOR, MANUAL_OPERATOR, COOLING_ZONE, BOILER, LAB).
+- Возвращает список пулов в resource_pools.
 """
 
 from typing import List, Dict, Any
@@ -38,7 +43,7 @@ class DataLoader:
                 "operation_templates": await self._load_operations(session),
                 "setup_matrix": await self._load_setup_matrix(session),
                 "calendar_events": await self._load_calendar(session),
-                "resource_pools": await self._load_resources(session),
+                "resource_pools": await self._load_resource_pools(session),
                 "org_settings": await self._load_org_settings(session),
                 "equipment_links": await self._load_equipment_links(session),
                 "gp_products": await self._load_gp_products(session),
@@ -50,13 +55,7 @@ class DataLoader:
             }
 
     async def _load_batches(self, session) -> List[Dict]:
-        """
-        Загружает партии.
-
-        Итерация 5: добавлены поля is_lab_blocked, lab_status.
-        Заблокированные партии загружаются, но планировщик их
-        исключает из построения routing.
-        """
+        """Загружает партии (Итерация 5: + lab_status, is_lab_blocked)."""
         result = await session.execute(
             text("""
                 SELECT b.id, b.product_id, b.volume_kg, b.assigned_equipment_id,
@@ -110,6 +109,11 @@ class DataLoader:
         return {str(row.id): dict(row._mapping) for row in result.fetchall()}
 
     async def _load_operations(self, session) -> Dict[str, List[Dict]]:
+        """
+        Загружает техкарты.
+
+        Итерация 6: добавлено поле operator_pool.
+        """
         result = await session.execute(
             text("""
                 SELECT id, product_id, stage_order, name, base_duration_mins,
@@ -151,16 +155,34 @@ class DataLoader:
         )
         return [dict(row._mapping) for row in result.fetchall()]
 
-    async def _load_resources(self, session) -> Dict[str, int]:
+    # ==========================================
+    # ИТЕРАЦИЯ 6: ПУЛЫ РЕСУРСОВ
+    # ==========================================
+
+    async def _load_resource_pools(self, session) -> List[Dict]:
+        """
+        Загружает пулы ресурсов с полной информацией.
+
+        Возвращает список словарей:
+          [
+            {"id": ..., "name": ..., "type": "REACTOR_OPERATOR", "capacity": 3},
+            {"id": ..., "name": ..., "type": "LINE_OPERATOR", "capacity": 2},
+            {"id": ..., "name": ..., "type": "MANUAL_OPERATOR", "capacity": 1},
+            {"id": ..., "name": ..., "type": "COOLING_ZONE", "capacity": 2},
+            {"id": ..., "name": ..., "type": "BOILER", "capacity": 1},
+            {"id": ..., "name": ..., "type": "LAB", "capacity": 1},
+          ]
+        """
         result = await session.execute(
             text("""
-                SELECT type, SUM(capacity) as total_capacity
-                FROM resource_pool WHERE organization_id = :org_id
-                GROUP BY type
+                SELECT id, name, type, capacity, comment
+                FROM resource_pool
+                WHERE organization_id = :org_id
+                ORDER BY type
             """),
             {"org_id": self.org_id},
         )
-        return {row.type: row.total_capacity for row in result.fetchall()}
+        return [dict(row._mapping) for row in result.fetchall()]
 
     async def _load_org_settings(self, session) -> Dict[str, Any]:
         result = await session.execute(

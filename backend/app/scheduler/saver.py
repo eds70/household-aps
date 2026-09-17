@@ -2,14 +2,9 @@
 """
 Сохранение результатов планирования в БД.
 
-Итерация 3 (доработка):
-- _find_shift_for_time имеет fallback: если задача вне окна смены,
-  привязываем к ближайшей смене (по abs-разнице со starts_at).
-
-Итерация 5 (hotfix):
-- При создании новой версии плана — деактивируем все старые версии
-  (is_active = FALSE). Это фиксит баг задвоения задач в UI:
-  Мастер смены и Гант больше не собирают задачи из всех версий.
+Итерация 3: _find_shift_for_time имеет fallback.
+Итерация 5 (hotfix): деактивация старых версий.
+Итерация 6: сохранение operator_pool в scheduled_task.
 """
 
 import logging
@@ -57,32 +52,22 @@ class ScheduleSaver:
         return [dict(row._mapping) for row in result.fetchall()]
 
     def _to_naive(self, dt: datetime) -> datetime:
-        """Убирает tzinfo для сравнения."""
         if dt.tzinfo is not None:
             return dt.replace(tzinfo=None)
         return dt
 
     def _find_shift_for_time(self, shifts: List[Dict], dt: datetime) -> Optional[str]:
-        """
-        Определяет shift_id по времени начала задачи.
-
-        Алгоритм:
-          1. Если dt попадает в окно [starts_at, ends_at] — берём эту смену.
-          2. Иначе — берём смену с ближайшим starts_at (по abs-разнице).
-        """
         if not shifts:
             return None
 
         dt_naive = self._to_naive(dt)
 
-        # Шаг 1: точное попадание в окно смены
         for shift in shifts:
             start = self._to_naive(shift["starts_at"])
             end = self._to_naive(shift["ends_at"])
             if start <= dt_naive <= end:
                 return str(shift["id"])
 
-        # Шаг 2: fallback — ближайшая смена по starts_at
         closest_shift = None
         closest_diff = None
 
@@ -104,11 +89,7 @@ class ScheduleSaver:
             version_id = uuid4()
             plan_name = f"План от {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
-            # ==========================================
-            # Итерация 5 (hotfix): деактивируем старые версии
-            # ==========================================
-            # Без этого UI (Мастер смены, Гант) собирает задачи
-            # из ВСЕХ версий, что даёт визуальное задвоение.
+            # Итерация 5 (hotfix): деактивация старых версий
             deactivate_result = await session.execute(
                 text("""
                     UPDATE schedule_version
@@ -125,7 +106,7 @@ class ScheduleSaver:
                     stage="save", org_id=str(self.org_id),
                 )
 
-            # 1. Версия плана (уже активная)
+            # 1. Версия плана
             await session.execute(
                 text("""
                     INSERT INTO schedule_version (id, organization_id, name, version_type, is_active, created_at)
@@ -176,8 +157,8 @@ class ScheduleSaver:
             has_role = await self._has_column(session, "scheduled_task", "task_role")
             has_shift = await self._has_column(session, "scheduled_task", "shift_id")
             has_status = await self._has_column(session, "scheduled_task", "status")
+            has_operator_pool = await self._has_column(session, "scheduled_task", "operator_pool")  # Итерация 6
 
-            # Загружаем смены
             shifts = await self._load_shifts(session) if has_shift else []
             log_with_context(
                 logger, logging.INFO,
@@ -187,7 +168,6 @@ class ScheduleSaver:
 
             # 4. Сохраняем задачи
             shift_matched = 0
-            shift_fallback = 0
             shift_none = 0
 
             for task in tasks:
@@ -215,78 +195,64 @@ class ScheduleSaver:
                     else:
                         shift_none += 1
 
-                if has_linked and has_role and has_shift and has_status:
-                    await session.execute(
-                        text("""
-                            INSERT INTO scheduled_task
-                            (organization_id, schedule_version_id, batch_id,
-                             operation_template_id, equipment_id, linked_equipment_id,
-                             planned_start, planned_end, task_role, shift_id, status, is_pinned)
-                            VALUES (:org_id, :version_id, :batch_id, :op_id, :eq_id,
-                                    :linked_eq_id, :start, :end, :role, :shift_id, 'PLANNED', FALSE)
-                        """),
-                        {
-                            "org_id": self.org_id,
-                            "version_id": version_id,
-                            "batch_id": task["batch_id"],
-                            "op_id": op_id_for_db,
-                            "eq_id": task["equipment_id"],
-                            "linked_eq_id": task.get("linked_equipment_id"),
-                            "start": task["start"],
-                            "end": task["end"],
-                            "role": task.get("role"),
-                            "shift_id": shift_id,
-                        },
-                    )
-                elif has_linked and has_role:
-                    await session.execute(
-                        text("""
-                            INSERT INTO scheduled_task
-                            (organization_id, schedule_version_id, batch_id,
-                             operation_template_id, equipment_id, linked_equipment_id,
-                             planned_start, planned_end, task_role, is_pinned)
-                            VALUES (:org_id, :version_id, :batch_id, :op_id, :eq_id,
-                                    :linked_eq_id, :start, :end, :role, FALSE)
-                        """),
-                        {
-                            "org_id": self.org_id,
-                            "version_id": version_id,
-                            "batch_id": task["batch_id"],
-                            "op_id": op_id_for_db,
-                            "eq_id": task["equipment_id"],
-                            "linked_eq_id": task.get("linked_equipment_id"),
-                            "start": task["start"],
-                            "end": task["end"],
-                            "role": task.get("role"),
-                        },
-                    )
-                else:
-                    await session.execute(
-                        text("""
-                            INSERT INTO scheduled_task
-                            (organization_id, schedule_version_id, batch_id,
-                             operation_template_id, equipment_id,
-                             planned_start, planned_end, is_pinned)
-                            VALUES (:org_id, :version_id, :batch_id, :op_id, :eq_id,
-                                    :start, :end, FALSE)
-                        """),
-                        {
-                            "org_id": self.org_id,
-                            "version_id": version_id,
-                            "batch_id": task["batch_id"],
-                            "op_id": op_id_for_db,
-                            "eq_id": task["equipment_id"],
-                            "start": task["start"],
-                            "end": task["end"],
-                        },
-                    )
+                # Базовый набор
+                insert_data = {
+                    "org_id": self.org_id,
+                    "version_id": version_id,
+                    "batch_id": task["batch_id"],
+                    "op_id": op_id_for_db,
+                    "eq_id": task["equipment_id"],
+                    "linked_eq_id": task.get("linked_equipment_id"),
+                    "start": task["start"],
+                    "end": task["end"],
+                    "role": task.get("role"),
+                    "shift_id": shift_id,
+                    "operator_pool": task.get("operator_pool"),   # Итерация 6
+                }
+
+                # Динамически собираем INSERT
+                columns = [
+                    "organization_id", "schedule_version_id", "batch_id",
+                    "operation_template_id", "equipment_id",
+                    "planned_start", "planned_end",
+                ]
+                values = [
+                    ":org_id", ":version_id", ":batch_id",
+                    ":op_id", ":eq_id",
+                    ":start", ":end",
+                ]
+
+                if has_linked:
+                    columns.append("linked_equipment_id")
+                    values.append(":linked_eq_id")
+                if has_role:
+                    columns.append("task_role")
+                    values.append(":role")
+                if has_shift:
+                    columns.append("shift_id")
+                    values.append(":shift_id")
+                if has_status:
+                    columns.append("status")
+                    values.append("'PLANNED'")
+                if has_operator_pool:
+                    columns.append("operator_pool")
+                    values.append(":operator_pool")
+
+                columns.append("is_pinned")
+                values.append("FALSE")
+
+                query = text(f"""
+                    INSERT INTO scheduled_task ({', '.join(columns)})
+                    VALUES ({', '.join(values)})
+                """)
+
+                await session.execute(query, insert_data)
 
             await session.commit()
 
             log_with_context(
                 logger, logging.INFO,
-                f"Привязка к сменам: matched={shift_matched}, "
-                f"fallback={shift_fallback}, none={shift_none}",
+                f"Привязка к сменам: matched={shift_matched}, none={shift_none}",
                 stage="save", org_id=str(self.org_id),
             )
 
