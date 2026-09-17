@@ -7,19 +7,20 @@
 - VIA_TANK: реактор → танк → линия
 - Слив занимает два ресурса
 - Замыв реактора идёт ПОСЛЕ слива (в конце цепочки)
+
+Итерация 5: тесты обрезки цепочки после лаборатории (truncate_after_lab).
 """
 
 import pytest
-from tests.fixtures import tz_case
+
 from app.scheduler.routing import (
     build_routing,
-    RoutingStep,
     TaskRole,
-    RouteType,
     get_routing_summary,
     _find_tank_for_reactor,
     _find_line_for_product,
 )
+from tests.fixtures import tz_case
 
 
 # ==========================================
@@ -292,6 +293,97 @@ def test_wash_depends_on_fill():
     assert wash.role == TaskRole.WASH
     assert fill.role == TaskRole.LINE_FILL
     assert fill.op_id in wash.depends_on_op_ids
+
+
+# ==========================================
+# ТЕСТЫ: ОБРЕЗКА ПОСЛЕ ЛАБОРАТОРИИ (Итерация 5)
+# ==========================================
+
+def test_truncate_after_lab_cream():
+    """
+    Крем-мыло: обрезка после первой lab-операции.
+    Lab на этапе 5, значит остаётся 5 шагов.
+    """
+    batch = {"id": "b1", "product_id": "PF_CREAM", "volume_kg": 3500,
+             "assigned_equipment_id": "REACTOR_1"}
+    steps = build_routing(
+        batch=batch,
+        product=_make_products_map()["PF_CREAM"],
+        reactor=_make_equipment_map()["REACTOR_1"],
+        operations=_make_operations_for_pf("PF_CREAM"),
+        equipment_map=_make_equipment_map(),
+        equipment_links=_make_links(),
+        products_map=_make_products_map(),
+        calc_duration=_calc_duration,
+        truncate_after_lab=True,
+    )
+    assert len(steps) == 5
+    assert steps[-1].op.get("needs_lab") is True
+    assert steps[-1].is_last_in_batch is True
+    assert steps[0].is_first_in_batch is True
+
+
+def test_truncate_after_lab_antiseptic():
+    """
+    Антисептик: lab на этапе 3, значит остаётся 3 шага.
+    """
+    batch = {"id": "b1", "product_id": "PF_ANTISEPTIC", "volume_kg": 5600,
+             "assigned_equipment_id": "REACTOR_3"}
+    steps = build_routing(
+        batch=batch,
+        product=_make_products_map()["PF_ANTISEPTIC"],
+        reactor=_make_equipment_map()["REACTOR_3"],
+        operations=_make_operations_for_pf("PF_ANTISEPTIC"),
+        equipment_map=_make_equipment_map(),
+        equipment_links=_make_links(),
+        products_map=_make_products_map(),
+        calc_duration=_calc_duration,
+        truncate_after_lab=True,
+    )
+    assert len(steps) == 3
+    assert steps[-1].op.get("needs_lab") is True
+
+
+def test_truncate_after_lab_dish():
+    """
+    Средство: lab на этапе 4, значит остаётся 4 шага.
+    """
+    batch = {"id": "b1", "product_id": "PF_DISH", "volume_kg": 7000,
+             "assigned_equipment_id": "REACTOR_2"}
+    steps = build_routing(
+        batch=batch,
+        product=_make_products_map()["PF_DISH"],
+        reactor=_make_equipment_map()["REACTOR_2"],
+        operations=_make_operations_for_pf("PF_DISH"),
+        equipment_map=_make_equipment_map(),
+        equipment_links=_make_links(),
+        products_map=_make_products_map(),
+        calc_duration=_calc_duration,
+        truncate_after_lab=True,
+    )
+    assert len(steps) == 4
+    assert steps[-1].op.get("needs_lab") is True
+
+
+def test_truncate_after_lab_false_full_chain():
+    """
+    truncate_after_lab=False — полная цепочка.
+    """
+    batch = {"id": "b1", "product_id": "PF_ANTISEPTIC", "volume_kg": 5600,
+             "assigned_equipment_id": "REACTOR_3"}
+    steps = build_routing(
+        batch=batch,
+        product=_make_products_map()["PF_ANTISEPTIC"],
+        reactor=_make_equipment_map()["REACTOR_3"],
+        operations=_make_operations_for_pf("PF_ANTISEPTIC"),
+        equipment_map=_make_equipment_map(),
+        equipment_links=_make_links(),
+        products_map=_make_products_map(),
+        calc_duration=_calc_duration,
+        truncate_after_lab=False,
+    )
+    # 8 операций + 1 LINE_FILL = 9 (у антисептика DIRECT-маршрут)
+    assert len(steps) == 9
 
 
 if __name__ == "__main__":

@@ -5,19 +5,24 @@
 Итерация 3 (доработка):
 - _find_shift_for_time имеет fallback: если задача вне окна смены,
   привязываем к ближайшей смене (по abs-разнице со starts_at).
+
+Итерация 5 (hotfix):
+- При создании новой версии плана — деактивируем все старые версии
+  (is_active = FALSE). Это фиксит баг задвоения задач в UI:
+  Мастер смены и Гант больше не собирают задачи из всех версий.
 """
 
-import asyncio
 import logging
 from datetime import datetime
-from uuid import UUID, uuid4
 from typing import Dict, Any, List, Optional
+from uuid import UUID, uuid4
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
+
 from app.core.config import settings
 from .logging_config import setup_scheduler_logging, log_with_context
-
 
 logger = setup_scheduler_logging(level=logging.INFO)
 
@@ -64,7 +69,6 @@ class ScheduleSaver:
         Алгоритм:
           1. Если dt попадает в окно [starts_at, ends_at] — берём эту смену.
           2. Иначе — берём смену с ближайшим starts_at (по abs-разнице).
-             Это позволяет привязать ночные задачи к вечерней или утренней смене.
         """
         if not shifts:
             return None
@@ -100,7 +104,28 @@ class ScheduleSaver:
             version_id = uuid4()
             plan_name = f"План от {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
-            # 1. Версия плана
+            # ==========================================
+            # Итерация 5 (hotfix): деактивируем старые версии
+            # ==========================================
+            # Без этого UI (Мастер смены, Гант) собирает задачи
+            # из ВСЕХ версий, что даёт визуальное задвоение.
+            deactivate_result = await session.execute(
+                text("""
+                    UPDATE schedule_version
+                    SET is_active = FALSE
+                    WHERE organization_id = :org_id AND is_active = TRUE
+                """),
+                {"org_id": self.org_id},
+            )
+            deactivated_count = deactivate_result.rowcount or 0
+            if deactivated_count > 0:
+                log_with_context(
+                    logger, logging.INFO,
+                    f"Деактивировано старых версий: {deactivated_count}",
+                    stage="save", org_id=str(self.org_id),
+                )
+
+            # 1. Версия плана (уже активная)
             await session.execute(
                 text("""
                     INSERT INTO schedule_version (id, organization_id, name, version_type, is_active, created_at)
@@ -269,4 +294,5 @@ class ScheduleSaver:
                 "version_id": version_id,
                 "name": plan_name,
                 "tasks_saved": len(tasks),
+                "deactivated_versions": deactivated_count,
             }

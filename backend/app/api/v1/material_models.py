@@ -1,8 +1,9 @@
 # backend/app/api/v1/material_models.py
-from pydantic import BaseModel, Field
+from datetime import datetime
 from typing import Optional, List
 from uuid import UUID
-from datetime import datetime
+
+from pydantic import BaseModel, Field
 
 
 class MaterialBase(BaseModel):
@@ -139,11 +140,21 @@ class ProductionOrderResponse(ProductionOrderBase):
         from_attributes = True
 
 
+# ==========================================
+# BATCH: обновлено в Итерации 5 (Лаборатория)
+# ==========================================
+
 class BatchBase(BaseModel):
     product_id: UUID
     volume_kg: float
     assigned_equipment_id: Optional[UUID] = None
     comment: Optional[str] = None
+    # Новые поля Итерации 5
+    is_lab_blocked: bool = False
+    lab_status: str = "NOT_REQUIRED"   # NOT_REQUIRED | PENDING_LAB | APPROVED | BLOCKED
+    lab_block_reason: Optional[str] = None
+    lab_blocked_at: Optional[datetime] = None
+    lab_blocked_by: Optional[UUID] = None
 
 
 class BatchCreate(BatchBase):
@@ -159,6 +170,10 @@ class BatchUpdate(BaseModel):
     planned_end: Optional[datetime] = None
     status: Optional[str] = None
     comment: Optional[str] = None
+    # Новые поля Итерации 5
+    is_lab_blocked: Optional[bool] = None
+    lab_status: Optional[str] = None
+    lab_block_reason: Optional[str] = None
 
 
 class BatchResponse(BatchBase):

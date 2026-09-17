@@ -5,12 +5,17 @@ Pydantic-модели для API планирования и Ганта.
 Итерация 2:
 - Добавлены модели для Advisor (AdvisorTip, AdvisorResponse)
 - Добавлены модели для Feasibility (FeasibilityResponse)
+
+Итерация 5 (hotfix #3):
+- Добавлены поля is_lab_blocked, lab_status, lab_block_reason
+  в GanttTask для отображения блокировок лабораторией на Ганте.
 """
 
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
 from datetime import datetime
+from typing import List, Optional, Dict, Any
 from uuid import UUID
+
+from pydantic import BaseModel, Field
 
 
 class ScheduleBuildRequest(BaseModel):
@@ -42,6 +47,10 @@ class GanttTask(BaseModel):
     linked_equipment_id: Optional[str] = None
     linked_equipment_name: Optional[str] = None
     task_role: Optional[str] = None
+    # Итерация 5: блокировка лабораторией
+    is_lab_blocked: Optional[bool] = False
+    lab_status: Optional[str] = None
+    lab_block_reason: Optional[str] = None
 
 
 class GanttResponse(BaseModel):

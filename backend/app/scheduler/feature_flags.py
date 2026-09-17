@@ -5,6 +5,8 @@ Feature-флаги планировщика.
 Читает флаги из organization_settings (JSONB).
 Позволяет включать/выключать функциональность поэтапно
 без изменения кода и пересборки.
+
+Итерация 5: активирован enable_lab_blocking.
 """
 
 from typing import Dict, Any, Optional
@@ -16,7 +18,7 @@ class FeatureFlags:
 
     Использование:
         flags = FeatureFlags(org_settings)
-        if flags.tank_routing:
+        if flags.enable_tank_routing:
             # включить цепочки через танк
     """
 
@@ -88,8 +90,6 @@ class FeatureFlags:
             flags.enable_tank_routing
             flags.enable_advisor
         """
-        # Убираем префикс 'enable_' для краткости? Нет — оставляем как есть,
-        # чтобы совпадало с ключами в БД.
         if item.startswith("_"):
             raise AttributeError(item)
         if item in self._flags:
@@ -103,15 +103,3 @@ class FeatureFlags:
     def __repr__(self) -> str:
         enabled = [k for k, v in self._flags.items() if v is True]
         return f"FeatureFlags(enabled={enabled})"
-
-
-# ==========================================
-# Удобные свойства для часто используемых флагов
-# ==========================================
-# Ниже — не код, а пример использования:
-#
-#   flags = FeatureFlags(org_settings)
-#   if flags.enable_tank_routing:
-#       ...
-#   if flags.enable_advisor:
-#       ...

@@ -6,39 +6,102 @@ API для диаграммы Ганта.
 - Возвращает linked_equipment_id, linked_equipment_name, task_role
 - Группирует по primary_equipment_id (реактор), связанная задача отображается
   отдельно (на линии)
+
+Итерация 5 (hotfix):
+- Добавлен параметр version_id. Если не задан — берётся последняя активная версия.
+  Это фиксит баг задвоения задач на Ганте.
+
+Итерация 5 (hotfix #3):
+- Добавлены поля is_lab_blocked, lab_status, lab_block_reason в SQL и в GanttTask.
+  Это фиксит баг с фильтром "Только заблокированные" на Ганте.
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Query
-from fastapi.responses import StreamingResponse
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
 import io
 from datetime import datetime
 from uuid import UUID
+
+from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.dependencies import get_current_org_id, get_db_session
 from .models import GanttTask, GanttResponse
 from .schedule import _last_schedule_result
-from app.auth.dependencies import get_current_org_id, get_db_session
 
 router = APIRouter(prefix="/api/v1/gantt", tags=["Диаграмма Ганта"])
 
 
+async def _resolve_version_id(
+        db: AsyncSession,
+        org_id: UUID,
+        version_id: UUID | None,
+) -> UUID | None:
+    """
+    Определяет версию плана для отображения.
+    """
+    if version_id is not None:
+        result = await db.execute(
+            text("""
+                SELECT id FROM schedule_version
+                WHERE id = :version_id AND organization_id = :org_id
+            """),
+            {"version_id": version_id, "org_id": org_id},
+        )
+        if result.fetchone():
+            return version_id
+        raise HTTPException(
+            status_code=404,
+            detail=f"Версия плана {version_id} не найдена",
+        )
+
+    result = await db.execute(
+        text("""
+            SELECT id FROM schedule_version
+            WHERE organization_id = :org_id AND is_active = TRUE
+            ORDER BY created_at DESC
+            LIMIT 1
+        """),
+        {"org_id": org_id},
+    )
+    row = result.fetchone()
+    if row:
+        return row.id
+
+    result = await db.execute(
+        text("""
+            SELECT id FROM schedule_version
+            WHERE organization_id = :org_id
+            ORDER BY created_at DESC
+            LIMIT 1
+        """),
+        {"org_id": org_id},
+    )
+    row = result.fetchone()
+    return row.id if row else None
+
+
 @router.get("/", response_model=GanttResponse)
 async def get_gantt_data(
-        version_id: UUID | None = Query(default=None, description="ID сохраненной версии плана"),
+        version_id: UUID | None = Query(default=None, description="ID сохраненной версии плана. Если не задан — последняя активная."),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
     """
     Получение данных для диаграммы Ганта.
-    Если передан version_id — загружает из БД.
-    Иначе — из последнего рассчитанного в памяти плана.
+
+    Логика:
+      - Если version_id передан явно — загружаем из БД по нему.
+      - Если не передан и есть сохранённые версии — берём последнюю активную.
+      - Иначе — из последнего рассчитанного в памяти плана.
     """
-    if version_id:
-        # Проверяем наличие колонок linked_equipment_id и task_role
+    resolved_version_id = await _resolve_version_id(db, org_id, version_id)
+
+    # Если есть сохранённая версия — грузим из БД
+    if resolved_version_id is not None:
         col_check = await db.execute(
             text("""
                 SELECT column_name FROM information_schema.columns
@@ -59,7 +122,10 @@ async def get_gantt_data(
                     leq.name AS linked_equipment_name, leq.id AS linked_equipment_id,
                     p.name AS product_name, p.code AS product_code, p.id AS product_id,
                     ot.name AS operation_name,
-                    st.task_role
+                    st.task_role,
+                    COALESCE(b.is_lab_blocked, FALSE) AS is_lab_blocked,
+                    b.lab_status AS lab_status,
+                    b.lab_block_reason AS lab_block_reason
                 FROM scheduled_task st
                 LEFT JOIN equipment eq ON st.equipment_id = eq.id
                 LEFT JOIN equipment leq ON st.linked_equipment_id = leq.id
@@ -79,7 +145,10 @@ async def get_gantt_data(
                     NULL::text AS linked_equipment_name, NULL::uuid AS linked_equipment_id,
                     p.name AS product_name, p.code AS product_code, p.id AS product_id,
                     ot.name AS operation_name,
-                    NULL::text AS task_role
+                    NULL::text AS task_role,
+                    COALESCE(b.is_lab_blocked, FALSE) AS is_lab_blocked,
+                    b.lab_status AS lab_status,
+                    b.lab_block_reason AS lab_block_reason
                 FROM scheduled_task st
                 LEFT JOIN equipment eq ON st.equipment_id = eq.id
                 LEFT JOIN operation_template ot ON st.operation_template_id = ot.id
@@ -90,11 +159,14 @@ async def get_gantt_data(
                 ORDER BY eq.name, st.planned_start ASC
             """)
 
-        result = await db.execute(query, {"version_id": version_id, "org_id": org_id})
+        result = await db.execute(query, {"version_id": resolved_version_id, "org_id": org_id})
         rows = result.fetchall()
 
         if not rows:
-            raise HTTPException(status_code=404, detail="План с указанным version_id не найден или пуст")
+            raise HTTPException(
+                status_code=404,
+                detail="План с указанным version_id не найден или пуст",
+            )
 
         gantt_tasks = []
         equipment_set = set()
@@ -124,6 +196,9 @@ async def get_gantt_data(
                 linked_equipment_id=str(row.linked_equipment_id) if row.linked_equipment_id else None,
                 linked_equipment_name=str(row.linked_equipment_name) if row.linked_equipment_name else None,
                 task_role=row.task_role,
+                is_lab_blocked=bool(row.is_lab_blocked) if row.is_lab_blocked is not None else False,
+                lab_status=row.lab_status,
+                lab_block_reason=row.lab_block_reason,
             ))
 
         makespan_hours = 0.0
@@ -140,65 +215,70 @@ async def get_gantt_data(
             product_list=sorted(list(product_set)),
         )
 
-    else:
-        # === ИЗ ПАМЯТИ ===
-        if not _last_schedule_result:
-            raise HTTPException(status_code=404, detail="Нет данных. Сначала постройте план на вкладке 'Планирование'")
-
-        tasks = _last_schedule_result.get("tasks", [])
-        gantt_tasks = []
-        equipment_set = set()
-        product_set = set()
-
-        for task in tasks:
-            eq_name = str(task.get("equipment_name") or "")
-            eq_id = str(task.get("equipment_id") or "")
-            linked_eq_name = task.get("linked_equipment_name")
-            linked_eq_id = task.get("linked_equipment_id")
-            prod_name = str(task.get("product_name") or "")
-            prod_id = str(task.get("product_id") or "")
-            batch_name = str(task.get("batch_name") or "")
-            batch_id = str(task.get("batch_id") or "")
-
-            primary_label = eq_name if eq_name else eq_id[:20]
-            equipment_set.add(primary_label)
-            if linked_eq_name:
-                equipment_set.add(linked_eq_name)
-            product_set.add(prod_name if prod_name else prod_id[:20])
-
-            start_dt = task.get("start")
-            end_dt = task.get("end")
-
-            if isinstance(start_dt, str):
-                start_dt = datetime.fromisoformat(start_dt.replace('Z', '+00:00'))
-            if isinstance(end_dt, str):
-                end_dt = datetime.fromisoformat(end_dt.replace('Z', '+00:00'))
-
-            duration_mins = int(task.get("duration", 0))
-            if start_dt and end_dt and isinstance(start_dt, datetime) and isinstance(end_dt, datetime):
-                duration_mins = int((end_dt - start_dt).total_seconds() / 60)
-
-            gantt_tasks.append(GanttTask(
-                id=f"{batch_id}_{task.get('op_id', '')}",
-                batch_id=batch_name if batch_name else batch_id[:20],
-                operation_name=str(task.get("operation_name", "Операция")),
-                equipment_id=primary_label,
-                product_id=prod_name if prod_name else prod_id[:20],
-                start=start_dt,
-                end=end_dt,
-                duration_minutes=duration_mins,
-                linked_equipment_id=str(linked_eq_id) if linked_eq_id else None,
-                linked_equipment_name=linked_eq_name,
-                task_role=task.get("role"),
-            ))
-
-        return GanttResponse(
-            tasks=gantt_tasks,
-            total_tasks=len(gantt_tasks),
-            makespan_hours=float(_last_schedule_result.get("makespan_minutes", 0)) / 60,
-            equipment_list=sorted(list(equipment_set)),
-            product_list=sorted(list(product_set)),
+    # === Fallback: из памяти ===
+    if not _last_schedule_result:
+        raise HTTPException(
+            status_code=404,
+            detail="Нет данных. Сначала постройте план на вкладке 'Планирование'",
         )
+
+    tasks = _last_schedule_result.get("tasks", [])
+    gantt_tasks = []
+    equipment_set = set()
+    product_set = set()
+
+    for task in tasks:
+        eq_name = str(task.get("equipment_name") or "")
+        eq_id = str(task.get("equipment_id") or "")
+        linked_eq_name = task.get("linked_equipment_name")
+        linked_eq_id = task.get("linked_equipment_id")
+        prod_name = str(task.get("product_name") or "")
+        prod_id = str(task.get("product_id") or "")
+        batch_name = str(task.get("batch_name") or "")
+        batch_id = str(task.get("batch_id") or "")
+
+        primary_label = eq_name if eq_name else eq_id[:20]
+        equipment_set.add(primary_label)
+        if linked_eq_name:
+            equipment_set.add(linked_eq_name)
+        product_set.add(prod_name if prod_name else prod_id[:20])
+
+        start_dt = task.get("start")
+        end_dt = task.get("end")
+
+        if isinstance(start_dt, str):
+            start_dt = datetime.fromisoformat(start_dt.replace('Z', '+00:00'))
+        if isinstance(end_dt, str):
+            end_dt = datetime.fromisoformat(end_dt.replace('Z', '+00:00'))
+
+        duration_mins = int(task.get("duration", 0))
+        if start_dt and end_dt and isinstance(start_dt, datetime) and isinstance(end_dt, datetime):
+            duration_mins = int((end_dt - start_dt).total_seconds() / 60)
+
+        gantt_tasks.append(GanttTask(
+            id=f"{batch_id}_{task.get('op_id', '')}",
+            batch_id=batch_name if batch_name else batch_id[:20],
+            operation_name=str(task.get("operation_name", "Операция")),
+            equipment_id=primary_label,
+            product_id=prod_name if prod_name else prod_id[:20],
+            start=start_dt,
+            end=end_dt,
+            duration_minutes=duration_mins,
+            linked_equipment_id=str(linked_eq_id) if linked_eq_id else None,
+            linked_equipment_name=linked_eq_name,
+            task_role=task.get("role"),
+            is_lab_blocked=False,
+            lab_status=None,
+            lab_block_reason=None,
+        ))
+
+    return GanttResponse(
+        tasks=gantt_tasks,
+        total_tasks=len(gantt_tasks),
+        makespan_hours=float(_last_schedule_result.get("makespan_minutes", 0)) / 60,
+        equipment_list=sorted(list(equipment_set)),
+        product_list=sorted(list(product_set)),
+    )
 
 
 @router.get("/export")
@@ -218,6 +298,7 @@ async def export_gantt_to_excel(
     headers = [
         "Оборудование", "Связанное оборудование", "Роль", "Операция",
         "Партия", "Продукт", "Начало", "Конец", "Длительность (мин)",
+        "Заблокировано", "Причина",
     ]
     ws_table.append(headers)
 
@@ -242,6 +323,8 @@ async def export_gantt_to_excel(
             start_str,
             end_str,
             task.duration_minutes,
+            "Да" if task.is_lab_blocked else "Нет",
+            task.lab_block_reason or "",
             ])
 
     for col in ws_table.columns:

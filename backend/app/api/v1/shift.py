@@ -8,15 +8,35 @@ API сменного планирования и РМ мастера (Итера
   GET  /api/v1/shift/{shift_id}/tasks        — задания смены по рабочим центрам
   GET  /api/v1/shift/{shift_id}/carryover    — переходящие задания
   POST /api/v1/shift/task/{task_id}/fact     — внести факт
+
+Итерация 5: в задачи добавлены поля is_lab_blocked, lab_status, lab_block_reason
+            для отображения блокировок в РМ мастера.
+
+Итерация 5 (hotfix):
+  - Добавлен параметр version_id (опционально). Если не задан — берётся
+    последняя активная версия (is_active = TRUE, ORDER BY created_at DESC).
+  - SQL-запросы фильтруют по schedule_version_id. Это фиксит баг
+    задвоения задач в UI (Мастер смены собирал задачи из всех версий).
+
+Итерация 5 (hotfix #2):
+  - list_shifts и get_shift_by_date используют сравнение по UTC-дате
+    через (starts_at AT TIME ZONE 'UTC')::date. Это фиксит баг с таймзоной:
+    naive datetime из Python не находил смену, если сессия asyncpg была
+    не в UTC.
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
-from datetime import datetime, date, timedelta
+import logging
+from datetime import date
 from typing import List, Optional
 from uuid import UUID
 
+from fastapi import APIRouter, HTTPException, Depends, Query
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth.dependencies import get_current_org_id, get_db_session
+from app.scheduler.feature_flags import FeatureFlags
+from app.scheduler.logging_config import setup_scheduler_logging, log_with_context
 from .shift_models import (
     ShiftResponse,
     ShiftTaskResponse,
@@ -25,11 +45,6 @@ from .shift_models import (
     TaskFactRequest,
     TaskFactResponse,
 )
-from app.auth.dependencies import get_current_org_id, get_db_session
-from app.scheduler.feature_flags import FeatureFlags
-from app.scheduler.logging_config import setup_scheduler_logging, log_with_context
-import logging
-
 
 router = APIRouter(prefix="/api/v1/shift", tags=["Сменное планирование"])
 logger = setup_scheduler_logging(level=logging.INFO)
@@ -54,6 +69,70 @@ async def _check_shift_planning_enabled(db: AsyncSession, org_id: UUID) -> None:
 
 
 # ==========================================
+# ИТЕРАЦИЯ 5 (hotfix): resolve version_id
+# ==========================================
+
+async def _resolve_version_id(
+        db: AsyncSession,
+        org_id: UUID,
+        version_id: Optional[UUID],
+) -> Optional[UUID]:
+    """
+    Определяет, какую версию плана использовать.
+
+    Логика (Вариант A):
+      1. Если version_id передан явно — используем его.
+      2. Иначе — берём последнюю активную версию (is_active = TRUE,
+         ORDER BY created_at DESC LIMIT 1).
+      3. Если активных нет — берём просто последнюю по created_at.
+      4. Если версий нет вообще — возвращаем None (UI покажет пустой список).
+    """
+    if version_id is not None:
+        # Проверяем, что такая версия существует
+        result = await db.execute(
+            text("""
+                SELECT id FROM schedule_version
+                WHERE id = :version_id AND organization_id = :org_id
+            """),
+            {"version_id": version_id, "org_id": org_id},
+        )
+        row = result.fetchone()
+        if not row:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Версия плана {version_id} не найдена",
+            )
+        return version_id
+
+    # Ищем последнюю активную
+    result = await db.execute(
+        text("""
+            SELECT id FROM schedule_version
+            WHERE organization_id = :org_id AND is_active = TRUE
+            ORDER BY created_at DESC
+            LIMIT 1
+        """),
+        {"org_id": org_id},
+    )
+    row = result.fetchone()
+    if row:
+        return row.id
+
+    # Fallback: последняя по created_at (даже если is_active = FALSE)
+    result = await db.execute(
+        text("""
+            SELECT id FROM schedule_version
+            WHERE organization_id = :org_id
+            ORDER BY created_at DESC
+            LIMIT 1
+        """),
+        {"org_id": org_id},
+    )
+    row = result.fetchone()
+    return row.id if row else None
+
+
+# ==========================================
 # СПИСОК СМЕН
 # ==========================================
 
@@ -65,7 +144,12 @@ async def list_shifts(
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """Список смен за период."""
+    """
+    Список смен за период (по дате в UTC).
+
+    Итерация 5 (hotfix #2): сравнение по UTC-дате через
+    (starts_at AT TIME ZONE 'UTC')::date — не зависит от таймзоны сессии.
+    """
     await _check_shift_planning_enabled(db, org_id)
 
     if date_from is None:
@@ -76,8 +160,8 @@ async def list_shifts(
     where_clauses = ["organization_id = :org_id"]
     params = {
         "org_id": org_id,
-        "date_from": datetime.combine(date_from, datetime.min.time()).replace(hour=0),
-        "date_to": datetime.combine(date_to + timedelta(days=1), datetime.min.time()),
+        "date_from": date_from,
+        "date_to": date_to,
     }
 
     if only_working:
@@ -87,8 +171,8 @@ async def list_shifts(
         SELECT id, name, starts_at, ends_at, is_working, comment
         FROM shift
         WHERE {' AND '.join(where_clauses)}
-          AND starts_at >= :date_from
-          AND starts_at < :date_to
+          AND (starts_at AT TIME ZONE 'UTC')::date >= :date_from
+          AND (starts_at AT TIME ZONE 'UTC')::date <= :date_to
         ORDER BY starts_at
     """)
 
@@ -112,27 +196,32 @@ async def get_shift_by_date(
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """Смена на конкретную дату."""
-    await _check_shift_planning_enabled(db, org_id)
+    """
+    Смена на конкретную дату (по дате в UTC).
 
-    dt_from = datetime.combine(shift_date, datetime.min.time())
-    dt_to = dt_from + timedelta(days=1)
+    Итерация 5 (hotfix #2): сравнение по UTC-дате через
+    (starts_at AT TIME ZONE 'UTC')::date — не зависит от таймзоны сессии
+    и от того, как asyncpg передаёт naive datetime.
+    """
+    await _check_shift_planning_enabled(db, org_id)
 
     result = await db.execute(
         text("""
             SELECT id, name, starts_at, ends_at, is_working, comment
             FROM shift
             WHERE organization_id = :org_id
-              AND starts_at >= :dt_from
-              AND starts_at < :dt_to
+              AND (starts_at AT TIME ZONE 'UTC')::date = :shift_date
             ORDER BY starts_at
             LIMIT 1
         """),
-        {"org_id": org_id, "dt_from": dt_from, "dt_to": dt_to},
+        {"org_id": org_id, "shift_date": shift_date},
     )
     row = result.fetchone()
     if not row:
-        raise HTTPException(status_code=404, detail=f"Смена на {shift_date} не найдена")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Смена на {shift_date} не найдена",
+        )
 
     return ShiftResponse(
         id=row.id,
@@ -151,11 +240,19 @@ async def get_shift_by_date(
 @router.get("/{shift_id}/tasks", response_model=ShiftTasksResponse)
 async def get_shift_tasks(
         shift_id: UUID,
+        version_id: Optional[UUID] = Query(
+            default=None,
+            description="ID версии плана. Если не задан — берётся последняя активная."
+        ),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
     """Задания смены, сгруппированные по рабочим центрам."""
     await _check_shift_planning_enabled(db, org_id)
+
+    # Итерация 5 (hotfix): определяем версию плана
+    # ВЫЗОВ #1
+    resolved_version_id = await _resolve_version_id(db, org_id, version_id)
 
     # Смена
     shift_result = await db.execute(
@@ -179,7 +276,17 @@ async def get_shift_tasks(
         comment=shift_row.comment,
     )
 
-    # Задачи смены
+    # Если версий нет — возвращаем пустой список
+    if resolved_version_id is None:
+        return ShiftTasksResponse(
+            shift=shift,
+            groups=[],
+            total_tasks=0,
+            carryover_count=0,
+            done_count=0,
+        )
+
+    # Задачи смены (Итерация 5: + lab_status, is_lab_blocked; hotfix: + version_id)
     tasks_result = await db.execute(
         text("""
             SELECT
@@ -190,17 +297,26 @@ async def get_shift_tasks(
                 st.linked_equipment_id, leq.name AS linked_equipment_name,
                 ot.name AS operation_name,
                 p.id AS product_id, p.code AS product_code, p.name AS product_name,
-                b.volume_kg AS batch_volume
+                b.volume_kg AS batch_volume,
+                COALESCE(b.is_lab_blocked, FALSE) AS is_lab_blocked,
+                b.lab_status AS lab_status,
+                b.lab_block_reason AS lab_block_reason
             FROM scheduled_task st
             LEFT JOIN equipment eq ON st.equipment_id = eq.id
             LEFT JOIN equipment leq ON st.linked_equipment_id = leq.id
             LEFT JOIN operation_template ot ON st.operation_template_id = ot.id
             LEFT JOIN batch b ON st.batch_id = b.id
             LEFT JOIN product p ON b.product_id = p.id
-            WHERE st.shift_id = :shift_id AND st.organization_id = :org_id
+            WHERE st.shift_id = :shift_id
+              AND st.organization_id = :org_id
+              AND st.schedule_version_id = :version_id
             ORDER BY eq.name, st.planned_start
         """),
-        {"shift_id": shift_id, "org_id": org_id},
+        {
+            "shift_id": shift_id,
+            "org_id": org_id,
+            "version_id": resolved_version_id,
+        },
     )
 
     tasks = tasks_result.fetchall()
@@ -235,6 +351,9 @@ async def get_shift_tasks(
             status=row.status or "PLANNED",
             duration_minutes=duration,
             is_carryover=False,
+            is_lab_blocked=bool(row.is_lab_blocked) if row.is_lab_blocked is not None else False,
+            lab_status=row.lab_status,
+            lab_block_reason=row.lab_block_reason,
         )
 
         if task.status == "DONE":
@@ -275,7 +394,10 @@ async def get_shift_tasks(
                     st.equipment_id, eq.name AS equipment_name, eq.code AS equipment_code,
                     st.linked_equipment_id, leq.name AS linked_equipment_name,
                     ot.name AS operation_name,
-                    p.id AS product_id, p.code AS product_code, p.name AS product_name
+                    p.id AS product_id, p.code AS product_code, p.name AS product_name,
+                    COALESCE(b.is_lab_blocked, FALSE) AS is_lab_blocked,
+                    b.lab_status AS lab_status,
+                    b.lab_block_reason AS lab_block_reason
                 FROM scheduled_task st
                 LEFT JOIN equipment eq ON st.equipment_id = eq.id
                 LEFT JOIN equipment leq ON st.linked_equipment_id = leq.id
@@ -284,11 +406,16 @@ async def get_shift_tasks(
                 LEFT JOIN product p ON b.product_id = p.id
                 WHERE st.shift_id = :prev_shift_id
                   AND st.organization_id = :org_id
+                  AND st.schedule_version_id = :version_id
                   AND st.actual_end IS NULL
                   AND st.status IN ('PLANNED', 'IN_PROGRESS')
                 ORDER BY eq.name, st.planned_start
             """),
-            {"prev_shift_id": prev_shift_row.id, "org_id": org_id},
+            {
+                "prev_shift_id": prev_shift_row.id,
+                "org_id": org_id,
+                "version_id": resolved_version_id,
+            },
         )
 
         for row in carryover_result.fetchall():
@@ -317,6 +444,9 @@ async def get_shift_tasks(
                 status=row.status or "PLANNED",
                 duration_minutes=duration,
                 is_carryover=True,
+                is_lab_blocked=bool(row.is_lab_blocked) if row.is_lab_blocked is not None else False,
+                lab_status=row.lab_status,
+                lab_block_reason=row.lab_block_reason,
             )
 
             if eq_id not in groups_dict:
@@ -352,11 +482,21 @@ async def get_shift_tasks(
 @router.get("/{shift_id}/carryover", response_model=List[ShiftTaskResponse])
 async def get_carryover(
         shift_id: UUID,
+        version_id: Optional[UUID] = Query(
+            default=None,
+            description="ID версии плана. Если не задан — берётся последняя активная."
+        ),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
     """Переходящие задания из предыдущей рабочей смены."""
     await _check_shift_planning_enabled(db, org_id)
+
+    # Итерация 5 (hotfix): определяем версию плана
+    # ВЫЗОВ #2
+    resolved_version_id = await _resolve_version_id(db, org_id, version_id)
+    if resolved_version_id is None:
+        return []
 
     prev_result = await db.execute(
         text("""
@@ -382,7 +522,10 @@ async def get_carryover(
                 st.equipment_id, eq.name AS equipment_name,
                 st.linked_equipment_id, leq.name AS linked_equipment_name,
                 ot.name AS operation_name,
-                p.id AS product_id, p.code AS product_code, p.name AS product_name
+                p.id AS product_id, p.code AS product_code, p.name AS product_name,
+                COALESCE(b.is_lab_blocked, FALSE) AS is_lab_blocked,
+                b.lab_status AS lab_status,
+                b.lab_block_reason AS lab_block_reason
             FROM scheduled_task st
             LEFT JOIN equipment eq ON st.equipment_id = eq.id
             LEFT JOIN equipment leq ON st.linked_equipment_id = leq.id
@@ -391,11 +534,16 @@ async def get_carryover(
             LEFT JOIN product p ON b.product_id = p.id
             WHERE st.shift_id = :prev_shift_id
               AND st.organization_id = :org_id
+              AND st.schedule_version_id = :version_id
               AND st.actual_end IS NULL
               AND st.status IN ('PLANNED', 'IN_PROGRESS')
             ORDER BY eq.name, st.planned_start
         """),
-        {"prev_shift_id": prev_row.id, "org_id": org_id},
+        {
+            "prev_shift_id": prev_row.id,
+            "org_id": org_id,
+            "version_id": resolved_version_id,
+        },
     )
 
     return [
@@ -421,6 +569,9 @@ async def get_carryover(
             status=row.status or "PLANNED",
             duration_minutes=int((row.planned_end - row.planned_start).total_seconds() / 60) if row.planned_start and row.planned_end else 0,
             is_carryover=True,
+            is_lab_blocked=bool(row.is_lab_blocked) if row.is_lab_blocked is not None else False,
+            lab_status=row.lab_status,
+            lab_block_reason=row.lab_block_reason,
         )
         for row in result.fetchall()
     ]
@@ -440,7 +591,6 @@ async def update_task_fact(
     """Мастер вносит факт выполнения задания."""
     await _check_shift_planning_enabled(db, org_id)
 
-    # Проверяем, что задача существует
     check_result = await db.execute(
         text("""
             SELECT id, status FROM scheduled_task
@@ -452,7 +602,6 @@ async def update_task_fact(
     if not check_row:
         raise HTTPException(status_code=404, detail="Задача не найдена")
 
-    # Валидация status
     allowed_statuses = {"PLANNED", "IN_PROGRESS", "DONE", "CANCELLED"}
     if fact.status and fact.status not in allowed_statuses:
         raise HTTPException(
@@ -460,7 +609,6 @@ async def update_task_fact(
             detail=f"Недопустимый status: {fact.status}. Допустимые: {allowed_statuses}",
         )
 
-    # Собираем set-выражение
     update_fields = []
     params = {"task_id": task_id, "org_id": org_id}
 
@@ -480,12 +628,10 @@ async def update_task_fact(
         update_fields.append("status = :status")
         params["status"] = fact.status
 
-    # Автопереход в IN_PROGRESS, если мастер внёс actual_start
     if fact.actual_start is not None and not fact.status and check_row.status == "PLANNED":
         update_fields.append("status = :auto_status")
         params["auto_status"] = "IN_PROGRESS"
 
-    # Автопереход в DONE, если мастер внёс actual_end
     if fact.actual_end is not None and not fact.status:
         update_fields.append("status = :auto_done")
         params["auto_done"] = "DONE"

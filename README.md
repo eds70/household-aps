@@ -1,8 +1,15 @@
+Держите **полный `README.md`** одним сообщением.
+
+---
+
+**Путь:** `README.md` (корень проекта)
+
+```markdown
 # 🏭 APS Production Scheduler
 
 **Система автоматического планирования производства на базе OR-Tools CP-SAT**
 
-Версия: **1.4.0** (Итерации 0–3 завершены)
+Версия: **1.6.1** (Итерации 0–5 + hotfix завершены)
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -47,6 +54,7 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 - **Ресурсных ограничений** (аппаратчики, бойлер, зона охлаждения, лаборатория)
 - **Остатков сырья** и графика поставок
 - **Сменного планирования** (одна смена в день, 08:00–20:00)
+- **Лабораторных блокировок** (партия не участвует в планировании до одобрения)
 - **Мульти-тенантности** и **версионирования планов** (снапшоты справочников)
 
 ## 🎯 Ключевые возможности
@@ -93,13 +101,58 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 - ✅ Пункт меню **«Мастер смены»**
 - ✅ Все 282 задачи привязаны к сменам
 
+### Итерация 4 — Перепланирование
+- ✅ Модуль `rescheduler.py` — перепланирование с учётом изменений
+- ✅ Типы изменений: `DELAY`, `BREAKDOWN`, `QTY_CHANGE`, `MANUAL`
+- ✅ Закрепление задач (`is_pinned`) и заморозка до `frozen_before`
+- ✅ Журнал перепланирований `reschedule_log`
+- ✅ API `reschedule.py`:
+  - `POST /api/v1/schedule/reschedule` — перепланировать
+  - `GET /api/v1/schedule/compare` — сравнить две версии
+  - `PUT /api/v1/schedule/task/{id}/pin` — закрепить/открепить задачу
+- ✅ UI: диалог перепланирования в `SchedulePage.tsx`
+- ✅ Сценарий «Аварийная остановка Р4 (25–28.09)»
+
+### Итерация 5 — Лаборатория и блокировки
+- ✅ Поля в `batch`: `is_lab_blocked`, `lab_status`, `lab_block_reason`, `lab_blocked_at`, `lab_blocked_by`
+- ✅ Таблица `lab_analysis_log` — журнал всех проверок лаборатории
+- ✅ Модуль `lab.py` — 7 эндпоинтов API:
+  - `GET  /api/v1/lab/pending` — партии, ожидающие анализа / заблокированные
+  - `GET  /api/v1/lab/batch/{id}` — статус партии по лаборатории
+  - `GET  /api/v1/lab/batch/{id}/log` — журнал проверок
+  - `POST /api/v1/lab/batch/{id}/block` — заблокировать партию
+  - `POST /api/v1/lab/batch/{id}/unblock` — разблокировать
+  - `POST /api/v1/lab/batch/{id}/approve` — одобрить после анализа
+  - `POST /api/v1/lab/batch/{id}/request` — запросить анализ
+- ✅ Планировщик **исключает заблокированные партии** из расписания (`core.py`, `rescheduler.py`)
+- ✅ `build_routing(truncate_after_lab=True)` — обрезка цепочки после lab-операции
+- ✅ UI `ShiftPage.tsx`: индикатор блокировки, кнопки блокировки/разблокировки, чипы `Ожидает лабу` / `Заблокировано` / `Одобрено`
+- ✅ UI `GanttPage.tsx`: 🔒 красная рамка + фильтр «Только заблокированные» + Badge `Заблокировано: N`
+- ✅ Роли `LAB`, `MASTER`, `ADMIN` имеют право блокировать партии
+
+#### Hotfix Итерации 5
+
+- ✅ **Hotfix #1 — деактивация старых версий плана** (`saver.py`):
+  при создании новой версии все старые деактивируются (`is_active = FALSE`).
+  Иначе `shift.py` и `gantt.py` собирают задачи из всех версий → визуальное задвоение в 5–10 раз.
+- ✅ **Hotfix #2 — фильтрация по `schedule_version_id`** (`shift.py`, `gantt.py`):
+  добавлен параметр `version_id` (опциональный).
+  Если не задан — берётся последняя активная версия (`is_active = TRUE`).
+- ✅ **Hotfix #3 — таймзона в `by-date`** (`shift.py`):
+  сравнение по UTC-дате: `(starts_at AT TIME ZONE 'UTC')::date = :shift_date`.
+  Иначе naive datetime из Python не находит смену, если сессия asyncpg не в UTC.
+- ✅ **Hotfix #4 — `is_lab_blocked` в Ганте** (`gantt.py`):
+  добавлены `LEFT JOIN batch` и поля `is_lab_blocked`, `lab_status`, `lab_block_reason`.
+  Без этого фильтр «Только заблокированные» всегда возвращал пустоту.
+- ✅ **Миграция данных** `fix_versions_hotfix.sql` — деактивирует все старые версии, оставляя самую свежую.
+
 ### Общие возможности
 - ✅ JWT авторизация и ролевая модель (ADMIN, PLANNER, MASTER, LAB, VIEWER)
 - ✅ Управление оборудованием, продуктами, материалами, рецептурами
 - ✅ Технологические карты с формулами расчёта длительностей
 - ✅ Автоматическое разбиение заказов на партии
 - ✅ Диаграмма Ганта с интерактивным просмотром
-- ✅ Экспорт плана в Excel
+- ✅ Экспорт плана в Excel (с колонками «Заблокировано» и «Причина»)
 - ✅ Версионирование планов через снапшоты
 
 ## 🛠️ Стек технологий
@@ -135,68 +188,77 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 
 ## 📁 Структура проекта
 
-- **quickstart.ps1** — ⚡ Скрипт быстрого старта
-- **README.md**
-- **backend/**
-  - **app/**
-    - **api/v1/** — REST API endpoints
-      - auth.py
-      - equipment.py
-      - products.py
-      - materials.py
-      - recipes.py
-      - operations.py
-      - orders.py
-      - schedule.py
-      - gantt.py
-      - calendar.py
-      - advisor.py (Итерация 2)
-      - shift.py (Итерация 3)
-      - shift_models.py (Итерация 3)
-      - models.py
-    - **auth/** — JWT + RBAC
-    - **core/** — Конфигурация
-    - **scheduler/** — Ядро планировщика
-      - core.py — Оркестратор планирования
-      - data_loader.py — Загрузка данных из БД
-      - routing.py — Цепочки операций (Итерация 1)
-      - materials.py — Потребность в сырье (Итерация 2)
-      - advisor.py — Подсказки (Итерация 2)
-      - feasibility.py — Оценка исполнимости (Итерация 2)
-      - shifts.py — Смены (Итерация 3)
-      - saver.py — Сохранение плана
-      - feature_flags.py — Feature-флаги
-      - logging_config.py — Structured logging
-      - **duration/** — Стратегии длительностей
-      - **constraints/** — Плагины ограничений
-    - main.py
-  - **migrations/** — История миграций
-    - add_history_0_2.sql — Склейка Итераций 0–2
-    - add_06.sql — Сменное планирование
-    - add_06b.sql — Фикс снапшотов
-    - fix_shift_names.sql — Фикс кириллицы
-    - README.md — Описание миграций
-  - .env
-  - init_schema.sql — Полная схема БД (v1.4.0)
-  - seed_demo.py — Python-скрипт демо-данных
-  - seed_demo_data.sql — SQL-версия демо-данных (v1.4.0)
-  - **scripts/**create_admin_user.py
-  - requirements.txt
-  - requirements-dev.txt
-  - pyproject.toml
-  - run_server.py
-- **frontend/**
-  - **src/**
-    - **components/layout/** — MainLayout
-    - **context/** — AuthContext, PlanContext
-    - **pages/** — Login, Equipment, Products, Materials, Recipes, Operations, Orders, Schedule, Gantt, Shift
-    - **services/**api.ts — Axios с интерсепторами
-    - **types/** — TypeScript интерфейсы
-    - App.tsx — Роутинг
-    - main.tsx
-  - package.json
-  - vite.config.ts
-- **README.md**
+```
+household-aps/
+├── quickstart.ps1                         # ⚡ Скрипт быстрого старта
+├── README.md
+├── backend/
+│   ├── app/
+│   │   ├── api/v1/                        # REST API endpoints
+│   │   │   ├── auth.py
+│   │   │   ├── equipment.py
+│   │   │   ├── products.py
+│   │   │   ├── materials.py
+│   │   │   ├── recipes.py
+│   │   │   ├── operations.py
+│   │   │   ├── orders.py
+│   │   │   ├── schedule.py
+│   │   │   ├── gantt.py                   # Итерация 1, 5 + hotfix #4
+│   │   │   ├── calendar.py
+│   │   │   ├── advisor.py                 # Итерация 2
+│   │   │   ├── shift.py                   # Итерация 3, 5 + hotfix #2, #3
+│   │   │   ├── shift_models.py            # Итерация 3, 5
+│   │   │   ├── reschedule.py              # Итерация 4
+│   │   │   ├── reschedule_models.py       # Итерация 4
+│   │   │   ├── lab.py                     # Итерация 5
+│   │   │   ├── lab_models.py              # Итерация 5
+│   │   │   └── models.py                  # Итерация 2, 5 + hotfix #4
+│   │   ├── auth/                          # JWT + RBAC
+│   │   ├── core/                          # Конфигурация
+│   │   ├── scheduler/                     # Ядро планировщика
+│   │   │   ├── core.py                    # Итерация 5 (пропуск заблокированных)
+│   │   │   ├── data_loader.py             # Итерация 5
+│   │   │   ├── routing.py                 # Итерация 1, 5
+│   │   │   ├── materials.py               # Итерация 2
+│   │   │   ├── advisor.py                 # Итерация 2
+│   │   │   ├── feasibility.py             # Итерация 2
+│   │   │   ├── shifts.py                  # Итерация 3
+│   │   │   ├── rescheduler.py             # Итерация 4, 5
+│   │   │   ├── saver.py                   # hotfix #1
+│   │   │   ├── feature_flags.py
+│   │   │   └── logging_config.py
+│   │   └── main.py
+│   ├── migrations/                        # История миграций
+│   │   ├── add_history_0_2.sql
+│   │   ├── add_06.sql
+│   │   ├── add_06b.sql
+│   │   ├── add_07.sql
+│   │   ├── add_08.sql                     # Итерация 5
+│   │   ├── fix_versions_hotfix.sql        # hotfix #1
+│   │   ├── fix_shift_names.sql
+│   │   └── README.md
+│   ├── .env
+│   ├── init_schema.sql                    # v1.6.1
+│   ├── seed_demo.py
+│   ├── seed_demo_data.sql
+│   ├── scripts/create_admin_user.py
+│   ├── requirements.txt
+│   ├── requirements-dev.txt
+│   ├── pyproject.toml
+│   └── run_server.py
+├── frontend/
+│   ├── src/
+│   │   ├── components/layout/             # MainLayout
+│   │   ├── context/                       # AuthContext, PlanContext
+│   │   ├── pages/                         # Login, Equipment, ..., Shift
+│   │   ├── services/api.ts
+│   │   ├── types/index.ts
+│   │   ├── App.tsx
+│   │   └── main.tsx
+│   ├── package.json
+│   └── vite.config.ts
+└── README.md
+```
 
 ## 🚀 Быстрый старт
 
@@ -205,13 +267,6 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 Из корня проекта:
 
     .\quickstart.ps1
-
-Скрипт делает всё:
-1. Поднимает PostgreSQL в контейнере `aps_postgres`
-2. Применяет `init_schema.sql` + `seed_demo_data.sql` (через `docker cp` + `psql -f`)
-3. Создаёт `.venv` и ставит Python-зависимости
-4. Создаёт администратора `admin@household.ru`
-5. Устанавливает npm-зависимости
 
 **Флаги:**
 - `-SkipDb` — пропустить PostgreSQL
@@ -223,7 +278,7 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 
     Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 
-### Ручной (если нужен контроль)
+### Ручной
 
 #### Предварительные требования
 - Python 3.12+
@@ -236,20 +291,12 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 
 #### Шаг 2: Инициализация схемы и демо-данных
 
-**⚠️ ВАЖНО:** применять SQL-файлы через `docker cp` + `psql -f`, а не через `Get-Content | docker exec` — иначе PowerShell испортит кириллицу в именах смен.
+**⚠️ ВАЖНО:** применять SQL-файлы через `docker cp` + `psql -f`, а не через `Get-Content | docker exec` — иначе PowerShell испортит кириллицу.
 
-    # Копируем файлы в контейнер (сохраняет UTF-8)
     docker cp backend\init_schema.sql    aps_postgres:/tmp/init_schema.sql
     docker cp backend\seed_demo_data.sql aps_postgres:/tmp/seed_demo_data.sql
-
-    # Применяем
     docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema.sql
     docker exec -i aps_postgres psql -U aps -d household -f /tmp/seed_demo_data.sql
-
-**Или через Python-скрипт:**
-
-    cd backend
-    python seed_demo.py
 
 #### Шаг 3: Создание администратора
 
@@ -274,24 +321,6 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 
 *Приложение: http://localhost:5173*  
 *Демо-доступ: `admin@household.ru` / `admin123`*
-
-### Запуск в двух терминалах
-
-**Терминал 1 — Backend:**
-
-    cd backend
-    .\.venv\Scripts\Activate.ps1
-    python run_server.py
-
-**Терминал 2 — Frontend:**
-
-    cd frontend
-    npm run dev
-
-**Открыть:**
-- Frontend: http://localhost:5173
-- Swagger: http://localhost:8000/docs
-- Логин: `admin@household.ru` / `admin123`
 
 ## 📚 Документация API
 
@@ -330,6 +359,20 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 - `GET /api/v1/shift/{shift_id}/tasks` — задания смены
 - `GET /api/v1/shift/{shift_id}/carryover` — переходящие задания
 - `POST /api/v1/shift/task/{task_id}/fact` — внести факт
+
+**Перепланирование (Итерация 4):**
+- `POST /api/v1/schedule/reschedule` — перепланировать
+- `GET /api/v1/schedule/compare` — сравнить две версии
+- `PUT /api/v1/schedule/task/{id}/pin` — закрепить/открепить
+
+**Лаборатория (Итерация 5):**
+- `GET /api/v1/lab/pending` — партии, ожидающие анализа
+- `GET /api/v1/lab/batch/{id}` — статус партии
+- `GET /api/v1/lab/batch/{id}/log` — журнал проверок
+- `POST /api/v1/lab/batch/{id}/block` — заблокировать
+- `POST /api/v1/lab/batch/{id}/unblock` — разблокировать
+- `POST /api/v1/lab/batch/{id}/approve` — одобрить
+- `POST /api/v1/lab/batch/{id}/request` — запросить анализ
 
 **Гант:**
 - `GET /api/v1/gantt/` — данные диаграммы
@@ -372,6 +415,27 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 - Задачи автоматически привязываются к смене по `planned_start` (с fallback на ближайшую).
 - **Переходящие** задачи — не завершённые в предыдущей смене.
 
+### Лабораторные блокировки (Итерация 5)
+
+**Статусы партии (`batch.lab_status`):**
+
+| Статус | Описание |
+|--------|----------|
+| `NOT_REQUIRED` | Партия не требует лабораторного анализа |
+| `PENDING_LAB` | Ожидает анализа (лаборант должен проверить) |
+| `APPROVED` | Одобрено лабораторией |
+| `BLOCKED` | Заблокировано лабораторией (не участвует в планировании) |
+
+**Логика:**
+1. После завершения операции `needs_lab=true` партия становится `PENDING_LAB`.
+2. Лаборант (или мастер) может **заблокировать** партию (`POST .../block`) — она получает `is_lab_blocked=true` и `lab_status=BLOCKED`.
+3. **Планировщик исключает заблокированные партии** из построения цепочек операций.
+4. Разблокировка (`POST .../unblock`) возвращает партию в планирование с `lab_status=APPROVED`.
+
+**Журнал:** все действия записываются в `lab_analysis_log` (кто, когда, почему).
+
+**Права:** блокировать/разблокировать могут роли `LAB`, `MASTER`, `ADMIN`.
+
 ### Advisor (Итерация 2)
 
 | Код | Severity | Описание |
@@ -389,8 +453,8 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 | enable_advisor | ✅ ON | 2 |
 | enable_material_constraints | ✅ ON | 2 |
 | enable_shift_planning | ✅ ON | 3 |
-| enable_rescheduling | ❌ OFF | 4 |
-| enable_lab_blocking | ❌ OFF | 5 |
+| enable_rescheduling | ✅ ON | 4 |
+| enable_lab_blocking | ✅ ON | 5 |
 | enable_operator_pools | ❌ OFF | 6 |
 | enable_manual_station | ❌ OFF | 6 |
 | enable_cooling_degradation | ❌ OFF | 7 |
@@ -401,15 +465,18 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
     cd backend
     pytest tests/ -v
 
-**Текущее состояние:** 115 passed.
+**Текущее состояние:** 170 passed.
 
 | Файл | Тестов | Что проверяет |
 |------|--------|---------------|
 | `test_tz_case.py` | 41 | Эталонный кейс ТЗ |
 | `test_materials.py` | 11 | Расчёт потребности в сырье |
 | `test_advisor.py` | 9 | Подсказки Advisor |
-| `test_routing.py` | 11 | Цепочки операций |
+| `test_routing.py` | 15 | Цепочки операций + truncate после лабы |
 | `test_shifts.py` | 16 | Смены и API смен |
+| `test_rescheduler.py` | 18 | Перепланирование + фильтрация блокировок |
+| `test_lab.py` | 24 | Лабораторные блокировки |
+| `test_versions.py` | 4 | Hotfix: деактивация версий |
 | `test_dependencies.py` | 9 | FastAPI dependencies |
 | `test_auth_models.py` | 9 | Pydantic-модели авторизации |
 | `test_security.py` | 5 | JWT и bcrypt |
@@ -435,13 +502,13 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 
 ### Применить SQL-миграцию (правильный способ)
 
-    docker cp backend\migrations\add_07.sql aps_postgres:/tmp/add_07.sql
-    docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_07.sql
+    docker cp backend\migrations\add_08.sql aps_postgres:/tmp/add_08.sql
+    docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_08.sql
 
-### Остановить/запустить PostgreSQL
+### Очистить кэш Python (если изменения не подхватываются)
 
-    docker stop aps_postgres
-    docker start aps_postgres
+    cd backend
+    Get-ChildItem -Path "app" -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
 
 ### Полная очистка (снести контейнер и БД)
 
@@ -453,15 +520,67 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 
 ## ⚠️ Известные ограничения
 
-1. **Слив на линию** добавляется в конец цепочки (после замыва). Семантически неверно (по ТЗ замыв после слива), но структурно работает: NoOverlap не даёт им пересечься. Исправим в Итерации 4 (перепланирование).
+1. **Слив на линию** добавляется в конец цепочки (после замыва). Семантически неверно (по ТЗ замыв после слива), но структурно работает: NoOverlap не даёт им пересечься. Исправим в Итерации 9 (рефакторинг).
 
-2. **Материальные ограничения** — не жёсткие constraints в CP-SAT, а предупреждения Advisor. Для жёсткого учёта нужно добавить cumulative constraints (Итерация 9).
+2. **Материальные ограничения** — не жёсткие constraints в CP-SAT, а предупреждения Advisor. Для жёсткого учёта нужно добавить cumulative constraints.
 
 3. **График поставок** — все поставки считаются доступными (без учёта `expected_at` vs дата старта партии).
 
 4. **Крем-мыло 5л (Р2)** имеет `route_type=VIA_TANK`, но Р2 не связан с танком. Слив идёт DIRECT. Advisor подсвечивает это как ROUTE_MISMATCH.
 
-5. **Кириллица в SQL-файлах:** применять через `docker cp` + `psql -f`, а не через `Get-Content | docker exec` (PowerShell портит UTF-8).
+5. **Лабораторные блокировки:** при блокировке партии нужно вручную запустить перепланирование (`POST /api/v1/schedule/reschedule`) — автоматическое перепланирование запланировано на Итерацию 9.
+
+## 🐛 Troubleshooting
+
+### 1. FastAPI 0.139+: `_IncludedRouter` в `app.routes`
+
+**Симптом:** скрипт проверки `getattr(r, 'path', None)` возвращает `None` для всех `include_router(...)` — кажется, что роутеры не подключены.
+
+**Причина:** в FastAPI ≥ 0.139 `app.routes` содержит `_IncludedRouter` — обёртки с атрибутом `.prefix`, а не `.path`.
+
+**Решение:** проверять через `app.openapi()['paths']`:
+
+```python
+from app.main import app
+paths = sorted(app.openapi()['paths'].keys())
+print([p for p in paths if '/shift' in p])
+```
+
+### 2. Кэш Python (`__pycache__`) на Windows
+
+**Симптом:** после правки `main.py` изменений не видно, даже после перезапуска uvicorn.
+
+**Причина:** на Windows mtime `.pyc` иногда совпадает с mtime `.py`, и Python не перекомпилирует.
+
+**Решение:** удалить `__pycache__` **в проекте** (не в venv!):
+
+    cd backend
+    Get-ChildItem -Path "app" -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
+
+Или запустить с флагом `-B`:
+
+    python -B run_server.py
+
+### 3. Кэш браузера — Swagger/UI показывает старое
+
+**Симптом:** в Swagger нет нового раздела, или UI показывает старые данные, хотя backend возвращает корректный JSON.
+
+**Решение:**
+1. Открыть в **режиме инкогнито** (Ctrl+Shift+N).
+2. Или **Ctrl+Shift+Delete** → очистить кэш.
+3. В крайнем случае — **перезагрузить компьютер** (сбрасывает Service Workers).
+
+### 4. Таймзона naive datetime в asyncpg
+
+**Симптом:** `GET /api/v1/shift/by-date/2026-09-01` возвращает 404, хотя смена есть в БД.
+
+**Причина:** Python передаёт `datetime.combine(...)` как **naive datetime**. PostgreSQL сравнивает `timestamptz >= timestamp` через таймзону **сессии asyncpg**, которая может отличаться от UTC.
+
+**Решение:** сравнивать по **UTC-дате**:
+
+```sql
+WHERE (starts_at AT TIME ZONE 'UTC')::date = :shift_date
+```
 
 ## 🗺️ Roadmap
 
@@ -471,9 +590,10 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 | 1 | Цепочки рабочих центров | 2 нед | 🔥🔥🔥 | ✅ |
 | 2 | Материальные ограничения и Advisor | 2 нед | 🔥🔥🔥 | ✅ |
 | 3 | Сменное планирование и РМ мастера | 2 нед | 🔥🔥🔥 | ✅ |
-| 4 | Перепланирование | 2 нед | 🔥🔥🔥 | 📋 Next |
-| 5 | Лаборатория и блокировки | 1.5 нед | 🔥🔥 | ⏳ |
-| 6 | Люди как ресурс | 2 нед | 🔥🔥 | ⏳ |
+| 4 | Перепланирование | 2 нед | 🔥🔥🔥 | ✅ |
+| 5 | Лаборатория и блокировки | 1.5 нед | 🔥🔥 | ✅ |
+| 5h | Hotfix: версии + tz + Gantt | 2 дня | 🔥🔥🔥 | ✅ |
+| 6 | Люди как ресурс | 2 нед | 🔥🔥 | 📋 Next |
 | 7 | Охлаждение с деградацией | 1.5 нед | 🔥 | ⏳ |
 | 8 | ЧЗ и интеграции | 2 нед | 🔥 | ⏳ |
 | 9 | Рефакторинг и качество | 2 нед | 🟡 | ⏳ |
@@ -485,4 +605,7 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 
 ---
 
-**Итерации 0, 1, 2, 3 завершены. Готовы к Итерации 4 — Перепланирование.**
+**Итерации 0, 1, 2, 3, 4, 5 завершены. Hotfix Итерации 5 — деактивация версий + таймзона + Gantt.**
+
+**Готовы к Итерации 6 — Люди как ресурс.**
+```

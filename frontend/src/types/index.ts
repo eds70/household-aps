@@ -105,6 +105,9 @@ export interface Recipe {
 export type OrderStatus = 'PLANNED' | 'IN_PROGRESS' | 'DONE' | 'CANCELLED';
 export type BatchStatus = 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED' | 'BLOCKED';
 
+// Итерация 5: статус лабораторной проверки партии
+export type LabStatus = 'NOT_REQUIRED' | 'PENDING_LAB' | 'APPROVED' | 'BLOCKED';
+
 export interface ProductionOrder {
     id: string;
     product_id: string;
@@ -132,6 +135,12 @@ export interface Batch {
     product_name?: string;
     product_code?: string;
     equipment_name?: string;
+    // Итерация 5
+    is_lab_blocked: boolean;
+    lab_status: LabStatus;
+    lab_block_reason?: string | null;
+    lab_blocked_at?: string | null;
+    lab_blocked_by?: string | null;
 }
 
 // ==========================================
@@ -236,6 +245,10 @@ export interface ShiftTask {
     status: ShiftTaskStatus;
     duration_minutes: number;
     is_carryover: boolean;
+    // Итерация 5: блокировка лабораторией
+    is_lab_blocked?: boolean;
+    lab_status?: LabStatus | null;
+    lab_block_reason?: string | null;
 }
 
 export interface ShiftTasksGrouped {
@@ -327,4 +340,87 @@ export interface PinTaskResponse {
     task_id: string;
     is_pinned: boolean;
     message: string;
+}
+
+// ==========================================
+// LABORATORY
+// ==========================================
+
+export type LabAction = 'REQUESTED' | 'APPROVED' | 'BLOCKED' | 'UNBLOCKED' | 'EXTENDED';
+export type LabResult = 'PASSED' | 'FAILED' | 'PENDING';
+
+export interface LabAnalysisLogEntry {
+    id: string;
+    organization_id: string;
+    batch_id: string;
+    scheduled_task_id?: string | null;
+    action: LabAction;
+    result?: LabResult | null;
+    reason?: string | null;
+    performed_by?: string | null;
+    performed_by_name?: string | null;
+    performed_at: string;
+    comment?: string | null;
+}
+
+export interface BatchLabStatus {
+    batch_id: string;
+    product_id: string;
+    product_code?: string | null;
+    product_name?: string | null;
+    volume_kg: number;
+    is_lab_blocked: boolean;
+    lab_status: LabStatus;
+    lab_block_reason?: string | null;
+    lab_blocked_at?: string | null;
+    lab_blocked_by?: string | null;
+    lab_blocked_by_name?: string | null;
+    equipment_name?: string | null;
+}
+
+export interface LabPendingBatch {
+    batch_id: string;
+    order_id: string;
+    product_id: string;
+    product_code?: string | null;
+    product_name?: string | null;
+    volume_kg: number;
+    equipment_id?: string | null;
+    equipment_name?: string | null;
+    is_lab_blocked: boolean;
+    lab_status: LabStatus;
+    lab_block_reason?: string | null;
+    lab_blocked_at?: string | null;
+    planned_end?: string | null;
+    next_lab_task_id?: string | null;
+    next_lab_task_start?: string | null;
+    next_lab_task_end?: string | null;
+}
+
+export interface LabActionResponse {
+    batch_id: string;
+    action: string;
+    is_lab_blocked: boolean;
+    lab_status: LabStatus;
+    message: string;
+    log_id?: string | null;
+}
+
+export interface BlockBatchRequest {
+    reason: string;
+    scheduled_task_id?: string | null;
+    comment?: string | null;
+}
+
+export interface UnblockBatchRequest {
+    comment?: string | null;
+}
+
+export interface ApproveBatchRequest {
+    result: 'PASSED' | 'FAILED';
+    comment?: string | null;
+}
+
+export interface RequestAnalysisRequest {
+    comment?: string | null;
 }

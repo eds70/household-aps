@@ -5,6 +5,12 @@
 Итерация 1 (исправление 2):
 - В build_routing передаётся gp_product (ГП) для корректного расчёта
   длительности слива (бутылки / скорость).
+
+Итерация 5:
+- Пропуск заблокированных партий (is_lab_blocked = TRUE) при построении
+  цепочек операций.
+- Логирование пропущенных партий.
+- Возврат списка исключённых партий в результате.
 """
 
 import asyncio
@@ -12,16 +18,16 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Tuple, Optional
 from uuid import UUID
+
 from ortools.sat.python import cp_model
 
+from .constraints.plugins import CONSTRAINT_PLUGINS
 from .data_loader import DataLoader
 from .duration.strategies import get_strategy, DurationContext
-from .constraints.plugins import CONSTRAINT_PLUGINS
-from .saver import ScheduleSaver
 from .feature_flags import FeatureFlags
 from .logging_config import setup_scheduler_logging, log_with_context
 from .routing import build_routing, RoutingStep, TaskRole, RouteType, get_routing_summary
-
+from .saver import ScheduleSaver
 
 logger = setup_scheduler_logging(level=logging.INFO)
 
@@ -34,6 +40,7 @@ class ProductionScheduler:
         self.tasks: Dict[Tuple[str, str], Dict] = {}
         self.t0: Optional[datetime] = None
         self.flags: Optional[FeatureFlags] = None
+        self.skipped_batches: List[Dict[str, Any]] = []
 
     def _calculate_duration(
             self,
@@ -73,6 +80,16 @@ class ProductionScheduler:
                     stage="init", org_id=str(self.org_id),
                 )
         return datetime(2026, 9, 1, 8, 0, 0)
+
+    def _is_batch_blocked(self, batch: Dict) -> bool:
+        """
+        Проверяет, заблокирована ли партия лабораторией.
+
+        Итерация 5.
+        """
+        if not self.flags or not self.flags.enable_lab_blocking:
+            return False
+        return bool(batch.get("is_lab_blocked", False))
 
     async def build_schedule(self) -> Dict[str, Any]:
         log_with_context(
@@ -136,10 +153,33 @@ class ProductionScheduler:
         routing_steps: Dict[str, List[RoutingStep]] = {}
         use_tank_routing = self.flags.enable_tank_routing
 
+        # Итерация 5: сбрасываем список пропущенных партий
+        self.skipped_batches = []
+
         for batch in batches:
             batch_id = str(batch["id"])
             product_id = str(batch["product_id"])
             equipment_id = str(batch["assigned_equipment_id"])
+
+            # === Итерация 5: пропуск заблокированных партий ===
+            if self._is_batch_blocked(batch):
+                skip_info = {
+                    "batch_id": batch_id,
+                    "product_id": product_id,
+                    "equipment_id": equipment_id,
+                    "reason": batch.get("lab_block_reason") or "Заблокировано лабораторией",
+                    "lab_status": batch.get("lab_status", "BLOCKED"),
+                }
+                self.skipped_batches.append(skip_info)
+                log_with_context(
+                    logger, logging.WARNING,
+                    f"Партия {batch_id[:8]} (ПФ={product_id[:8]}) ПРОПУЩЕНА: "
+                    f"{skip_info['reason']}",
+                    stage="routing", org_id=str(self.org_id),
+                )
+                continue
+            # === /Итерация 5 ===
+
             gp_product_id = batch.get("gp_product_id")
             gp_product = gp_products.get(str(gp_product_id)) if gp_product_id else None
 
@@ -174,6 +214,29 @@ class ProductionScheduler:
                 f"роли={summary['roles']}, длительность={summary['total_duration']} мин",
                 stage="routing", org_id=str(self.org_id),
             )
+
+        if self.skipped_batches:
+            log_with_context(
+                logger, logging.WARNING,
+                f"Пропущено заблокированных партий: {len(self.skipped_batches)}",
+                stage="routing", org_id=str(self.org_id),
+            )
+
+        # Если все партии заблокированы — вернуть пустой результат
+        if not routing_steps:
+            log_with_context(
+                logger, logging.WARNING,
+                "Все партии заблокированы или отсутствуют — план пуст",
+                stage="solve", org_id=str(self.org_id),
+            )
+            return {
+                "status": "success",
+                "tasks": [],
+                "makespan_minutes": 0,
+                "total_tasks": 0,
+                "skipped_batches": self.skipped_batches,
+                "message": "Нет доступных партий для планирования",
+            }
 
         # Переменные
         for batch_id, steps in routing_steps.items():
@@ -369,16 +432,22 @@ class ProductionScheduler:
                 f"objective={solver.ObjectiveValue():.0f} мин",
                 stage="solve", org_id=str(self.org_id),
             )
-            return self._extract_solution(
+            result = self._extract_solution(
                 solver, equipment_map, products_map, batches, routing_steps
             )
+            result["skipped_batches"] = self.skipped_batches
+            return result
         else:
             log_with_context(
                 logger, logging.ERROR,
                 f"Решение НЕ найдено: status={solver.StatusName(status)}",
                 stage="solve", org_id=str(self.org_id),
             )
-            return {"error": "No feasible solution found", "status": solver.StatusName(status)}
+            return {
+                "error": "No feasible solution found",
+                "status": solver.StatusName(status),
+                "skipped_batches": self.skipped_batches,
+            }
 
     def _get_product_code_for_batch(
             self,
@@ -466,7 +535,8 @@ async def main():
         logger, logging.INFO,
         f"План построен: задач={result['total_tasks']}, "
         f"makespan={result['makespan_minutes']:.0f} мин "
-        f"({result['makespan_minutes']/60:.1f} ч)",
+        f"({result['makespan_minutes']/60:.1f} ч), "
+        f"пропущено={len(result.get('skipped_batches', []))}",
         stage="finish", org_id=str(settings.DEFAULT_ORG_ID),
     )
 

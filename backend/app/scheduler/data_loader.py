@@ -5,14 +5,19 @@
 Итерация 2:
 - Читает material, material_stock, material_supply, recipe, recipe_item
   для расчёта потребности в сырье и подсказок Advisor.
+
+Итерация 5:
+- Читает batch.is_lab_blocked, batch.lab_status для исключения
+  заблокированных партий из планирования.
 """
 
-import asyncio
-from uuid import UUID
 from typing import List, Dict, Any
+from uuid import UUID
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
+
 from app.core.config import settings
 
 
@@ -37,7 +42,7 @@ class DataLoader:
                 "org_settings": await self._load_org_settings(session),
                 "equipment_links": await self._load_equipment_links(session),
                 "gp_products": await self._load_gp_products(session),
-                # NEW в итерации 2
+                # Итерация 2
                 "materials": await self._load_materials(session),
                 "material_stocks": await self._load_material_stocks(session),
                 "material_supplies": await self._load_material_supplies(session),
@@ -45,13 +50,23 @@ class DataLoader:
             }
 
     async def _load_batches(self, session) -> List[Dict]:
+        """
+        Загружает партии.
+
+        Итерация 5: добавлены поля is_lab_blocked, lab_status.
+        Заблокированные партии загружаются, но планировщик их
+        исключает из построения routing.
+        """
         result = await session.execute(
             text("""
                 SELECT b.id, b.product_id, b.volume_kg, b.assigned_equipment_id,
                 p.name as product_name, p.viscosity_coeff, p.requires_heating,
                 e.name as equipment_name, e.type as equipment_type,
                 e.volume_kg as equipment_volume, e.speed_coeff, e.mixer_type,
-                po.product_id AS gp_product_id
+                po.product_id AS gp_product_id,
+                COALESCE(b.is_lab_blocked, FALSE) AS is_lab_blocked,
+                COALESCE(b.lab_status, 'NOT_REQUIRED') AS lab_status,
+                b.lab_block_reason
                 FROM batch b
                 JOIN product p ON p.id = b.product_id
                 LEFT JOIN equipment e ON e.id = b.assigned_equipment_id
@@ -170,7 +185,7 @@ class DataLoader:
         return [dict(row._mapping) for row in result.fetchall()]
 
     # ==========================================
-    # НОВОЕ В ИТЕРАЦИИ 2: МАТЕРИАЛЫ
+    # МАТЕРИАЛЫ (Итерация 2)
     # ==========================================
 
     async def _load_materials(self, session) -> Dict[str, Dict]:

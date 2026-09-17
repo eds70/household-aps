@@ -8,6 +8,12 @@
            duration_min = bottles / fill_speed_per_min
 - bottle_volume_l и fill_speed_per_min берутся из ГП (готовой продукции),
   связанной с ПФ через production_order.product_id.
+
+Итерация 5:
+- Добавлена поддержка обрезки цепочки для заблокированных партий.
+  Если партия заблокирована лабораторией, build_routing может
+  вернуть только операции ДО первой needs_lab операции (для отображения
+  уже сделанного).
 """
 
 from dataclasses import dataclass, field
@@ -39,6 +45,7 @@ class TaskRole:
     LINE_FILL = "LINE_FILL"
     WASH = "WASH"
     SETUP = "SETUP"
+    LAB_BLOCK = "LAB_BLOCK"   # Итерация 5: маркер блокировки
 
 
 class RouteType:
@@ -135,7 +142,6 @@ def _calc_fill_duration(
     if volume_kg <= 0:
         return 0
 
-    # Приоритет 1: ГП с бутылочными параметрами
     if gp_product:
         bottle_volume = _to_float(gp_product.get("bottle_volume_l"), 0.0)
         fill_speed = _to_float(gp_product.get("fill_speed_per_min"), 0.0)
@@ -144,13 +150,11 @@ def _calc_fill_duration(
             duration = bottles / fill_speed
             return max(1, int(duration))
 
-    # Приоритет 2: ПФ с fill_speed_per_min (трактуем как кг/мин)
     pf_fill_speed = _to_float(product.get("fill_speed_per_min"), 0.0)
     if pf_fill_speed > 0:
         duration = volume_kg / pf_fill_speed
         return max(1, int(duration))
 
-    # Fallback: 1 кг/мин
     return max(1, int(volume_kg))
 
 
@@ -168,6 +172,7 @@ def build_routing(
         products_map: Dict[str, Dict],
         calc_duration,
         gp_product: Optional[Dict] = None,
+        truncate_after_lab: bool = False,
 ) -> List[RoutingStep]:
     """
     Строит цепочку шагов для партии.
@@ -182,6 +187,10 @@ def build_routing(
         products_map:   {product_id: product_dict}
         calc_duration:  функция расчёта длительности реакторных операций
         gp_product:     dict ГП (для слива) — опционально
+        truncate_after_lab: Итерация 5 — если True, обрезать цепочку после
+                            первой операции с needs_lab = TRUE. Используется
+                            для отображения частичного прогресса заблокированной
+                            партии.
     """
     if not operations:
         return []
@@ -212,11 +221,20 @@ def build_routing(
     postponed_wash: Optional[Dict] = None
     postponed_pumping: Optional[Dict] = None
 
+    # Итерация 5: если truncate_after_lab = True, обрезаем цепочку
+    lab_seen = False
+
     for op in operations:
         op_id = str(op["id"])
         op_parallel_group = op.get("parallel_group_id")
         is_pumping = op.get("duration_formula") == "pumping"
         is_washing = op.get("duration_formula") == "washing"
+        needs_lab = op.get("needs_lab", False)
+
+        # Итерация 5: если нужно обрезать после лаборатории и мы уже видели lab —
+        # останавливаемся
+        if truncate_after_lab and lab_seen:
+            break
 
         if is_washing:
             postponed_wash = op
@@ -259,6 +277,18 @@ def build_routing(
 
         prev_op_id = op_id
 
+        # Итерация 5: помечаем, что лабораторная операция пройдена
+        if needs_lab:
+            lab_seen = True
+
+    # Итерация 5: если обрезали после лабы — не добавляем TANK_TRANSFER/LINE_FILL/WASH
+    if truncate_after_lab and lab_seen:
+        # Помечаем последнюю операцию как крайнюю
+        if steps:
+            steps[-1].is_last_in_batch = True
+            steps[0].is_first_in_batch = True
+        return steps
+
     # TANK_TRANSFER
     last_op_before_fill = prev_op_id
     if postponed_pumping is not None and tank_id:
@@ -277,7 +307,7 @@ def build_routing(
         prev_op_id = op_id
         last_op_before_fill = op_id
 
-    # LINE_FILL — теперь с корректным расчётом
+    # LINE_FILL
     if line_id:
         fill_duration = _calc_fill_duration(batch, product, gp_product)
 

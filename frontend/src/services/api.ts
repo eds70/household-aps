@@ -1,6 +1,6 @@
 // frontend/src/services/api.ts
 import axios from 'axios';
-import { API_BASE_URL } from '../config';
+import {API_BASE_URL} from '../config';
 
 const api = axios.create({
     baseURL: API_BASE_URL,
@@ -206,6 +206,12 @@ export const calendarApi = {
         const response = await api.get('/api/v1/calendar', { params });
         return response.data;
     },
+    getByEquipment: async (equipmentId: string, versionId?: string) => {
+        const params: any = { equipment_id: equipmentId };
+        if (versionId) params.version_id = versionId;
+        const response = await api.get('/api/v1/calendar', { params });
+        return response.data;
+    },
     create: async (data: any) => {
         const response = await api.post('/api/v1/calendar', data);
         return response.data;
@@ -390,6 +396,70 @@ export const rescheduleApi = {
         const response = await api.put(`/api/v1/schedule/task/${taskId}/pin`, {
             is_pinned: isPinned,
         });
+        return response.data;
+    },
+};
+
+// ==========================================
+// Lab API (Итерация 5)
+// ==========================================
+export const labApi = {
+    /** Партии, ожидающие анализа или заблокированные */
+    getPending: async (params?: {
+        include_blocked?: boolean;
+        include_pending?: boolean;
+    }): Promise<import('../types').LabPendingBatch[]> => {
+        const response = await api.get('/api/v1/lab/pending', { params });
+        return response.data;
+    },
+
+    /** Статус партии по лаборатории */
+    getBatchStatus: async (batchId: string): Promise<import('../types').BatchLabStatus> => {
+        const response = await api.get(`/api/v1/lab/batch/${batchId}`);
+        return response.data;
+    },
+
+    /** Журнал проверок партии */
+    getBatchLog: async (batchId: string, limit = 50): Promise<import('../types').LabAnalysisLogEntry[]> => {
+        const response = await api.get(`/api/v1/lab/batch/${batchId}/log`, {
+            params: { limit },
+        });
+        return response.data;
+    },
+
+    /** Заблокировать партию */
+    blockBatch: async (
+        batchId: string,
+        data: import('../types').BlockBatchRequest
+    ): Promise<import('../types').LabActionResponse> => {
+        const response = await api.post(`/api/v1/lab/batch/${batchId}/block`, data);
+        return response.data;
+    },
+
+    /** Разблокировать партию */
+    unblockBatch: async (
+        batchId: string,
+        data: import('../types').UnblockBatchRequest
+    ): Promise<import('../types').LabActionResponse> => {
+        const response = await api.post(`/api/v1/lab/batch/${batchId}/unblock`, data);
+        return response.data;
+    },
+
+    /** Одобрить партию после анализа */
+    approveBatch: async (
+        batchId: string,
+        data: import('../types').ApproveBatchRequest
+    ): Promise<import('../types').LabActionResponse> => {
+        const response = await api.post(`/api/v1/lab/batch/${batchId}/approve`, data);
+        return response.data;
+    },
+
+    /** Запросить анализ для партии */
+    requestAnalysis: async (
+        batchId: string,
+        data: import('../types').RequestAnalysisRequest
+    ): Promise<import('../types').LabActionResponse> => {
+        const response = await api.post(`/api/v1/lab/batch/${batchId}/request`, data);
         return response.data;
     },
 };

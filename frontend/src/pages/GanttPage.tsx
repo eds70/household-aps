@@ -1,44 +1,44 @@
 // frontend/src/pages/GanttPage.tsx
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
+    Alert,
     Box,
-    Typography,
+    Button,
     Card,
     CardContent,
-    Alert,
-    CircularProgress,
-    Button,
+    Checkbox,
     Chip,
-    TextField,
+    CircularProgress,
+    Dialog,
+    DialogActions,
+    DialogContent,
+    DialogTitle,
     FormControl,
+    FormControlLabel,
+    InputAdornment,
     InputLabel,
-    Select,
     MenuItem,
+    Select,
+    TextField,
     ToggleButton,
     ToggleButtonGroup,
-    Dialog,
-    DialogTitle,
-    DialogContent,
-    DialogActions,
-    InputAdornment,
-    FormControlLabel,
-    Checkbox,
+    Typography,
 } from '@mui/material';
 import {
-    Refresh as RefreshIcon,
     Download as DownloadIcon,
+    Lock as LockIcon,
+    Refresh as RefreshIcon,
     Search as SearchIcon,
+    Today as TodayIcon,
     ZoomIn as ZoomInIcon,
     ZoomOut as ZoomOutIcon,
-    Today as TodayIcon,
-    Lock as LockIcon,
 } from '@mui/icons-material';
-import { Timeline } from 'vis-timeline/standalone';
-import { DataSet } from 'vis-data';
+import {Timeline} from 'vis-timeline/standalone';
+import {DataSet} from 'vis-data';
 import 'vis-timeline/styles/vis-timeline-graph2d.min.css';
-import { ganttApi } from '../services/api';
-import { API_BASE_URL } from '../config';
-import { usePlan } from '../context/PlainContext';
+import {ganttApi} from '../services/api';
+import {API_BASE_URL} from '../config';
+import {usePlan} from '../context/PlainContext';
 
 const OPERATION_COLORS: Record<string, string> = {
     'Нагрев': '#e74c3c',
@@ -72,6 +72,10 @@ interface TaskData {
     item_type?: ItemType;
     setup_type?: 'same_pf' | 'diff_pf';
     downtime_type?: 'WEEKEND' | 'REPAIR' | 'BREAKDOWN';
+    // Итерация 5: блокировка лабораторией
+    is_lab_blocked?: boolean;
+    lab_status?: string | null;
+    lab_block_reason?: string | null;
 }
 
 const GanttPage: React.FC = () => {
@@ -85,7 +89,7 @@ const GanttPage: React.FC = () => {
 
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    const [stats, setStats] = useState({ totalTasks: 0, makespanHours: 0, equipmentCount: 0 });
+    const [stats, setStats] = useState({ totalTasks: 0, makespanHours: 0, equipmentCount: 0, blockedCount: 0 });
     const [tasks, setTasks] = useState<TaskData[]>([]);
     const [equipmentList, setEquipmentList] = useState<string[]>([]);
     const [productList, setProductList] = useState<string[]>([]);
@@ -96,26 +100,31 @@ const GanttPage: React.FC = () => {
     const [productFilter, setProductFilter] = useState<string[]>([]);
     const [showSetups, setShowSetups] = useState(true);
     const [showDowntimes, setShowDowntimes] = useState(true);
+    const [showOnlyBlocked, setShowOnlyBlocked] = useState(false);
 
     // Редактирование задачи
     const [editDialogOpen, setEditDialogOpen] = useState(false);
     const [selectedTask, setSelectedTask] = useState<TaskData | null>(null);
     const [editFormData, setEditFormData] = useState({ start: '', end: '' });
 
-    // Таймер для детекции двойного клика
     const clickTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const loadGanttData = useCallback(async () => {
         setLoading(true);
         setError(null);
         try {
-            // ✅ Передаем version_id если выбран сохраненный план
             const data = await ganttApi.getData(currentVersionId || undefined);
+
+            // Подсчитаем заблокированные
+            const blockedCount = (data.tasks as TaskData[]).filter(
+                (t) => t.is_lab_blocked === true
+            ).length;
 
             setStats({
                 totalTasks: data.total_tasks,
                 makespanHours: data.makespan_hours,
                 equipmentCount: data.equipment_list.length,
+                blockedCount,
             });
             setTasks(data.tasks);
             setEquipmentList(data.equipment_list);
@@ -220,7 +229,7 @@ const GanttPage: React.FC = () => {
 
     const handleTaskEdit = useCallback(
         (taskId: string) => {
-            if (isReadOnly) return; // ✅ Блокируем редактирование в режиме просмотра
+            if (isReadOnly) return;
             const taskData = tasks.find((t) => t.id === taskId);
             if (taskData) {
                 setSelectedTask(taskData);
@@ -245,6 +254,10 @@ const GanttPage: React.FC = () => {
 
             // Фильтрация только обычных задач
             let filteredTasks = tasksData.filter((task) => task.item_type === 'task' || !task.item_type);
+
+            if (showOnlyBlocked) {
+                filteredTasks = filteredTasks.filter((task) => task.is_lab_blocked === true);
+            }
 
             if (searchQuery) {
                 const query = searchQuery.toLowerCase();
@@ -281,10 +294,24 @@ const GanttPage: React.FC = () => {
                 let className = '';
 
                 if (itemType === 'task') {
-                    style = `background-color: ${color}30; border-left: 4px solid ${color}; border-radius: 4px;`;
+                    const isBlocked = task.is_lab_blocked === true;
+
+                    if (isBlocked) {
+                        // Итерация 5: заблокированные — красная рамка
+                        style = `background-color: #ffebee; border: 2px solid #e74c3c; border-radius: 4px;`;
+                        className = 'item-blocked';
+                    } else {
+                        style = `background-color: ${color}30; border-left: 4px solid ${color}; border-radius: 4px;`;
+                    }
+
+                    const blockedBadge = isBlocked
+                        ? `<div style="color: #e74c3c; font-weight: bold; margin-top: 4px;">🔒 ЗАБЛОКИРОВАНО ЛАБОРАТОРИЕЙ</div>
+                           ${task.lab_block_reason ? `<div style="color: #e74c3c; font-size: 11px; margin-top: 2px;">Причина: ${task.lab_block_reason}</div>` : ''}`
+                        : '';
+
                     title = `
             <div style="padding: 8px; min-width: 280px;">
-              <b style="font-size: 14px; color: #2c3e50;">${task.operation_name}</b><br>
+              <b style="font-size: 14px; color: ${isBlocked ? '#e74c3c' : '#2c3e50'};">${isBlocked ? '🔒 ' : ''}${task.operation_name}</b><br>
               <hr style="margin: 8px 0; border: none; border-top: 1px solid #ecf0f1;">
               <div style="font-size: 12px; line-height: 1.6;">
                 <b>Партия:</b> ${task.batch_id}<br>
@@ -293,6 +320,7 @@ const GanttPage: React.FC = () => {
                 <b>Длительность:</b> ${task.duration_minutes} мин<br>
                 <b>Начало:</b> ${new Date(task.start).toLocaleString('ru-RU')}<br>
                 <b>Конец:</b> ${new Date(task.end).toLocaleString('ru-RU')}
+                ${blockedBadge}
               </div>
             </div>
           `;
@@ -331,13 +359,15 @@ const GanttPage: React.FC = () => {
           `;
                 }
 
+                const blockedIcon = task.is_lab_blocked ? '🔒 ' : '';
+
                 return {
                     id: task.id,
                     group: task.equipment_id,
                     content: `
             <div style="padding: 4px; font-size: 11px;">
-              <div style="font-weight: bold; color: #2c3e50; margin-bottom: 2px;">
-                ${task.operation_name}
+              <div style="font-weight: bold; color: ${task.is_lab_blocked ? '#e74c3c' : '#2c3e50'}; margin-bottom: 2px;">
+                ${blockedIcon}${task.operation_name}
               </div>
               <div style="font-size: 10px; color: #555;">
                 ${task.duration_minutes} мин
@@ -359,7 +389,7 @@ const GanttPage: React.FC = () => {
                 groupOrder: 'content' as const,
                 editable: {
                     add: false,
-                    updateTime: !isReadOnly, // ✅ Блокируем перемещение в режиме просмотра
+                    updateTime: !isReadOnly,
                     updateGroup: !isReadOnly,
                     remove: false,
                 },
@@ -392,7 +422,6 @@ const GanttPage: React.FC = () => {
 
             timelineRef.current = new Timeline(containerRef.current, items, groups, options);
 
-            // Детектор двойного клика
             timelineRef.current.on('click', (props: any) => {
                 if (props.item) {
                     if (clickTimeoutRef.current) {
@@ -409,7 +438,7 @@ const GanttPage: React.FC = () => {
 
             timelineRef.current.fit();
         },
-        [searchQuery, equipmentFilter, productFilter, showSetups, showDowntimes, isReadOnly]
+        [searchQuery, equipmentFilter, productFilter, showSetups, showDowntimes, showOnlyBlocked, isReadOnly]
     );
 
     useEffect(() => {
@@ -443,7 +472,6 @@ const GanttPage: React.FC = () => {
     };
 
     const handleExport = () => {
-        // ✅ Передаем version_id в экспорт если выбран сохраненный план
         const params = currentVersionId ? `?version_id=${currentVersionId}` : '';
         window.open(`${API_BASE_URL}/api/v1/gantt/export${params}`, '_blank');
     };
@@ -511,8 +539,15 @@ const GanttPage: React.FC = () => {
                             <Chip label={`Всего задач: ${stats.totalTasks}`} color="primary" variant="outlined" />
                             <Chip label={`Makespan: ${stats.makespanHours.toFixed(1)} ч`} color="secondary" variant="outlined" />
                             <Chip label={`Оборудование: ${stats.equipmentCount}`} variant="outlined" />
+                            {stats.blockedCount > 0 && (
+                                <Chip
+                                    icon={<LockIcon />}
+                                    label={`Заблокировано: ${stats.blockedCount}`}
+                                    color="error"
+                                    variant="filled"
+                                />
+                            )}
 
-                            {/* ✅ Индикатор режима просмотра */}
                             {isReadOnly && (
                                 <Chip
                                     icon={<LockIcon />}
@@ -531,6 +566,10 @@ const GanttPage: React.FC = () => {
                                             {name}
                                         </Box>
                                     ))}
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, fontSize: '0.85rem' }}>
+                                    <Box sx={{ width: 12, height: 12, bgcolor: '#ffebee', border: '2px solid #e74c3c', borderRadius: '2px' }} />
+                                    🔒 Заблокировано
+                                </Box>
                             </Box>
                         </Box>
 
@@ -606,6 +645,18 @@ const GanttPage: React.FC = () => {
                                 label={<Typography variant="body2">📅 Простоев</Typography>}
                             />
 
+                            <FormControlLabel
+                                control={
+                                    <Checkbox
+                                        checked={showOnlyBlocked}
+                                        onChange={(e) => setShowOnlyBlocked(e.target.checked)}
+                                        size="small"
+                                        color="error"
+                                    />
+                                }
+                                label={<Typography variant="body2" sx={{ fontWeight: showOnlyBlocked ? 600 : 400 }}>🔒 Только заблокированные</Typography>}
+                            />
+
                             <ToggleButtonGroup size="small" aria-label="zoom">
                                 <ToggleButton value="zoomOut" onClick={handleZoomOut}>
                                     <ZoomOutIcon />
@@ -654,6 +705,12 @@ const GanttPage: React.FC = () => {
                                             boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
                                         },
                                     },
+                                    '& .item-blocked': {
+                                        boxShadow: '0 0 8px rgba(231, 76, 60, 0.4)',
+                                        '&:hover': {
+                                            boxShadow: '0 0 12px rgba(231, 76, 60, 0.7)',
+                                        },
+                                    },
                                     '& .item-setup': {
                                         opacity: 0.85,
                                         '&:hover': { opacity: 1 },
@@ -683,7 +740,7 @@ const GanttPage: React.FC = () => {
                     </Card>
 
                     <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block', textAlign: 'center' }}>
-                        💡 Все операции по реактору в одной строке • Пунктир = замывки • Фиолетовый фон = выходные
+                        💡 Все операции по реактору в одной строке • Пунктир = замывки • Фиолетовый фон = выходные • 🔒 = заблокировано лабораторией
                         {isReadOnly ? ' • Режим просмотра (редактирование недоступно)' : ' • Двойной клик для редактирования'}
                         • Колесико мыши для масштабирования
                     </Typography>

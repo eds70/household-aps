@@ -18,6 +18,8 @@
   - Пересчёт только для партий, затронутых изменением.
 
 Итерация 4 (fix): корректный SQL для клонирования снапшотов.
+Итерация 5: исключение заблокированных лабораторией партий
+            (batch.is_lab_blocked = TRUE) из новой версии плана.
 """
 
 import json
@@ -107,6 +109,13 @@ class Rescheduler:
         return dict(row._mapping) if row else None
 
     async def _load_tasks(self, session, version_id: UUID) -> List[TaskSnapshot]:
+        """
+        Загружает задачи версии.
+
+        Итерация 5: задачи заблокированных лабораторией партий
+        (batch.is_lab_blocked = TRUE) исключаются из выборки — они
+        не попадут в новую версию плана.
+        """
         result = await session.execute(
             text("""
                 SELECT
@@ -119,8 +128,10 @@ class Rescheduler:
                     st.actual_start, st.actual_end,
                     st.status, COALESCE(st.is_pinned, FALSE) AS is_pinned
                 FROM scheduled_task st
+                LEFT JOIN batch b ON b.id = st.batch_id
                 WHERE st.schedule_version_id = :version_id
                   AND st.organization_id = :org_id
+                  AND COALESCE(b.is_lab_blocked, FALSE) = FALSE
             """),
             {"version_id": version_id, "org_id": self.org_id},
         )
@@ -141,6 +152,31 @@ class Rescheduler:
             for row in result.fetchall()
         ]
 
+    async def _count_blocked_tasks(self, session, version_id: UUID) -> Tuple[int, int]:
+        """
+        Итерация 5: считает, сколько задач и партий было исключено
+        из-за блокировки лабораторией.
+
+        Возвращает: (количество задач, количество уникальных партий).
+        """
+        result = await session.execute(
+            text("""
+                SELECT
+                    COUNT(st.id) AS blocked_tasks,
+                    COUNT(DISTINCT st.batch_id) AS blocked_batches
+                FROM scheduled_task st
+                JOIN batch b ON b.id = st.batch_id
+                WHERE st.schedule_version_id = :version_id
+                  AND st.organization_id = :org_id
+                  AND COALESCE(b.is_lab_blocked, FALSE) = TRUE
+            """),
+            {"version_id": version_id, "org_id": self.org_id},
+        )
+        row = result.fetchone()
+        if not row:
+            return 0, 0
+        return int(row.blocked_tasks or 0), int(row.blocked_batches or 0)
+
     def _is_frozen(self, task: TaskSnapshot, frozen_before: Optional[datetime]) -> bool:
         """Задача заморожена, если pin, или началась до frozen_before, или уже DONE."""
         if task.is_pinned:
@@ -150,7 +186,6 @@ class Rescheduler:
         if frozen_before is not None:
             start = task.planned_start
             fb = frozen_before
-            # Нормализуем таймзоны
             if start.tzinfo is not None and fb.tzinfo is None:
                 start = start.replace(tzinfo=None)
             elif start.tzinfo is None and fb.tzinfo is not None:
@@ -167,7 +202,6 @@ class Rescheduler:
         """Определяет партии, затронутые изменением."""
         affected: set = set()
 
-        # DELAY: конкретная задача задержалась
         delayed_task_id = changes.get("delayed_task_id")
         if delayed_task_id:
             for t in tasks:
@@ -176,7 +210,6 @@ class Rescheduler:
                         affected.add(t.batch_id)
                     break
 
-        # BREAKDOWN: оборудование сломалось — все партии на нём
         broken_equipment_id = changes.get("broken_equipment_id")
         if broken_equipment_id:
             for t in tasks:
@@ -184,7 +217,6 @@ class Rescheduler:
                     if t.batch_id:
                         affected.add(t.batch_id)
 
-        # QTY_CHANGE: явно переданные партии
         explicit_batch_ids = changes.get("affected_batch_ids")
         if explicit_batch_ids:
             for b in explicit_batch_ids:
@@ -232,7 +264,6 @@ class Rescheduler:
         else:
             dt_naive = dt
 
-        # 1. Точное попадание
         for s in shifts:
             start = s["starts_at"]
             end = s["ends_at"]
@@ -243,7 +274,6 @@ class Rescheduler:
             if start <= dt_naive <= end:
                 return str(s["id"])
 
-        # 2. Fallback: ближайшая по starts_at
         closest_id = None
         closest_diff = None
         for s in shifts:
@@ -279,7 +309,6 @@ class Rescheduler:
         Для каждой таблицы — свой SQL с явными колонками,
         потому что наборы колонок разные.
         """
-        # equipment_snapshot
         await session.execute(
             text("""
                 INSERT INTO equipment_snapshot
@@ -293,7 +322,6 @@ class Rescheduler:
             {"new_version_id": new_version_id, "from_version_id": from_version_id},
         )
 
-        # product_snapshot
         await session.execute(
             text("""
                 INSERT INTO product_snapshot
@@ -307,7 +335,6 @@ class Rescheduler:
             {"new_version_id": new_version_id, "from_version_id": from_version_id},
         )
 
-        # operation_snapshot
         await session.execute(
             text("""
                 INSERT INTO operation_snapshot
@@ -325,7 +352,6 @@ class Rescheduler:
             {"new_version_id": new_version_id, "from_version_id": from_version_id},
         )
 
-        # calendar_snapshot
         await session.execute(
             text("""
                 INSERT INTO calendar_snapshot
@@ -351,6 +377,9 @@ class Rescheduler:
         """
         Клонирует задачи из исходной версии в новую.
         Возвращает: (affected_tasks, moved_tasks, frozen_tasks).
+
+        Итерация 5: from_tasks уже отфильтрованы — заблокированных
+        партий тут нет.
         """
         affected_count = 0
         moved_count = 0
@@ -403,15 +432,8 @@ class Rescheduler:
         """
         Выполняет перепланирование.
 
-        Args:
-            from_version_id: исходная версия плана.
-            reason: DELAY | BREAKDOWN | QTY_CHANGE | MANUAL.
-            changes: dict с параметрами изменения.
-            frozen_before: до какого момента задачи не двигаются.
-            comment: комментарий.
-
-        Returns:
-            RescheduleResult с новой версией и diff'ом.
+        Итерация 5: заблокированные лабораторией партии автоматически
+        исключаются из новой версии плана (см. _load_tasks).
         """
         async with self.async_session() as session:
             # 1. Загружаем исходную версию
@@ -431,15 +453,28 @@ class Rescheduler:
                 stage="reschedule", org_id=str(self.org_id),
             )
 
-            # 2. Загружаем задачи
+            # 2. Считаем, сколько задач заблокировано (для diff)
+            blocked_tasks_count, blocked_batches_count = await self._count_blocked_tasks(
+                session, from_version_id
+            )
+            if blocked_tasks_count > 0:
+                log_with_context(
+                    logger, logging.WARNING,
+                    f"Исключено из новой версии: {blocked_tasks_count} задач "
+                    f"({blocked_batches_count} заблокированных партий)",
+                    stage="reschedule", org_id=str(self.org_id),
+                )
+
+            # 3. Загружаем задачи (заблокированные уже отфильтрованы)
             from_tasks = await self._load_tasks(session, from_version_id)
             log_with_context(
                 logger, logging.INFO,
-                f"Загружено задач из исходной версии: {len(from_tasks)}",
+                f"Загружено задач для клонирования: {len(from_tasks)} "
+                f"(исключено: {blocked_tasks_count})",
                 stage="reschedule", org_id=str(self.org_id),
             )
 
-            # 3. Если BREAKDOWN — добавляем в календарь
+            # 4. Если BREAKDOWN — добавляем в календарь
             if reason == RescheduleReason.BREAKDOWN:
                 eq_id = changes.get("broken_equipment_id")
                 start = changes.get("breakdown_start")
@@ -453,7 +488,7 @@ class Rescheduler:
                         comment or "Аварийная остановка",
                         )
 
-            # 4. Определяем затронутые партии
+            # 5. Определяем затронутые партии
             affected_batch_ids = self._find_affected_batch_ids(from_tasks, changes)
             log_with_context(
                 logger, logging.INFO,
@@ -461,7 +496,7 @@ class Rescheduler:
                 stage="reschedule", org_id=str(self.org_id),
             )
 
-            # 5. Создаём новую версию
+            # 6. Создаём новую версию
             new_version_id = uuid4()
             new_name = f"Перепланирование от {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
@@ -484,14 +519,14 @@ class Rescheduler:
                 },
             )
 
-            # 6. Клонируем снапшоты
+            # 7. Клонируем снапшоты
             await self._clone_snapshots(
                 session,
                 from_version_id=from_version_id,
                 new_version_id=new_version_id,
             )
 
-            # 7. Клонируем задачи
+            # 8. Клонируем задачи
             shifts = await self._load_shifts(session)
             affected_count, moved_count, frozen_count = await self._clone_tasks(
                 session,
@@ -502,7 +537,7 @@ class Rescheduler:
                 shifts=shifts,
             )
 
-            # 8. Логируем в reschedule_log
+            # 9. Логируем в reschedule_log
             await session.execute(
                 text("""
                     INSERT INTO reschedule_log
@@ -531,7 +566,8 @@ class Rescheduler:
                 logger, logging.INFO,
                 f"Перепланирование завершено: from={str(from_version_id)[:8]} → "
                 f"to={str(new_version_id)[:8]}, affected={affected_count}, "
-                f"moved={moved_count}, frozen={frozen_count}",
+                f"moved={moved_count}, frozen={frozen_count}, "
+                f"skipped_blocked={blocked_tasks_count}",
                 stage="reschedule", org_id=str(self.org_id),
             )
 
@@ -547,6 +583,8 @@ class Rescheduler:
                     "reason": reason,
                     "affected_batch_ids": list(affected_batch_ids),
                     "frozen_before": frozen_before.isoformat() if frozen_before else None,
+                    "skipped_blocked_tasks": blocked_tasks_count,
+                    "skipped_blocked_batches": blocked_batches_count,
                 },
             )
 

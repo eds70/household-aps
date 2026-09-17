@@ -1,6 +1,8 @@
 # backend/tests/test_rescheduler.py
 """
 Тесты модуля rescheduler (Итерация 4).
+
+Итерация 5: тесты фильтрации заблокированных лабораторией партий.
 """
 
 from datetime import datetime, timezone, timedelta
@@ -71,7 +73,7 @@ def test_is_frozen_by_status_cancelled():
 def test_is_frozen_by_frozen_before():
     """Задача началась до frozen_before — заморожена."""
     r = Rescheduler(org_id=tz_case.ORG_ID)
-    task = _make_task("t1", start_days=0)  # 15.09.2026 08:00
+    task = _make_task("t1", start_days=0)
     frozen = datetime(2026, 9, 16, 0, 0, 0, tzinfo=TZ)
     assert r._is_frozen(task, frozen_before=frozen) is True
 
@@ -79,7 +81,7 @@ def test_is_frozen_by_frozen_before():
 def test_not_frozen_when_after():
     """Задача после frozen_before — не заморожена."""
     r = Rescheduler(org_id=tz_case.ORG_ID)
-    task = _make_task("t1", start_days=5)  # 20.09.2026
+    task = _make_task("t1", start_days=5)
     frozen = datetime(2026, 9, 16, 0, 0, 0, tzinfo=TZ)
     assert r._is_frozen(task, frozen_before=frozen) is False
 
@@ -172,11 +174,6 @@ def test_find_shift_id_fallback():
             "ends_at": datetime(2026, 9, 16, 20, 0, 0, tzinfo=TZ),
         },
     ]
-    # 15.09.2026 22:00 — вне окна обеих смен.
-    # Разница по starts_at:
-    #   shift1: |22:00 − 08:00 (15.09)| = 14 часов
-    #   shift2: |22:00 − 08:00 (16.09)| = 10 часов
-    # Ближайшая — shift2 (10 < 14).
     dt = datetime(2026, 9, 15, 22, 0, 0, tzinfo=TZ)
     result = r._find_shift_id(shifts, dt)
     assert result == "shift2"
@@ -240,6 +237,46 @@ def test_reschedule_qty_change_scenario():
         s for s in tz_expected.RESCHEDULE_SCENARIOS if s["reason"] == "qty_change"
     )
     assert qty_change["params"]["new_qty"] == 30000
+
+
+# ==========================================
+# ИТЕРАЦИЯ 5: ТЕСТЫ ФИЛЬТРАЦИИ ЗАБЛОКИРОВАННЫХ ПАРТИЙ
+# ==========================================
+
+def test_load_tasks_query_has_lab_blocked_filter():
+    """
+    Проверяет, что SQL-запрос _load_tasks содержит фильтр
+    по batch.is_lab_blocked.
+    """
+    import inspect
+    from app.scheduler import rescheduler as rescheduler_module
+
+    source = inspect.getsource(rescheduler_module.Rescheduler._load_tasks)
+    assert "is_lab_blocked" in source, (
+        "SQL в _load_tasks должен содержать фильтр is_lab_blocked "
+        "(Итерация 5)"
+    )
+    assert "COALESCE(b.is_lab_blocked, FALSE) = FALSE" in source
+
+
+def test_rescheduler_has_count_blocked_tasks_method():
+    """Метод _count_blocked_tasks должен существовать."""
+    r = Rescheduler(org_id=tz_case.ORG_ID)
+    assert hasattr(r, "_count_blocked_tasks")
+    assert callable(r._count_blocked_tasks)
+
+
+def test_reschedule_result_diff_has_skipped_fields():
+    """
+    Проверяет, что в исходнике reschedule() в diff упоминаются
+    поля skipped_blocked_tasks и skipped_blocked_batches.
+    """
+    import inspect
+    from app.scheduler import rescheduler as rescheduler_module
+
+    source = inspect.getsource(rescheduler_module.Rescheduler.reschedule)
+    assert "skipped_blocked_tasks" in source
+    assert "skipped_blocked_batches" in source
 
 
 if __name__ == "__main__":

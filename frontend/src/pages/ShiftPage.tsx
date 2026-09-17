@@ -1,29 +1,46 @@
 // frontend/src/pages/ShiftPage.tsx
-import React, { useState, useEffect, useCallback } from 'react';
+import React, {useCallback, useEffect, useState} from 'react';
 import {
-    Box, Typography, Card, CardContent, Alert, CircularProgress,
-    TextField, Button, Chip, Divider, Dialog, DialogTitle,
-    DialogContent, DialogActions, IconButton, Tooltip,
-    Accordion, AccordionSummary, AccordionDetails, FormControl,
-    InputLabel, Select, MenuItem,
+    Accordion,
+    AccordionDetails,
+    AccordionSummary,
+    Alert,
+    Badge,
+    Box,
+    Button,
+    Card,
+    CardContent,
+    Chip,
+    CircularProgress,
+    Dialog,
+    DialogActions,
+    DialogContent,
+    DialogTitle,
+    Divider,
+    FormControl,
+    IconButton,
+    InputLabel,
+    MenuItem,
+    Select,
+    TextField,
+    Tooltip,
+    Typography,
 } from '@mui/material';
 import {
-    Refresh as RefreshIcon,
-    ExpandMore as ExpandMoreIcon,
-    Schedule as ScheduleIcon,
-    PlayArrow as PlayIcon,
     CheckCircle as CheckCircleIcon,
+    ExpandMore as ExpandMoreIcon,
     History as HistoryIcon,
+    Lock as LockIcon,
+    LockOpen as LockOpenIcon,
+    PlayArrow as PlayIcon,
+    Refresh as RefreshIcon,
     Save as SaveIcon,
+    Schedule as ScheduleIcon,
+    Science as ScienceIcon,
+    Warning as WarningIcon,
 } from '@mui/icons-material';
-import { shiftApi } from '../services/api';
-import type {
-    Shift,
-    ShiftTasksResponse,
-    ShiftTask,
-    ShiftTaskStatus,
-    TaskFactRequest,
-} from '../types';
+import {labApi, shiftApi} from '../services/api';
+import type {LabStatus, Shift, ShiftTask, ShiftTasksResponse, ShiftTaskStatus, TaskFactRequest,} from '../types';
 
 const STATUS_LABELS: Record<ShiftTaskStatus, string> = {
     PLANNED: 'Запланировано',
@@ -45,6 +62,21 @@ const ROLE_LABELS: Record<string, string> = {
     LINE_FILL: 'Слив',
     WASH: 'Замыв',
     SETUP: 'Переналадка',
+    LAB_BLOCK: 'Лаборатория',
+};
+
+const LAB_STATUS_LABELS: Record<LabStatus, string> = {
+    NOT_REQUIRED: 'Не требуется',
+    PENDING_LAB: 'Ожидает лабу',
+    APPROVED: 'Одобрено',
+    BLOCKED: 'Заблокировано',
+};
+
+const LAB_STATUS_COLORS: Record<LabStatus, 'default' | 'info' | 'success' | 'error' | 'warning'> = {
+    NOT_REQUIRED: 'default',
+    PENDING_LAB: 'info',
+    APPROVED: 'success',
+    BLOCKED: 'error',
 };
 
 const ShiftPage: React.FC = () => {
@@ -59,6 +91,18 @@ const ShiftPage: React.FC = () => {
     const [editDialogOpen, setEditDialogOpen] = useState(false);
     const [selectedTask, setSelectedTask] = useState<ShiftTask | null>(null);
     const [factForm, setFactForm] = useState<TaskFactRequest>({});
+
+    // Итерация 5: диалог блокировки
+    const [blockDialogOpen, setBlockDialogOpen] = useState(false);
+    const [blockingTask, setBlockingTask] = useState<ShiftTask | null>(null);
+    const [blockReason, setBlockReason] = useState('');
+    const [blockComment, setBlockComment] = useState('');
+    const [blockBusy, setBlockBusy] = useState(false);
+
+    // Итерация 5: диалог разблокировки
+    const [unblockDialogOpen, setUnblockDialogOpen] = useState(false);
+    const [unblockingTask, setUnblockingTask] = useState<ShiftTask | null>(null);
+    const [unblockComment, setUnblockComment] = useState('');
 
     const loadShift = useCallback(async (dateStr: string) => {
         setLoading(true);
@@ -140,6 +184,71 @@ const ShiftPage: React.FC = () => {
         }
     };
 
+    // ========== Итерация 5: блокировка ==========
+
+    const handleOpenBlockDialog = (task: ShiftTask) => {
+        if (!task.batch_id) {
+            setError('Задача не привязана к партии');
+            return;
+        }
+        setBlockingTask(task);
+        setBlockReason('');
+        setBlockComment('');
+        setBlockDialogOpen(true);
+    };
+
+    const handleDoBlock = async () => {
+        if (!blockingTask || !blockingTask.batch_id) return;
+        if (blockReason.trim().length < 3) {
+            setError('Укажите причину блокировки (минимум 3 символа)');
+            return;
+        }
+        setBlockBusy(true);
+        try {
+            await labApi.blockBatch(blockingTask.batch_id, {
+                reason: blockReason,
+                scheduled_task_id: blockingTask.id,
+                comment: blockComment || null,
+            });
+            setBlockDialogOpen(false);
+            if (currentShift) {
+                const tasks = await shiftApi.getTasks(currentShift.id);
+                setTasksData(tasks);
+            }
+        } catch (err: any) {
+            const detail = err.response?.data?.detail;
+            setError(typeof detail === 'string' ? detail : 'Ошибка блокировки');
+        } finally {
+            setBlockBusy(false);
+        }
+    };
+
+    const handleOpenUnblockDialog = (task: ShiftTask) => {
+        if (!task.batch_id) return;
+        setUnblockingTask(task);
+        setUnblockComment('');
+        setUnblockDialogOpen(true);
+    };
+
+    const handleDoUnblock = async () => {
+        if (!unblockingTask || !unblockingTask.batch_id) return;
+        try {
+            await labApi.unblockBatch(unblockingTask.batch_id, {
+                comment: unblockComment || null,
+            });
+            setUnblockDialogOpen(false);
+            if (currentShift) {
+                const tasks = await shiftApi.getTasks(currentShift.id);
+                setTasksData(tasks);
+            }
+        } catch (err: any) {
+            const detail = err.response?.data?.detail;
+            setError(typeof detail === 'string' ? detail : 'Ошибка разблокировки');
+        }
+    };
+
+    // ========== Рендер задачи ==========
+
     const renderTask = (task: ShiftTask) => {
         const startTime = new Date(task.planned_start).toLocaleTimeString('ru-RU', {
             hour: '2-digit', minute: '2-digit',
@@ -150,6 +259,23 @@ const ShiftPage: React.FC = () => {
 
         const isDone = task.status === 'DONE';
         const isInProgress = task.status === 'IN_PROGRESS';
+        const isLabBlocked = task.is_lab_blocked === true;
+        const labStatus: LabStatus = (task.lab_status as LabStatus) || 'NOT_REQUIRED';
+
+        // Цвет рамки: заблокировано > выполнено > в работе > переходящее
+        let borderLeft = '1px solid #e0e0e0';
+        let bgcolor = 'white';
+        if (isLabBlocked) {
+            borderLeft = '4px solid #e74c3c';
+            bgcolor = '#ffebee';
+        } else if (isDone) {
+            borderLeft = '4px solid #4caf50';
+        } else if (isInProgress) {
+            borderLeft = '4px solid #2196f3';
+        } else if (task.is_carryover) {
+            borderLeft = '4px solid #ff9800';
+            bgcolor = '#fff8e1';
+        }
 
         return (
             <Card
@@ -157,17 +283,17 @@ const ShiftPage: React.FC = () => {
                 variant="outlined"
                 sx={{
                     mb: 1,
-                    borderLeft: isDone ? '4px solid #4caf50'
-                        : isInProgress ? '4px solid #2196f3'
-                            : task.is_carryover ? '4px solid #ff9800'
-                                : '1px solid #e0e0e0',
-                    bgcolor: task.is_carryover ? '#fff8e1' : 'white',
+                    borderLeft,
+                    bgcolor,
                 }}
             >
                 <CardContent sx={{ py: 1.5, px: 2, '&:last-child': { pb: 1.5 } }}>
                     <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 1 }}>
                         <Box sx={{ flexGrow: 1 }}>
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5, flexWrap: 'wrap' }}>
+                                {isLabBlocked && (
+                                    <LockIcon fontSize="small" sx={{ color: '#e74c3c' }} />
+                                )}
                                 <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
                                     {task.operation_name}
                                 </Typography>
@@ -186,6 +312,15 @@ const ShiftPage: React.FC = () => {
                                         color="warning"
                                     />
                                 )}
+                                {labStatus !== 'NOT_REQUIRED' && (
+                                    <Chip
+                                        icon={<ScienceIcon />}
+                                        label={LAB_STATUS_LABELS[labStatus]}
+                                        size="small"
+                                        color={LAB_STATUS_COLORS[labStatus]}
+                                        variant={isLabBlocked ? 'filled' : 'outlined'}
+                                    />
+                                )}
                             </Box>
 
                             <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
@@ -199,6 +334,18 @@ const ShiftPage: React.FC = () => {
                                 <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
                                     + {task.linked_equipment_name}
                                 </Typography>
+                            )}
+
+                            {task.lab_block_reason && (
+                                <Alert
+                                    severity="error"
+                                    icon={<WarningIcon fontSize="inherit" />}
+                                    sx={{ mt: 0.5, py: 0 }}
+                                >
+                                    <Typography variant="caption">
+                                        {task.lab_block_reason}
+                                    </Typography>
+                                </Alert>
                             )}
 
                             {task.material_load_at && (
@@ -226,7 +373,31 @@ const ShiftPage: React.FC = () => {
                             />
 
                             <Box sx={{ display: 'flex', gap: 0.5, mt: 0.5 }}>
-                                {task.task_role === 'REACTOR_OP' && !task.material_load_at && (
+                                {/* Итерация 5: блокировка/разблокировка */}
+                                {task.batch_id && !isLabBlocked && (
+                                    <Tooltip title="Заблокировать лабораторией">
+                                        <IconButton
+                                            size="small"
+                                            color="error"
+                                            onClick={() => handleOpenBlockDialog(task)}
+                                        >
+                                            <LockIcon fontSize="small" />
+                                        </IconButton>
+                                    </Tooltip>
+                                )}
+                                {task.batch_id && isLabBlocked && (
+                                    <Tooltip title="Разблокировать">
+                                        <IconButton
+                                            size="small"
+                                            color="success"
+                                            onClick={() => handleOpenUnblockDialog(task)}
+                                        >
+                                            <LockOpenIcon fontSize="small" />
+                                        </IconButton>
+                                    </Tooltip>
+                                )}
+
+                                {task.task_role === 'REACTOR_OP' && !task.material_load_at && !isLabBlocked && (
                                     <Tooltip title="Отметить загрузку сырья">
                                         <IconButton
                                             size="small"
@@ -237,7 +408,7 @@ const ShiftPage: React.FC = () => {
                                         </IconButton>
                                     </Tooltip>
                                 )}
-                                {task.status !== 'DONE' && (
+                                {task.status !== 'DONE' && !isLabBlocked && (
                                     <Tooltip title="Отметить выполнение">
                                         <IconButton
                                             size="small"
@@ -350,38 +521,52 @@ const ShiftPage: React.FC = () => {
                         </Card>
                     ) : (
                         <Box sx={{ flexGrow: 1, overflow: 'auto' }}>
-                            {tasksData.groups.map((group) => (
-                                <Accordion
-                                    key={group.equipment_id}
-                                    defaultExpanded
-                                    sx={{ mb: 1, boxShadow: '0 2px 6px rgba(0,0,0,0.08)' }}
-                                >
-                                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
-                                            <Typography sx={{ fontWeight: 600 }}>
-                                                {group.equipment_name}
-                                            </Typography>
-                                            {group.equipment_code && (
+                            {tasksData.groups.map((group) => {
+                                const blockedCount = group.tasks.filter(t => t.is_lab_blocked).length;
+                                return (
+                                    <Accordion
+                                        key={group.equipment_id}
+                                        defaultExpanded
+                                        sx={{ mb: 1, boxShadow: '0 2px 6px rgba(0,0,0,0.08)' }}
+                                    >
+                                        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
+                                                <Typography sx={{ fontWeight: 600 }}>
+                                                    {group.equipment_name}
+                                                </Typography>
+                                                {group.equipment_code && (
+                                                    <Chip
+                                                        label={group.equipment_code}
+                                                        size="small"
+                                                        variant="outlined"
+                                                    />
+                                                )}
+                                                {blockedCount > 0 && (
+                                                    <Badge badgeContent={blockedCount} color="error">
+                                                        <Chip
+                                                            icon={<LockIcon />}
+                                                            label="Заблокировано"
+                                                            size="small"
+                                                            color="error"
+                                                            variant="outlined"
+                                                        />
+                                                    </Badge>
+                                                )}
                                                 <Chip
-                                                    label={group.equipment_code}
+                                                    label={`${group.tasks.length} задач`}
                                                     size="small"
+                                                    color="primary"
                                                     variant="outlined"
+                                                    sx={{ ml: 'auto' }}
                                                 />
-                                            )}
-                                            <Chip
-                                                label={`${group.tasks.length} задач`}
-                                                size="small"
-                                                color="primary"
-                                                variant="outlined"
-                                                sx={{ ml: 'auto' }}
-                                            />
-                                        </Box>
-                                    </AccordionSummary>
-                                    <AccordionDetails>
-                                        {group.tasks.map(renderTask)}
-                                    </AccordionDetails>
-                                </Accordion>
-                            ))}
+                                            </Box>
+                                        </AccordionSummary>
+                                        <AccordionDetails>
+                                            {group.tasks.map(renderTask)}
+                                        </AccordionDetails>
+                                    </Accordion>
+                                );
+                            })}
                         </Box>
                     )}
                 </>
@@ -397,6 +582,7 @@ const ShiftPage: React.FC = () => {
                 </Card>
             )}
 
+            {/* ========== Диалог внесения факта ========== */}
             <Dialog open={editDialogOpen} onClose={() => setEditDialogOpen(false)} maxWidth="sm" fullWidth>
                 <DialogTitle sx={{ fontWeight: 600 }}>
                     {selectedTask && `${selectedTask.operation_name} — внести факт`}
@@ -470,6 +656,101 @@ const ShiftPage: React.FC = () => {
                     <Button onClick={() => setEditDialogOpen(false)}>Отмена</Button>
                     <Button onClick={handleSaveFact} variant="contained" startIcon={<SaveIcon />}>
                         Сохранить
+                    </Button>
+                </DialogActions>
+            </Dialog>
+
+            {/* ========== Итерация 5: Диалог блокировки ========== */}
+            <Dialog open={blockDialogOpen} onClose={() => setBlockDialogOpen(false)} maxWidth="sm" fullWidth>
+                <DialogTitle sx={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <LockIcon color="error" />
+                    Заблокировать партию лабораторией
+                </DialogTitle>
+                <DialogContent>
+                    {blockingTask && (
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
+                            <Alert severity="warning">
+                                Партия <b>{blockingTask.batch_name || blockingTask.batch_id?.substring(0, 8)}</b>{' '}
+                                ({blockingTask.product_name}) не будет участвовать в дальнейшем
+                                планировании до разблокировки.
+                            </Alert>
+
+                            <TextField
+                                label="Причина блокировки"
+                                fullWidth
+                                required
+                                multiline
+                                rows={2}
+                                value={blockReason}
+                                onChange={(e) => setBlockReason(e.target.value)}
+                                placeholder="Например: не соответствует вязкость, pH вне нормы..."
+                            />
+
+                            <TextField
+                                label="Комментарий (опционально)"
+                                fullWidth
+                                multiline
+                                rows={2}
+                                value={blockComment}
+                                onChange={(e) => setBlockComment(e.target.value)}
+                            />
+                        </Box>
+                    )}
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setBlockDialogOpen(false)}>Отмена</Button>
+                    <Button
+                        onClick={handleDoBlock}
+                        variant="contained"
+                        color="error"
+                        disabled={blockBusy || blockReason.trim().length < 3}
+                        startIcon={<LockIcon />}
+                    >
+                        {blockBusy ? 'Блокировка...' : 'Заблокировать'}
+                    </Button>
+                </DialogActions>
+            </Dialog>
+
+            {/* ========== Итерация 5: Диалог разблокировки ========== */}
+            <Dialog open={unblockDialogOpen} onClose={() => setUnblockDialogOpen(false)} maxWidth="sm" fullWidth>
+                <DialogTitle sx={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <LockOpenIcon color="success" />
+                    Разблокировать партию
+                </DialogTitle>
+                <DialogContent>
+                    {unblockingTask && (
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
+                            <Alert severity="info">
+                                Партия <b>{unblockingTask.batch_name || unblockingTask.batch_id?.substring(0, 8)}</b>{' '}
+                                будет снова участвовать в планировании.
+                            </Alert>
+
+                            {unblockingTask.lab_block_reason && (
+                                <Alert severity="error">
+                                    <b>Причина блокировки:</b> {unblockingTask.lab_block_reason}
+                                </Alert>
+                            )}
+
+                            <TextField
+                                label="Комментарий (опционально)"
+                                fullWidth
+                                multiline
+                                rows={2}
+                                value={unblockComment}
+                                onChange={(e) => setUnblockComment(e.target.value)}
+                            />
+                        </Box>
+                    )}
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setUnblockDialogOpen(false)}>Отмена</Button>
+                    <Button
+                        onClick={handleDoUnblock}
+                        variant="contained"
+                        color="success"
+                        startIcon={<LockOpenIcon />}
+                    >
+                        Разблокировать
                     </Button>
                 </DialogActions>
             </Dialog>

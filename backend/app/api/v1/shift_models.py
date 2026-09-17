@@ -1,12 +1,16 @@
 # backend/app/api/v1/shift_models.py
 """
 Pydantic-модели для API смен (Итерация 3).
+
+Итерация 5: добавлены поля is_lab_blocked, lab_status, lab_block_reason
+            в ShiftTaskResponse.
 """
 
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
 from datetime import datetime
+from typing import List, Optional
 from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict
 
 
 # ==========================================
@@ -20,6 +24,8 @@ class ShiftResponse(BaseModel):
     ends_at: datetime
     is_working: bool
     comment: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ==========================================
@@ -48,6 +54,10 @@ class ShiftTaskResponse(BaseModel):
     status: str = "PLANNED"
     duration_minutes: int
     is_carryover: bool = False
+    # Итерация 5: блокировка лабораторией
+    is_lab_blocked: Optional[bool] = False
+    lab_status: Optional[str] = None
+    lab_block_reason: Optional[str] = None
 
 
 class ShiftTasksGrouped(BaseModel):
