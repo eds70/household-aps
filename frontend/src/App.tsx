@@ -17,6 +17,7 @@ import SchedulePage from './pages/SchedulePage';
 import GanttPage from './pages/GanttPage';
 import ShiftPage from './pages/ShiftPage';
 import PersonnelPage from './pages/PersonnelPage'; // Итерация 6
+import CzPage from './pages/CzPage'; // Итерация 8
 import {Box, CircularProgress} from '@mui/material';
 
 const theme = createTheme({
@@ -93,6 +94,7 @@ const AppRoutes: React.FC = () => {
                 <Route path="gantt" element={<GanttPage />} />
                 <Route path="shift" element={<ShiftPage />} />
                 <Route path="personnel" element={<PersonnelPage />} />   {/* Итерация 6 */}
+                <Route path="cz" element={<CzPage />} />                 {/* Итерация 8 */}
             </Route>
 
             <Route path="*" element={<Navigate to="/equipment" replace />} />

@@ -1,12 +1,14 @@
 # backend/tests/test_advisor.py
 """
-Тесты модуля advisor (Итерация 2).
+Тесты модуля advisor (Итерация 2, 7, 8).
 
 Проверяют подсказки:
   - MATERIAL_SHORTAGE — ДВА критичных дефицита (SALT + FRAGRANCE) и
     WARNING про малый запас (< 10%): WATER, ALCOHOL
   - UNDERLOAD — неполная загрузка реактора
   - ROUTE_MISMATCH — VIA_TANK без танка
+  - COOLING_DEGRADATION — охлаждение с деградацией (Итерация 7)
+  - CZ_INCOMPLETE — партия слита, но не промаркирована (Итерация 8)
 
 ВАЖНО: ТЗ содержит ДВА реальных дефицита сырья (соль и отдушка).
 Это ключевой демонстрационный кейс Advisor'а.
@@ -22,16 +24,18 @@
 """
 
 import pytest
-from tests.fixtures import tz_case
+
 from app.scheduler.advisor import (
     analyze,
     check_material_shortage,
     check_underload,
     check_route_mismatch,
+    check_cz_incomplete,
     TipCode,
     TipSeverity,
 )
 from app.scheduler.materials import analyze_materials
+from tests.fixtures import tz_case
 
 
 # ==========================================
@@ -159,15 +163,9 @@ def test_material_shortage_warning_for_low_margin():
     warnings = [t for t in tips if t.severity == TipSeverity.WARNING]
     warning_codes = {t.details.get("material_code") for t in warnings}
 
-    # Должны быть WATER и ALCOHOL
     assert "WATER" in warning_codes
     assert "ALCOHOL" in warning_codes
-
-    # Не должны быть в WARNING
-    assert "GLYCERIN" not in warning_codes, (
-        f"GLYCERIN имеет запас ~11.1% (> 10%), не должен быть WARNING. "
-        f"WARNING codes: {warning_codes}"
-    )
+    assert "GLYCERIN" not in warning_codes
     assert "BETAINE" not in warning_codes
     assert "CHLORIDE" not in warning_codes
 
@@ -246,6 +244,187 @@ def test_route_mismatch_not_detected_for_reactor_with_tank():
 
 
 # ==========================================
+# ТЕСТЫ: CZ_INCOMPLETE (Итерация 8)
+# ==========================================
+
+def test_cz_incomplete_detected():
+    """
+    LINE_FILL задача завершена (DONE), но партия не COMPLETED
+    по маркировке ЧЗ → WARNING.
+    """
+    schedule_result = {
+        "tasks": [
+            {
+                "id": "task-1",
+                "batch_id": "batch-abc",
+                "role": "LINE_FILL",
+                "task_role": "LINE_FILL",
+                "status": "DONE",
+                "cz_status": "IN_PROGRESS",
+                "cz_marked_qty": 1800,
+                "planned_qty": 3500,
+                "product_name": "Крем-мыло 1л",
+                "equipment_name": "Линия 1 (1л)",
+            },
+        ],
+    }
+
+    tips = check_cz_incomplete(
+        schedule_result=schedule_result,
+        cz_completion_threshold=0.95,
+    )
+
+    assert len(tips) == 1
+    assert tips[0].code == TipCode.CZ_INCOMPLETE
+    assert tips[0].severity == TipSeverity.WARNING
+    assert tips[0].details["marked_qty"] == 1800
+    assert tips[0].details["planned_qty"] == 3500
+    assert tips[0].details["cz_status"] == "IN_PROGRESS"
+
+
+def test_cz_incomplete_not_detected_when_completed():
+    """Партия промаркирована (COMPLETED) → нет подсказки."""
+    schedule_result = {
+        "tasks": [
+            {
+                "id": "task-1",
+                "batch_id": "batch-abc",
+                "role": "LINE_FILL",
+                "status": "DONE",
+                "cz_status": "COMPLETED",
+                "cz_marked_qty": 3500,
+                "planned_qty": 3500,
+            },
+        ],
+    }
+
+    tips = check_cz_incomplete(schedule_result=schedule_result)
+    assert len(tips) == 0
+
+
+def test_cz_incomplete_not_detected_when_task_not_done():
+    """Задача ещё не завершена (IN_PROGRESS) → нет подсказки."""
+    schedule_result = {
+        "tasks": [
+            {
+                "id": "task-1",
+                "batch_id": "batch-abc",
+                "role": "LINE_FILL",
+                "status": "IN_PROGRESS",
+                "cz_status": "IN_PROGRESS",
+                "cz_marked_qty": 1800,
+                "planned_qty": 3500,
+            },
+        ],
+    }
+
+    tips = check_cz_incomplete(schedule_result=schedule_result)
+    assert len(tips) == 0
+
+
+def test_cz_incomplete_not_detected_when_cz_fields_missing():
+    """
+    Если schedule_result не содержит полей ЧЗ (например, in-memory
+    результат из старого планировщика) — проверка молча пропускается.
+    """
+    schedule_result = {
+        "tasks": [
+            {
+                "id": "task-1",
+                "batch_id": "batch-abc",
+                "role": "LINE_FILL",
+                "status": "DONE",
+                # Нет cz_status — старая версия
+            },
+        ],
+    }
+
+    tips = check_cz_incomplete(schedule_result=schedule_result)
+    assert len(tips) == 0
+
+
+def test_cz_incomplete_only_line_fill():
+    """
+    Подсказка срабатывает только для LINE_FILL задач.
+    Задачи REACTOR_OP и WASH — игнорируются.
+    """
+    schedule_result = {
+        "tasks": [
+            {
+                "id": "task-1",
+                "batch_id": "batch-abc",
+                "role": "REACTOR_OP",
+                "status": "DONE",
+                "cz_status": "IN_PROGRESS",
+                "cz_marked_qty": 100,
+                "planned_qty": 3500,
+            },
+            {
+                "id": "task-2",
+                "batch_id": "batch-abc",
+                "role": "WASH",
+                "status": "DONE",
+                "cz_status": "IN_PROGRESS",
+                "cz_marked_qty": 100,
+                "planned_qty": 3500,
+            },
+        ],
+    }
+
+    tips = check_cz_incomplete(schedule_result=schedule_result)
+    assert len(tips) == 0
+
+
+def test_cz_incomplete_multiple_batches():
+    """
+    Несколько незавершённых задач LINE_FILL → несколько подсказок.
+    """
+    schedule_result = {
+        "tasks": [
+            {
+                "id": "task-1", "batch_id": "batch-A",
+                "role": "LINE_FILL", "status": "DONE",
+                "cz_status": "IN_PROGRESS",
+                "cz_marked_qty": 1000, "planned_qty": 3500,
+            },
+            {
+                "id": "task-2", "batch_id": "batch-B",
+                "role": "LINE_FILL", "status": "DONE",
+                "cz_status": "PENDING",
+                "cz_marked_qty": 0, "planned_qty": 1400,
+            },
+        ],
+    }
+
+    tips = check_cz_incomplete(schedule_result=schedule_result)
+    assert len(tips) == 2
+    batch_ids = {t.details["batch_id"] for t in tips}
+    assert batch_ids == {"batch-A", "batch-B"}
+
+
+def test_cz_incomplete_handles_missing_planned_qty():
+    """
+    Если planned_qty=None (например, у ГП не задан bottle_volume_l) —
+    подсказка всё равно формируется, но прогресс указывается словами.
+    """
+    schedule_result = {
+        "tasks": [
+            {
+                "id": "task-1", "batch_id": "batch-A",
+                "role": "LINE_FILL", "status": "DONE",
+                "cz_status": "IN_PROGRESS",
+                "cz_marked_qty": 500, "planned_qty": None,
+            },
+        ],
+    }
+
+    tips = check_cz_incomplete(schedule_result=schedule_result)
+    assert len(tips) == 1
+    assert tips[0].details["planned_qty"] is None
+    assert "план неизвестен" in tips[0].message
+
+
+# ==========================================
 # ТЕСТЫ: ГЛАВНАЯ ФУНКЦИЯ ANALYZE
 # ==========================================
 
@@ -266,7 +445,6 @@ def test_analyze_full_result():
         enable_advisor=True,
     )
 
-    # Должны быть: 2 CRITICAL (SALT, FRAGRANCE) + WARNING + ROUTE_MISMATCH (INFO)
     assert result.critical_count >= 2
     codes = [t.code for t in result.tips]
     assert TipCode.MATERIAL_SHORTAGE in codes
@@ -304,6 +482,34 @@ def test_analyze_material_only():
     )
     codes = [t.code for t in result.tips]
     assert TipCode.MATERIAL_SHORTAGE not in codes
+
+
+def test_analyze_includes_cz_incomplete():
+    """analyze() должен вызывать check_cz_incomplete."""
+    schedule_result = {
+        "tasks": [
+            {
+                "id": "task-1", "batch_id": "batch-A",
+                "role": "LINE_FILL", "status": "DONE",
+                "cz_status": "IN_PROGRESS",
+                "cz_marked_qty": 100, "planned_qty": 3500,
+            },
+        ],
+    }
+    result = analyze(
+        batches=_make_batches(),
+        products_map=_make_products_map(),
+        equipment_map=_make_equipment_map(),
+        equipment_links=_make_links(),
+        recipes=_make_recipes(),
+        materials=_make_materials(),
+        material_stocks=_make_stocks(),
+        schedule_result=schedule_result,
+        enable_material_constraints=True,
+        enable_advisor=True,
+    )
+    codes = [t.code for t in result.tips]
+    assert TipCode.CZ_INCOMPLETE in codes
 
 
 if __name__ == "__main__":

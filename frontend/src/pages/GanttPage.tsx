@@ -29,6 +29,7 @@ import {
     Download as DownloadIcon,
     FilterAltOff as FilterAltOffIcon,
     Lock as LockIcon,
+    QrCodeScanner as QrCodeScannerIcon,
     Refresh as RefreshIcon,
     Search as SearchIcon,
     Today as TodayIcon,
@@ -41,7 +42,7 @@ import 'vis-timeline/styles/vis-timeline-graph2d.min.css';
 import {ganttApi} from '../services/api';
 import {API_BASE_URL} from '../config';
 import {usePlan} from '../context/PlainContext';
-import type {CoolingMode} from '../types';
+import type {CoolingMode, CzStatus} from '../types';
 
 const OPERATION_COLORS: Record<string, string> = {
     'Нагрев': '#e74c3c',
@@ -81,6 +82,10 @@ interface TaskData {
     lab_block_reason?: string | null;
     // Итерация 7: режим охлаждения
     cooling_mode?: CoolingMode;
+    // Итерация 8: роль и ЧЗ
+    task_role?: string | null;
+    cz_status?: CzStatus | null;
+    cz_marked_qty?: number | null;
 }
 
 const GanttPage: React.FC = () => {
@@ -88,7 +93,6 @@ const GanttPage: React.FC = () => {
     const timelineRef = useRef<any>(null);
     const handleTaskEditRef = useRef<(taskId: string) => void>(() => {});
 
-    // ✅ Получаем версию плана из контекста
     const { currentVersionId, currentPlanName } = usePlan();
     const isReadOnly = currentVersionId !== null;
 
@@ -100,12 +104,12 @@ const GanttPage: React.FC = () => {
         equipmentCount: 0,
         blockedCount: 0,
         coolingSlowCount: 0,
+        czIncompleteCount: 0,     // Итерация 8
     });
     const [tasks, setTasks] = useState<TaskData[]>([]);
     const [equipmentList, setEquipmentList] = useState<string[]>([]);
     const [productList, setProductList] = useState<string[]>([]);
 
-    // Счётчик отфильтрованных задач (для чипа «Показано: N / M»)
     const [filteredCount, setFilteredCount] = useState(0);
 
     // Фильтры
@@ -116,16 +120,16 @@ const GanttPage: React.FC = () => {
     const [showDowntimes, setShowDowntimes] = useState(true);
     const [showOnlyBlocked, setShowOnlyBlocked] = useState(false);
     const [showOnlySlowCooling, setShowOnlySlowCooling] = useState(false);
+    const [showOnlyCzIncomplete, setShowOnlyCzIncomplete] = useState(false);   // Итерация 8
 
-    // Активен ли хотя бы один фильтр (для индикации в чипе и кнопке сброса)
     const hasActiveFilters =
         searchQuery.length > 0 ||
         equipmentFilter.length > 0 ||
         productFilter.length > 0 ||
         showOnlyBlocked ||
-        showOnlySlowCooling;
+        showOnlySlowCooling ||
+        showOnlyCzIncomplete;
 
-    // Редактирование задачи
     const [editDialogOpen, setEditDialogOpen] = useState(false);
     const [selectedTask, setSelectedTask] = useState<TaskData | null>(null);
     const [editFormData, setEditFormData] = useState({ start: '', end: '' });
@@ -146,6 +150,13 @@ const GanttPage: React.FC = () => {
             const coolingSlowCount = typedTasks.filter(
                 (t) => t.cooling_mode === 'slow'
             ).length;
+            // Итерация 8: считаем задачи LINE_FILL с незавершённой маркировкой
+            const czIncompleteCount = typedTasks.filter(
+                (t) =>
+                    t.task_role === 'LINE_FILL' &&
+                    t.cz_status &&
+                    t.cz_status !== 'COMPLETED'
+            ).length;
 
             setStats({
                 totalTasks: data.total_tasks,
@@ -153,6 +164,7 @@ const GanttPage: React.FC = () => {
                 equipmentCount: data.equipment_list.length,
                 blockedCount,
                 coolingSlowCount,
+                czIncompleteCount,
             });
             setTasks(data.tasks);
             setEquipmentList(data.equipment_list);
@@ -178,16 +190,15 @@ const GanttPage: React.FC = () => {
         };
     }, [loadGanttData]);
 
-    // Сброс всех фильтров одним кликом
     const handleResetFilters = () => {
         setSearchQuery('');
         setEquipmentFilter([]);
         setProductFilter([]);
         setShowOnlyBlocked(false);
         setShowOnlySlowCooling(false);
+        setShowOnlyCzIncomplete(false);
     };
 
-    // Генерация замывок между задачами на одном оборудовании
     const generateSetups = (tasksData: TaskData[]): TaskData[] => {
         const setups: TaskData[] = [];
         const byEquipment: Record<string, TaskData[]> = {};
@@ -228,7 +239,6 @@ const GanttPage: React.FC = () => {
         return setups;
     };
 
-    // Генерация выходных дней
     const generateWeekends = (tasksData: TaskData[], equipment: string[]): TaskData[] => {
         if (tasksData.length === 0 || equipment.length === 0) return [];
         const weekends: TaskData[] = [];
@@ -289,16 +299,24 @@ const GanttPage: React.FC = () => {
                 timelineRef.current = null;
             }
 
-            // Фильтрация только обычных задач
             let filteredTasks = tasksData.filter((task) => task.item_type === 'task' || !task.item_type);
 
             if (showOnlyBlocked) {
                 filteredTasks = filteredTasks.filter((task) => task.is_lab_blocked === true);
             }
 
-            // Итерация 7: фильтр только по slow-охлаждению
             if (showOnlySlowCooling) {
                 filteredTasks = filteredTasks.filter((task) => task.cooling_mode === 'slow');
+            }
+
+            // Итерация 8: фильтр «Только не промаркированные»
+            if (showOnlyCzIncomplete) {
+                filteredTasks = filteredTasks.filter(
+                    (task) =>
+                        task.task_role === 'LINE_FILL' &&
+                        task.cz_status &&
+                        task.cz_status !== 'COMPLETED'
+                );
             }
 
             if (searchQuery) {
@@ -319,14 +337,12 @@ const GanttPage: React.FC = () => {
                 filteredTasks = filteredTasks.filter((task) => productFilter.includes(task.product_id));
             }
 
-            // ✅ Обновляем счётчик отфильтрованного
             setFilteredCount(filteredTasks.length);
 
             const setups = showSetups ? generateSetups(filteredTasks) : [];
             const weekends = showDowntimes ? generateWeekends(filteredTasks, equipment) : [];
             const allItems = [...filteredTasks, ...setups, ...weekends];
 
-            // Если после фильтрации ничего не осталось — не строим timeline, оставляем контейнер пустым
             if (allItems.length === 0) {
                 if (containerRef.current) {
                     containerRef.current.innerHTML = '';
@@ -349,6 +365,10 @@ const GanttPage: React.FC = () => {
                 if (itemType === 'task') {
                     const isBlocked = task.is_lab_blocked === true;
                     const isSlowCooling = task.cooling_mode === 'slow';
+                    const isCzIncomplete =
+                        task.task_role === 'LINE_FILL' &&
+                        !!task.cz_status &&
+                        task.cz_status !== 'COMPLETED';
 
                     if (isBlocked) {
                         style = `background-color: #ffebee; border: 2px solid #e74c3c; border-radius: 4px;`;
@@ -356,6 +376,9 @@ const GanttPage: React.FC = () => {
                     } else if (isSlowCooling) {
                         style = `background-color: #fff3e0; border: 2px dashed #e67e22; border-radius: 4px;`;
                         className = 'item-cooling-slow';
+                    } else if (isCzIncomplete) {
+                        style = `background-color: #e3f2fd; border: 2px dotted #1976d2; border-radius: 4px;`;
+                        className = 'item-cz-incomplete';
                     } else {
                         style = `background-color: ${color}30; border-left: 4px solid ${color}; border-radius: 4px;`;
                     }
@@ -383,6 +406,22 @@ const GanttPage: React.FC = () => {
                         `;
                     }
 
+                    // Итерация 8: бейдж ЧЗ для LINE_FILL
+                    let czBadge = '';
+                    if (task.task_role === 'LINE_FILL' && task.cz_status) {
+                        const czLabel =
+                            task.cz_status === 'COMPLETED' ? '🟢 ЧЗ завершено' :
+                                task.cz_status === 'IN_PROGRESS' ? '🔵 ЧЗ в работе' :
+                                    task.cz_status === 'PENDING' ? '🟡 ЧЗ ожидает' :
+                                        '⚪ ЧЗ не требуется';
+                        czBadge = `
+                            <div style="margin-top: 4px; font-size: 11px;">
+                                <b>${czLabel}</b>
+                                ${task.cz_marked_qty != null ? `<br>Промаркировано: ${task.cz_marked_qty}` : ''}
+                            </div>
+                        `;
+                    }
+
                     title = `
             <div style="padding: 8px; min-width: 280px;">
               <b style="font-size: 14px; color: ${isBlocked ? '#e74c3c' : '#2c3e50'};">
@@ -398,6 +437,7 @@ const GanttPage: React.FC = () => {
                 <b>Конец:</b> ${new Date(task.end).toLocaleString('ru-RU')}
                 ${blockedBadge}
                 ${coolingBadge}
+                ${czBadge}
               </div>
             </div>
           `;
@@ -438,6 +478,12 @@ const GanttPage: React.FC = () => {
 
                 const blockedIcon = task.is_lab_blocked ? '🔒 ' : '';
                 const slowCoolingIcon = task.cooling_mode === 'slow' ? '⏳ ' : '';
+                const czIcon =
+                    task.task_role === 'LINE_FILL' &&
+                    task.cz_status &&
+                    task.cz_status !== 'COMPLETED'
+                        ? '📷 '
+                        : '';
 
                 return {
                     id: task.id,
@@ -445,7 +491,7 @@ const GanttPage: React.FC = () => {
                     content: `
             <div style="padding: 4px; font-size: 11px;">
               <div style="font-weight: bold; color: ${task.is_lab_blocked ? '#e74c3c' : (task.cooling_mode === 'slow' ? '#e67e22' : '#2c3e50')}; margin-bottom: 2px;">
-                ${blockedIcon}${slowCoolingIcon}${task.operation_name}
+                ${blockedIcon}${slowCoolingIcon}${czIcon}${task.operation_name}
               </div>
               <div style="font-size: 10px; color: #555;">
                 ${task.duration_minutes} мин
@@ -516,7 +562,17 @@ const GanttPage: React.FC = () => {
 
             timelineRef.current.fit();
         },
-        [searchQuery, equipmentFilter, productFilter, showSetups, showDowntimes, showOnlyBlocked, showOnlySlowCooling, isReadOnly]
+        [
+            searchQuery,
+            equipmentFilter,
+            productFilter,
+            showSetups,
+            showDowntimes,
+            showOnlyBlocked,
+            showOnlySlowCooling,
+            showOnlyCzIncomplete,
+            isReadOnly,
+        ]
     );
 
     useEffect(() => {
@@ -614,7 +670,6 @@ const GanttPage: React.FC = () => {
                 <>
                     <Card sx={{ mb: 2, p: 2, bgcolor: '#f8f9fa' }}>
                         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2, alignItems: 'center' }}>
-                            {/* ✅ Чип счётчика: если фильтр активен — показываем «Показано: N / M», иначе «Всего задач: M» */}
                             <Chip
                                 label={
                                     hasActiveFilters
@@ -641,6 +696,15 @@ const GanttPage: React.FC = () => {
                                     variant="filled"
                                 />
                             )}
+                            {/* Итерация 8: ЧЗ-статистика */}
+                            {stats.czIncompleteCount > 0 && (
+                                <Chip
+                                    icon={<QrCodeScannerIcon />}
+                                    label={`📷 Не промаркировано: ${stats.czIncompleteCount}`}
+                                    color="info"
+                                    variant="filled"
+                                />
+                            )}
 
                             {isReadOnly && (
                                 <Chip
@@ -651,7 +715,6 @@ const GanttPage: React.FC = () => {
                                 />
                             )}
 
-                            {/* ✅ Увеличен gap до 1.5, чтобы элементы легенды не сливались */}
                             <Box sx={{ display: 'flex', gap: 1.5, ml: 'auto', flexWrap: 'wrap' }}>
                                 {Object.entries(OPERATION_COLORS)
                                     .slice(0, 5)
@@ -668,6 +731,10 @@ const GanttPage: React.FC = () => {
                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, fontSize: '0.85rem' }}>
                                     <Box sx={{ width: 12, height: 12, bgcolor: '#fff3e0', border: '2px dashed #e67e22', borderRadius: '2px' }} />
                                     ⏳ Замедленное охлаждение
+                                </Box>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, fontSize: '0.85rem' }}>
+                                    <Box sx={{ width: 12, height: 12, bgcolor: '#e3f2fd', border: '2px dotted #1976d2', borderRadius: '2px' }} />
+                                    📷 ЧЗ не завершено
                                 </Box>
                             </Box>
                         </Box>
@@ -690,13 +757,14 @@ const GanttPage: React.FC = () => {
                                 }}
                             />
 
-                            <FormControl size="small" sx={{ minWidth: 200 }}>
+                            <FormControl size="small" variant="outlined" sx={{ minWidth: 200 }}>
                                 <InputLabel>Оборудование</InputLabel>
                                 <Select
                                     multiple
                                     value={equipmentFilter}
                                     onChange={(e) => setEquipmentFilter(e.target.value as string[])}
                                     label="Оборудование"
+                                    variant="outlined"
                                 >
                                     {equipmentList.map((eq) => (
                                         <MenuItem key={eq} value={eq}>
@@ -706,13 +774,14 @@ const GanttPage: React.FC = () => {
                                 </Select>
                             </FormControl>
 
-                            <FormControl size="small" sx={{ minWidth: 200 }}>
+                            <FormControl size="small" variant="outlined" sx={{ minWidth: 200 }}>
                                 <InputLabel>Продукты</InputLabel>
                                 <Select
                                     multiple
                                     value={productFilter}
                                     onChange={(e) => setProductFilter(e.target.value as string[])}
                                     label="Продукты"
+                                    variant="outlined"
                                 >
                                     {productList.map((prod) => (
                                         <MenuItem key={prod} value={prod}>
@@ -768,7 +837,19 @@ const GanttPage: React.FC = () => {
                                 label={<Typography variant="body2" sx={{ fontWeight: showOnlySlowCooling ? 600 : 400 }}>⏳ Только замедленное охлаждение</Typography>}
                             />
 
-                            {/* ✅ Кнопка сброса всех фильтров */}
+                            {/* Итерация 8: фильтр «Только не промаркированные» */}
+                            <FormControlLabel
+                                control={
+                                    <Checkbox
+                                        checked={showOnlyCzIncomplete}
+                                        onChange={(e) => setShowOnlyCzIncomplete(e.target.checked)}
+                                        size="small"
+                                        color="info"
+                                    />
+                                }
+                                label={<Typography variant="body2" sx={{ fontWeight: showOnlyCzIncomplete ? 600 : 400 }}>📷 Только не промаркированные</Typography>}
+                            />
+
                             <Button
                                 size="small"
                                 variant="outlined"
@@ -795,7 +876,6 @@ const GanttPage: React.FC = () => {
                         </Box>
                     </Card>
 
-                    {/* ✅ Информативное сообщение, если фильтр «съел» все задачи */}
                     {hasActiveFilters && filteredCount === 0 && (
                         <Alert
                             severity="info"
@@ -857,6 +937,12 @@ const GanttPage: React.FC = () => {
                                             boxShadow: '0 0 12px rgba(230, 126, 34, 0.7)',
                                         },
                                     },
+                                    '& .item-cz-incomplete': {
+                                        boxShadow: '0 0 8px rgba(25, 118, 210, 0.4)',
+                                        '&:hover': {
+                                            boxShadow: '0 0 12px rgba(25, 118, 210, 0.7)',
+                                        },
+                                    },
                                     '& .item-setup': {
                                         opacity: 0.85,
                                         '&:hover': { opacity: 1 },
@@ -886,7 +972,7 @@ const GanttPage: React.FC = () => {
                     </Card>
 
                     <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block', textAlign: 'center' }}>
-                        💡 Все операции по реактору в одной строке • Пунктир = замывки • Фиолетовый фон = выходные • 🔒 = заблокировано лабораторией • ⏳ = замедленное охлаждение
+                        💡 Все операции по реактору в одной строке • Пунктир = замывки • Фиолетовый фон = выходные • 🔒 = заблокировано лабораторией • ⏳ = замедленное охлаждение • 📷 = ЧЗ не завершено
                         {isReadOnly ? ' • Режим просмотра (редактирование недоступно)' : ' • Двойной клик для редактирования'}
                         • Колесико мыши для масштабирования
                     </Typography>

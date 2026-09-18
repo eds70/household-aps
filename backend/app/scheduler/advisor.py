@@ -8,6 +8,7 @@ Advisor — модуль подсказок планировщика.
   3. ROUTE_MISMATCH — продукт помечен VIA_TANK, но реактор без танка.
   4. EQUIPMENT_GAP — простой оборудования.
   5. COOLING_DEGRADATION — охлаждение с деградацией (Итерация 7).
+  6. CZ_INCOMPLETE — партия слита, но не промаркирована (Итерация 8).
 
 Подсказки возвращаются в порядке приоритета: CRITICAL → WARNING → INFO.
 """
@@ -35,7 +36,8 @@ class TipCode:
     EQUIPMENT_GAP = "EQUIPMENT_GAP"
     OVERLOAD = "OVERLOAD"
     NO_REACTOR = "NO_REACTOR"
-    COOLING_DEGRADATION = "COOLING_DEGRADATION"   # Итерация 7
+    COOLING_DEGRADATION = "COOLING_DEGRADATION"     # Итерация 7
+    CZ_INCOMPLETE = "CZ_INCOMPLETE"                 # Итерация 8
 
 
 @dataclass
@@ -360,13 +362,8 @@ def check_cooling_degradation(
     tips: List[AdvisorTip] = []
 
     if slow_count > 0:
-        # Есть замедление — это WARNING
-        # Считаем, насколько замедлилось
         delta_pct = (cooling_degradation_factor - 1.0) * 100.0
-
-        # Суммарная длительность slow
         slow_total_mins = sum(t.get("duration", 0) for t in slow_tasks)
-        # Суммарная длительность slow, если бы было fast
         slow_total_if_fast = sum(
             int(t.get("duration", 0) / cooling_degradation_factor)
             for t in slow_tasks
@@ -393,7 +390,6 @@ def check_cooling_degradation(
             },
         ))
     else:
-        # Все fast — это INFO (просто информируем)
         tips.append(AdvisorTip(
             code=TipCode.COOLING_DEGRADATION,
             severity=TipSeverity.INFO,
@@ -406,6 +402,106 @@ def check_cooling_degradation(
                 "total_cooling": total,
                 "fast_count": fast_count,
                 "slow_count": 0,
+            },
+        ))
+
+    return tips
+
+
+# ==========================================
+# ПРОВЕРКА 6: ПАРТИЯ СЛИТА, НО НЕ ПРОМАРКИРОВАНА (Итерация 8)
+# ==========================================
+
+def check_cz_incomplete(
+        schedule_result: Optional[Dict],
+        cz_completion_threshold: float = 0.95,
+) -> List[AdvisorTip]:
+    """
+    Проверяет задачи слива (LINE_FILL), которые уже DONE,
+    но партия не достигла порога маркировки ЧЗ.
+
+    Логика (Итерация 8):
+      - Смотрим задачи с task_role = 'LINE_FILL' и status = 'DONE'.
+      - Для каждой проверяем связанную партию:
+          batch.cz_status != 'COMPLETED' И task помечена как DONE.
+      - Если партия не завершена по маркировке → WARNING.
+
+    ВАЖНО: поля cz_status, cz_marked_qty, planned_qty должны быть
+    переданы в schedule_result["tasks"]. Это делается в API-слое
+    (advisor.py — эндпоинт /schedule/advice), который читает
+    scheduled_task JOIN batch из активной версии.
+
+    Если поля отсутствуют (например, для in-memory результата
+    без ЧЗ) — проверка молча пропускается.
+    """
+    if not schedule_result or "tasks" not in schedule_result:
+        return []
+
+    tasks = schedule_result["tasks"]
+    if not tasks:
+        return []
+
+    tips: List[AdvisorTip] = []
+
+    for task in tasks:
+        # Интересуют только завершённые задачи слива на линию
+        role = task.get("role") or task.get("task_role")
+        status = task.get("status")
+        if role != "LINE_FILL":
+            continue
+        if status != "DONE":
+            continue
+
+        # Проверяем поля ЧЗ — они могут отсутствовать
+        cz_status = task.get("cz_status")
+        if cz_status is None:
+            # В schedule_result нет информации о ЧЗ —
+            # пропускаем проверку (нечего анализировать)
+            continue
+
+        if cz_status == "COMPLETED":
+            continue
+
+        # Не завершено → формируем подсказку
+        marked_qty = float(task.get("cz_marked_qty") or 0)
+        planned_qty = task.get("planned_qty")
+        if planned_qty is not None:
+            planned_qty = float(planned_qty)
+
+        if planned_qty and planned_qty > 0:
+            progress_percent = min(100.0, (marked_qty / planned_qty) * 100.0)
+            progress_str = (
+                f"{progress_percent:.0f}% "
+                f"({marked_qty:.0f} из {planned_qty:.0f} бутылок)"
+            )
+        else:
+            progress_percent = 0.0
+            progress_str = f"{marked_qty:.0f} бутылок (план неизвестен)"
+
+        batch_id = str(task.get("batch_id") or "?")
+        task_id = str(task.get("id") or "?")
+
+        tips.append(AdvisorTip(
+            code=TipCode.CZ_INCOMPLETE,
+            severity=TipSeverity.WARNING,
+            title=f"Партия слита, но не промаркирована: {batch_id[:8]}",
+            message=(
+                f"Задача слива на линию завершена (status=DONE), "
+                f"но маркировка ЧЗ не достигла порога "
+                f"{cz_completion_threshold * 100:.0f}%. "
+                f"Промаркировано: {progress_str}. "
+                f"Возможен простой на отгрузке."
+            ),
+            details={
+                "batch_id": batch_id,
+                "task_id": task_id,
+                "cz_status": cz_status,
+                "marked_qty": marked_qty,
+                "planned_qty": planned_qty,
+                "progress_percent": progress_percent,
+                "threshold": cz_completion_threshold,
+                "product_name": task.get("product_name"),
+                "equipment_name": task.get("equipment_name"),
             },
         ))
 
@@ -428,6 +524,7 @@ def analyze(
         schedule_result: Optional[Dict] = None,
         max_fill_percent: float = 0.70,
         cooling_degradation_factor: float = 1.3,
+        cz_completion_threshold: float = 0.95,     # Итерация 8
         enable_material_constraints: bool = True,
         enable_advisor: bool = True,
 ) -> AdvisorResult:
@@ -477,6 +574,13 @@ def analyze(
     for tip in check_cooling_degradation(
             schedule_result=schedule_result,
             cooling_degradation_factor=cooling_degradation_factor,
+    ):
+        result.add(tip)
+
+    # 6. Итерация 8: партия слита, но не промаркирована
+    for tip in check_cz_incomplete(
+            schedule_result=schedule_result,
+            cz_completion_threshold=cz_completion_threshold,
     ):
         result.add(tip)
 

@@ -502,4 +502,71 @@ export const personnelApi = {
     },
 };
 
+// ==========================================
+// CZ API (Честный Знак, Итерация 8)
+// ==========================================
+export const czApi = {
+    /**
+     * Приём скана от камеры.
+     * Требует заголовок X-CZ-Api-Key.
+     */
+    scan: async (
+        data: import('../types').CzScanRequest,
+        apiKey: string,
+    ): Promise<import('../types').CzScanResponse> => {
+        const response = await api.post('/api/v1/cz/scan', data, {
+            headers: { 'X-CZ-Api-Key': apiKey },
+        });
+        return response.data;
+    },
+
+    /** Прогресс маркировки партии */
+    getBatchProgress: async (batchId: string): Promise<import('../types').CzProgress> => {
+        const response = await api.get(`/api/v1/cz/batch/${batchId}/progress`);
+        return response.data;
+    },
+
+    /** Партии, ожидающие маркировки */
+    getPending: async (params?: {
+        include_completed?: boolean;
+        limit?: number;
+    }): Promise<import('../types').CzPendingBatch[]> => {
+        const response = await api.get('/api/v1/cz/pending', { params });
+        return response.data;
+    },
+
+    /** Журнал сканирований */
+    getLog: async (params?: {
+        batch_id?: string;
+        line_code?: string;
+        camera_id?: string;
+        only_unresolved?: boolean;
+        limit?: number;
+    }): Promise<import('../types').CzScanLogEntry[]> => {
+        const response = await api.get('/api/v1/cz/log', { params });
+        return response.data;
+    },
+
+    /** Сводная статистика */
+    getStats: async (): Promise<import('../types').CzStats> => {
+        const response = await api.get('/api/v1/cz/stats');
+        return response.data;
+    },
+
+    /** Ручное сопоставление скана-сироты (ADMIN, PLANNER, MASTER) */
+    attachScan: async (
+        scanId: string,
+        data: import('../types').CzAttachRequest,
+    ): Promise<import('../types').CzActionResponse> => {
+        const response = await api.post(`/api/v1/cz/scan/${scanId}/attach`, data);
+        return response.data;
+    },
+
+    /** Удаление скана (только ADMIN) */
+    deleteScan: async (scanId: string): Promise<import('../types').CzActionResponse> => {
+        const response = await api.delete(`/api/v1/cz/scan/${scanId}`);
+        return response.data;
+    },
+};
+
 export default api;

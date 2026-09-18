@@ -9,6 +9,7 @@ Feature-флаги планировщика.
 Итерация 5: enable_lab_blocking.
 Итерация 6: enable_operator_pools, enable_manual_station.
 Итерация 7: enable_cooling_degradation.
+Итерация 8: enable_cz_integration.
 """
 
 from typing import Dict, Any, Optional
@@ -37,7 +38,7 @@ class FeatureFlags:
         "enable_manual_station": False,
         # Итерация 7
         "enable_cooling_degradation": False,
-        # Итерация 8+
+        # Итерация 8
         "enable_cz_integration": False,
     }
 
@@ -52,7 +53,7 @@ class FeatureFlags:
         "enable_operator_pools",
         "enable_manual_station",
         "enable_cooling_degradation",
-        "enable_cz_integration",
+        "enable_cz_integration",       # Итерация 8
     }
 
     def __init__(self, org_settings: Optional[Dict[str, Any]] = None):

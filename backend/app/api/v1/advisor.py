@@ -4,6 +4,7 @@ API для Advisor — подсказки планировщика и оценк
 
 Итерация 2.
 Итерация 7: cooling_degradation_factor + приоритет БД над in-memory.
+Итерация 8: cz_status, cz_marked_qty, planned_qty + cz_completion_threshold.
 """
 
 from datetime import datetime
@@ -49,6 +50,9 @@ async def _load_schedule_from_db(
     """
     Загружает задачи последней активной версии из БД.
     Возвращает dict вида {"tasks": [...], "version_id": "..."} или None.
+
+    Итерация 8: добавлены cz_status, cz_marked_qty, planned_qty
+    для подсказки CZ_INCOMPLETE.
     """
     version_result = await db.execute(
         text("""
@@ -68,11 +72,18 @@ async def _load_schedule_from_db(
                 st.id, st.batch_id,
                 st.planned_start, st.planned_end,
                 st.operator_pool, st.cooling_mode,
+                st.task_role, st.status,
                 ot.name AS operation_name,
-                eq.name AS equipment_name
+                eq.name AS equipment_name,
+                b.cz_status, b.cz_marked_qty,
+                gp.bottle_volume_l,
+                b.volume_kg
             FROM scheduled_task st
             LEFT JOIN operation_template ot ON ot.id = st.operation_template_id
             LEFT JOIN equipment eq ON eq.id = st.equipment_id
+            LEFT JOIN batch b ON b.id = st.batch_id
+            LEFT JOIN production_order po ON po.id = b.order_id
+            LEFT JOIN product gp ON gp.id = po.product_id
             WHERE st.organization_id = :org_id
               AND st.schedule_version_id = :version_id
         """),
@@ -85,6 +96,16 @@ async def _load_schedule_from_db(
         if row.planned_start and row.planned_end:
             duration = int((row.planned_end - row.planned_start).total_seconds() / 60)
 
+        # Итерация 8: считаем плановое количество бутылок по партии
+        planned_qty = None
+        if row.volume_kg is not None and row.bottle_volume_l is not None:
+            try:
+                bottle_vol = float(row.bottle_volume_l)
+                if bottle_vol > 0:
+                    planned_qty = float(row.volume_kg) / bottle_vol
+            except (ValueError, TypeError):
+                planned_qty = None
+
         tasks.append({
             "id": str(row.id),
             "batch_id": str(row.batch_id) if row.batch_id else None,
@@ -96,6 +117,13 @@ async def _load_schedule_from_db(
             "duration": duration,
             "operator_pool": row.operator_pool,
             "cooling_mode": row.cooling_mode,
+            # Итерация 8
+            "role": row.task_role,
+            "task_role": row.task_role,
+            "status": row.status,
+            "cz_status": row.cz_status,
+            "cz_marked_qty": float(row.cz_marked_qty) if row.cz_marked_qty else 0.0,
+            "planned_qty": planned_qty,
         })
 
     return {
@@ -120,16 +148,15 @@ async def get_advice(
     cooling_factor = _read_float_setting(
         data["org_settings"], "cooling_degradation_factor", 1.3
     )
+    cz_threshold = _read_float_setting(
+        data["org_settings"], "cz_completion_threshold", 0.95
+    )
 
     # ==========================================
     # Итерация 7 (fix): приоритет БД над in-memory.
     # ==========================================
-    # In-memory `_last_schedule_result` может быть устаревшим
-    # (например, если cooling_mode обновили в БД напрямую).
-    # Сначала читаем актуальный active version из БД.
     schedule_result = await _load_schedule_from_db(db, org_id)
 
-    # Fallback: если БД пуста — берём из памяти
     if not schedule_result:
         from .schedule import _last_schedule_result
         schedule_result = _last_schedule_result if _last_schedule_result else None
@@ -146,6 +173,7 @@ async def get_advice(
         schedule_result=schedule_result,
         max_fill_percent=max_fill,
         cooling_degradation_factor=cooling_factor,
+        cz_completion_threshold=cz_threshold,     # Итерация 8
         enable_material_constraints=flags.enable_material_constraints,
         enable_advisor=flags.enable_advisor,
     )

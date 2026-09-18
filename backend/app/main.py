@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.advisor import router as advisor_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.calendar import router as calendar_router
+from app.api.v1.cz import router as cz_router  # Итерация 8
 from app.api.v1.equipment import router as equipment_router
 from app.api.v1.gantt import router as gantt_router
 from app.api.v1.lab import router as lab_router
@@ -36,14 +37,15 @@ tags_metadata = [
     {"name": "Сменное планирование"},
     {"name": "Перепланирование"},
     {"name": "Лаборатория"},
-    {"name": "Персонал"},   # Итерация 6
+    {"name": "Персонал"},           # Итерация 6
+    {"name": "Честный Знак"},       # Итерация 8
     {"name": "Система"},
 ]
 
 app = FastAPI(
     title="APS Production Scheduler",
     description="REST API для построения оптимальных планов производства с использованием OR-Tools CP-SAT.",
-    version="1.7.0",
+    version="1.8.0",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_tags=tags_metadata,
@@ -73,13 +75,14 @@ app.include_router(shift_router)
 app.include_router(reschedule_router)
 app.include_router(lab_router)
 app.include_router(personnel_router)   # Итерация 6
+app.include_router(cz_router)          # Итерация 8
 
 
 @app.get("/health", tags=["Система"])
 async def health_check():
     return {
         "status": "healthy",
-        "version": "1.7.0",
+        "version": "1.8.0",
         "timestamp": datetime.now().isoformat(),
     }
 

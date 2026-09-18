@@ -31,6 +31,7 @@ import {
     Menu as MenuIcon,
     MenuOpen as MenuOpenIcon,
     Person as PersonIcon,
+    QrCodeScanner as QrCodeScannerIcon,
     Schedule as ScheduleIcon,
     Science as ScienceIcon,
     Settings as SettingsIcon,
@@ -54,6 +55,7 @@ const MENU_ITEMS = [
     { path: '/gantt', label: 'Диаграмма Ганта', icon: <TimelineIcon /> },
     { path: '/shift', label: 'Мастер смены', icon: <AssignmentIcon /> },
     { path: '/personnel', label: 'Персонал', icon: <PersonIcon /> },
+    { path: '/cz', label: 'Честный Знак', icon: <QrCodeScannerIcon /> },   // Итерация 8
 ];
 
 const ROLE_LABELS: Record<string, string> = {

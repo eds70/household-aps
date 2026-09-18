@@ -475,3 +475,102 @@ export interface PersonnelLoadItem {
     peak: number;
     load_percent: number;
 }
+
+// ==========================================
+// ЧЕСТНЫЙ ЗНАК (Итерация 8)
+// ==========================================
+
+export type CzStatus = 'NOT_APPLICABLE' | 'PENDING' | 'IN_PROGRESS' | 'COMPLETED';
+
+export interface CzScanRequest {
+    cz_code: string;
+    gtin?: string | null;
+    batch_id?: string | null;
+    task_id?: string | null;
+    line_code?: string | null;
+    camera_id?: string | null;
+    scanned_at?: string | null;
+    qty?: number;
+    comment?: string | null;
+}
+
+export interface CzScanResponse {
+    id: string;
+    cz_code: string;
+    batch_id?: string | null;
+    scheduled_task_id?: string | null;
+    qty: number;
+    duplicate: boolean;
+    resolved: boolean;
+    message: string;
+}
+
+export interface CzAttachRequest {
+    batch_id?: string | null;
+    task_id?: string | null;
+    comment?: string | null;
+}
+
+export interface CzProgress {
+    batch_id: string;
+    product_id: string;
+    product_code?: string | null;
+    product_name?: string | null;
+    planned_qty?: number | null;
+    marked_qty: number;
+    progress_percent: number;
+    cz_status: CzStatus;
+    threshold: number;
+    last_scan_at?: string | null;
+    scans_count: number;
+}
+
+export interface CzScanLogEntry {
+    id: string;
+    organization_id: string;
+    batch_id?: string | null;
+    scheduled_task_id?: string | null;
+    cz_code: string;
+    gtin?: string | null;
+    qty: number;
+    line_code?: string | null;
+    camera_id?: string | null;
+    scanned_at: string;
+    created_at: string;
+    comment?: string | null;
+    batch_name?: string | null;
+    product_code?: string | null;
+    product_name?: string | null;
+}
+
+export interface CzPendingBatch {
+    batch_id: string;
+    order_id: string;
+    product_id: string;
+    product_code?: string | null;
+    product_name?: string | null;
+    equipment_name?: string | null;
+    volume_kg: number;
+    cz_status: CzStatus;
+    marked_qty: number;
+    planned_qty?: number | null;
+    progress_percent: number;
+    last_scan_at?: string | null;
+}
+
+export interface CzStats {
+    total_batches: number;
+    not_applicable: number;
+    pending: number;
+    in_progress: number;
+    completed: number;
+    total_scans: number;
+    unresolved_scans: number;
+    threshold: number;
+}
+
+export interface CzActionResponse {
+    id: string;
+    message: string;
+    resolved: boolean;
+}

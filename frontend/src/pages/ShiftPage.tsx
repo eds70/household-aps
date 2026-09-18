@@ -20,6 +20,7 @@ import {
     FormControl,
     IconButton,
     InputLabel,
+    LinearProgress,
     MenuItem,
     Select,
     TextField,
@@ -35,15 +36,18 @@ import {
     Lock as LockIcon,
     LockOpen as LockOpenIcon,
     PlayArrow as PlayIcon,
+    QrCodeScanner as QrCodeScannerIcon,
     Refresh as RefreshIcon,
     Save as SaveIcon,
     Schedule as ScheduleIcon,
     Science as ScienceIcon,
     Warning as WarningIcon,
 } from '@mui/icons-material';
-import {labApi, shiftApi} from '../services/api';
+import {czApi, labApi, shiftApi} from '../services/api';
 import type {
     CoolingMode,
+    CzProgress,
+    CzStatus,
     LabStatus,
     Shift,
     ShiftTask,
@@ -89,6 +93,21 @@ const LAB_STATUS_COLORS: Record<LabStatus, 'default' | 'info' | 'success' | 'err
     BLOCKED: 'error',
 };
 
+// Итерация 8: подписи и цвета статусов ЧЗ
+const CZ_STATUS_LABELS: Record<CzStatus, string> = {
+    NOT_APPLICABLE: 'Без ЧЗ',
+    PENDING: 'ЧЗ: ожидает',
+    IN_PROGRESS: 'ЧЗ: в работе',
+    COMPLETED: 'ЧЗ: завершено',
+};
+
+const CZ_STATUS_COLORS: Record<CzStatus, 'default' | 'warning' | 'info' | 'success'> = {
+    NOT_APPLICABLE: 'default',
+    PENDING: 'warning',
+    IN_PROGRESS: 'info',
+    COMPLETED: 'success',
+};
+
 const ShiftPage: React.FC = () => {
     const [selectedDate, setSelectedDate] = useState<string>(
         new Date().toISOString().split('T')[0]
@@ -114,6 +133,10 @@ const ShiftPage: React.FC = () => {
     const [unblockingTask, setUnblockingTask] = useState<ShiftTask | null>(null);
     const [unblockComment, setUnblockComment] = useState('');
 
+    // Итерация 8: прогресс ЧЗ по партиям (batch_id → CzProgress)
+    const [czProgress, setCzProgress] = useState<Record<string, CzProgress>>({});
+    const [czLoading, setCzLoading] = useState(false);
+
     const loadShift = useCallback(async (dateStr: string) => {
         setLoading(true);
         setError(null);
@@ -123,15 +146,55 @@ const ShiftPage: React.FC = () => {
 
             const tasks = await shiftApi.getTasks(shift.id);
             setTasksData(tasks);
+
+            // Итерация 8: подгружаем прогресс ЧЗ для всех batch_id в смене
+            await loadCzProgressForTasks(tasks);
         } catch (err: any) {
             const detail = err.response?.data?.detail;
             setError(typeof detail === 'string' ? detail : 'Ошибка загрузки смены');
             setCurrentShift(null);
             setTasksData(null);
+            setCzProgress({});
         } finally {
             setLoading(false);
         }
     }, []);
+
+    // Итерация 8: подгрузка прогресса ЧЗ для набора задач
+    const loadCzProgressForTasks = useCallback(async (tasks: ShiftTasksResponse) => {
+        const batchIds = new Set<string>();
+        tasks.groups.forEach((g) =>
+            g.tasks.forEach((t) => {
+                if (t.batch_id) batchIds.add(t.batch_id);
+            })
+        );
+
+        if (batchIds.size === 0) {
+            setCzProgress({});
+            return;
+        }
+
+        setCzLoading(true);
+        const result: Record<string, CzProgress> = {};
+        await Promise.all(
+            Array.from(batchIds).map(async (bid) => {
+                try {
+                    const p = await czApi.getBatchProgress(bid);
+                    result[bid] = p;
+                } catch {
+                    // партия может быть без ЧЗ — игнорируем
+                }
+            })
+        );
+        setCzProgress(result);
+        setCzLoading(false);
+    }, []);
+
+    const reloadCzProgress = async () => {
+        if (tasksData) {
+            await loadCzProgressForTasks(tasksData);
+        }
+    };
 
     useEffect(() => {
         loadShift(selectedDate);
@@ -157,6 +220,7 @@ const ShiftPage: React.FC = () => {
             if (currentShift) {
                 const tasks = await shiftApi.getTasks(currentShift.id);
                 setTasksData(tasks);
+                await loadCzProgressForTasks(tasks);
             }
         } catch (err: any) {
             const detail = err.response?.data?.detail;
@@ -188,6 +252,7 @@ const ShiftPage: React.FC = () => {
             if (currentShift) {
                 const tasks = await shiftApi.getTasks(currentShift.id);
                 setTasksData(tasks);
+                await loadCzProgressForTasks(tasks);
             }
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Ошибка');
@@ -257,6 +322,57 @@ const ShiftPage: React.FC = () => {
         }
     };
 
+    // ========== Итерация 8: рендер прогресса ЧЗ ==========
+    const renderCzProgress = (task: ShiftTask) => {
+        // Показываем только для LINE_FILL задач с партией
+        if (task.task_role !== 'LINE_FILL' || !task.batch_id) return null;
+
+        const progress = czProgress[task.batch_id];
+        if (!progress) {
+            // Данных ещё нет — показываем нейтральный чип
+            return (
+                <Chip
+                    icon={<QrCodeScannerIcon />}
+                    label="ЧЗ: нет данных"
+                    size="small"
+                    variant="outlined"
+                    color="default"
+                />
+            );
+        }
+
+        const status = progress.cz_status as CzStatus;
+        const percent = Math.min(progress.progress_percent, 100);
+
+        return (
+            <Box sx={{mt: 0.5, width: '100%', maxWidth: 320}}>
+                <Box sx={{display: 'flex', alignItems: 'center', gap: 1, mb: 0.25}}>
+                    <Chip
+                        icon={<QrCodeScannerIcon />}
+                        label={CZ_STATUS_LABELS[status]}
+                        size="small"
+                        color={CZ_STATUS_COLORS[status]}
+                        variant={status === 'COMPLETED' ? 'filled' : 'outlined'}
+                    />
+                    <Typography variant="caption" color="text.secondary">
+                        {progress.marked_qty.toFixed(0)}
+                        {progress.planned_qty ? ` / ${progress.planned_qty.toFixed(0)}` : ''}
+                        {' '}({percent.toFixed(0)}%)
+                    </Typography>
+                </Box>
+                <LinearProgress
+                    variant="determinate"
+                    value={percent}
+                    color={
+                        percent >= 95 ? 'success' :
+                            percent > 0 ? 'info' : 'warning'
+                    }
+                    sx={{height: 6, borderRadius: 1}}
+                />
+            </Box>
+        );
+    };
+
     // ========== Рендер задачи ==========
 
     const renderTask = (task: ShiftTask) => {
@@ -274,7 +390,6 @@ const ShiftPage: React.FC = () => {
         const coolingMode: CoolingMode = task.cooling_mode || null;
         const isSlowCooling = coolingMode === 'slow';
 
-        // Цвет рамки: заблокировано > slow-охлаждение > выполнено > в работе > переходящее
         let borderLeft = '1px solid #e0e0e0';
         let bgcolor = 'white';
         if (isLabBlocked) {
@@ -339,7 +454,6 @@ const ShiftPage: React.FC = () => {
                                         variant={isLabBlocked ? 'filled' : 'outlined'}
                                     />
                                 )}
-                                {/* Итерация 7: чип режима охлаждения */}
                                 {coolingMode === 'slow' && (
                                     <Chip
                                         icon={<HourglassIcon />}
@@ -372,6 +486,9 @@ const ShiftPage: React.FC = () => {
                                     + {task.linked_equipment_name}
                                 </Typography>
                             )}
+
+                            {/* Итерация 8: прогресс ЧЗ для задач слива */}
+                            {renderCzProgress(task)}
 
                             {task.lab_block_reason && (
                                 <Alert
@@ -410,7 +527,6 @@ const ShiftPage: React.FC = () => {
                             />
 
                             <Box sx={{ display: 'flex', gap: 0.5, mt: 0.5 }}>
-                                {/* Итерация 5: блокировка/разблокировка */}
                                 {task.batch_id && !isLabBlocked && (
                                     <Tooltip title="Заблокировать лабораторией">
                                         <IconButton
@@ -490,13 +606,28 @@ const ShiftPage: React.FC = () => {
                         onChange={(e) => setSelectedDate(e.target.value)}
                         slotProps={{ inputLabel: { shrink: true } }}
                     />
-                    <Button
-                        variant="outlined"
-                        startIcon={<RefreshIcon />}
-                        onClick={() => loadShift(selectedDate)}
-                    >
-                        Обновить
-                    </Button>
+                    <Tooltip title="Обновить данные смены">
+                        <Button
+                            variant="outlined"
+                            startIcon={<RefreshIcon />}
+                            onClick={() => loadShift(selectedDate)}
+                        >
+                            Обновить
+                        </Button>
+                    </Tooltip>
+                    <Tooltip title="Обновить только прогресс ЧЗ">
+                        <span>
+                            <Button
+                                variant="outlined"
+                                color="secondary"
+                                startIcon={czLoading ? <CircularProgress size={16} /> : <QrCodeScannerIcon />}
+                                onClick={reloadCzProgress}
+                                disabled={!tasksData || czLoading}
+                            >
+                                ЧЗ
+                            </Button>
+                        </span>
+                    </Tooltip>
                 </Box>
             </Box>
 
@@ -647,6 +778,20 @@ const ShiftPage: React.FC = () => {
                                         </Typography>
                                     </Alert>
                                 )}
+                                {/* Итерация 8: ЧЗ-прогресс в диалоге */}
+                                {selectedTask.task_role === 'LINE_FILL' && selectedTask.batch_id && czProgress[selectedTask.batch_id] && (
+                                    <Alert severity="info" sx={{ mt: 1 }} icon={<QrCodeScannerIcon />}>
+                                        <Typography variant="caption">
+                                            <b>ЧЗ:</b> {CZ_STATUS_LABELS[czProgress[selectedTask.batch_id].cz_status]}
+                                            {' — '}
+                                            {czProgress[selectedTask.batch_id].marked_qty.toFixed(0)}
+                                            {czProgress[selectedTask.batch_id].planned_qty
+                                                ? ` из ${czProgress[selectedTask.batch_id].planned_qty!.toFixed(0)}`
+                                                : ''}
+                                            {' '}({czProgress[selectedTask.batch_id].progress_percent.toFixed(0)}%)
+                                        </Typography>
+                                    </Alert>
+                                )}
                             </Box>
 
                             <Divider />
@@ -686,11 +831,12 @@ const ShiftPage: React.FC = () => {
                                 onChange={(e) => setFactForm({ ...factForm, actual_qty: e.target.value ? Number(e.target.value) : undefined })}
                             />
 
-                            <FormControl fullWidth>
+                            <FormControl fullWidth variant="outlined">
                                 <InputLabel>Статус</InputLabel>
                                 <Select
                                     value={factForm.status || 'PLANNED'}
                                     label="Статус"
+                                    variant="outlined"
                                     onChange={(e) => setFactForm({ ...factForm, status: e.target.value as ShiftTaskStatus })}
                                 >
                                     <MenuItem value="PLANNED">Запланировано</MenuItem>

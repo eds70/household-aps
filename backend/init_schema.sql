@@ -2,7 +2,7 @@
 -- APS СИСТЕМА: ПОЛНАЯ СХЕМА БД
 -- PostgreSQL 16+
 -- Для производства бытовой химии
--- Версия: 1.8.0 (после Итераций 0-7 + hotfix Итерации 7)
+-- Версия: 1.9.0 (после Итераций 0-8)
 -- ==========================================
 -- Включает:
 --   - Мульти-тенантность и авторизацию
@@ -18,6 +18,7 @@
 --   - Лабораторные блокировки
 --   - Пулы операторов (люди как ресурс)
 --   - Охлаждение с деградацией (cooling_mode: fast/slow)
+--   - Честный Знак: маркировка ГП (Итерация 8)
 -- ==========================================
 
 -- ==========================================
@@ -283,13 +284,25 @@ CREATE TABLE batch (
                        lab_status VARCHAR(30) DEFAULT 'NOT_REQUIRED',
                        lab_block_reason TEXT,
                        lab_blocked_at TIMESTAMPTZ,
-                       lab_blocked_by UUID REFERENCES app_user(id) ON DELETE SET NULL
+                       lab_blocked_by UUID REFERENCES app_user(id) ON DELETE SET NULL,
+    -- Итерация 8: Честный Знак
+                       cz_marked_qty NUMERIC(12,3) DEFAULT 0,
+                       cz_last_scan_at TIMESTAMPTZ,
+                       cz_status VARCHAR(30) DEFAULT 'PENDING'
 );
 COMMENT ON TABLE batch IS 'Производственная партия полуфабриката.';
 COMMENT ON COLUMN batch.lab_status IS 'NOT_REQUIRED | PENDING_LAB | APPROVED | BLOCKED';
+COMMENT ON COLUMN batch.cz_marked_qty IS 'Промаркировано ЧЗ (штук). Итерация 8.';
+COMMENT ON COLUMN batch.cz_last_scan_at IS 'Время последнего сканирования ЧЗ. Итерация 8.';
+COMMENT ON COLUMN batch.cz_status IS 'Статус маркировки ЧЗ: NOT_APPLICABLE | PENDING | IN_PROGRESS | COMPLETED. Итерация 8.';
 
 CREATE INDEX idx_batch_org ON batch(organization_id);
 CREATE INDEX idx_batch_lab_blocked ON batch(organization_id, is_lab_blocked) WHERE is_lab_blocked = TRUE;
+
+-- Итерация 8: индекс для быстрого поиска партий по статусу маркировки
+CREATE INDEX idx_batch_cz_status
+    ON batch(organization_id, cz_status)
+    WHERE cz_status IS NOT NULL AND cz_status != 'NOT_APPLICABLE';
 
 CREATE TABLE schedule_version (
                                   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -363,6 +376,38 @@ COMMENT ON TABLE lab_analysis_log IS 'Журнал лабораторных пр
 CREATE INDEX idx_lab_log_org ON lab_analysis_log(organization_id);
 CREATE INDEX idx_lab_log_batch ON lab_analysis_log(batch_id);
 CREATE INDEX idx_lab_log_performed_at ON lab_analysis_log(performed_at DESC);
+
+-- ==========================================
+-- 9b. ЧЕСТНЫЙ ЗНАК (Итерация 8)
+-- ==========================================
+CREATE TABLE cz_scan_log (
+                             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                             organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+                             batch_id UUID REFERENCES batch(id) ON DELETE SET NULL,
+                             scheduled_task_id UUID REFERENCES scheduled_task(id) ON DELETE SET NULL,
+                             cz_code VARCHAR(200) NOT NULL,
+                             gtin VARCHAR(50),
+                             qty NUMERIC(12,3) DEFAULT 1,
+                             line_code VARCHAR(50),
+                             camera_id VARCHAR(50),
+                             scanned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                             created_at TIMESTAMPTZ DEFAULT NOW(),
+                             comment TEXT,
+                             CONSTRAINT cz_scan_log_code_unique UNIQUE (organization_id, cz_code)
+);
+COMMENT ON TABLE cz_scan_log IS
+    'Журнал сканирований кодов Честного Знака. Итерация 8.';
+COMMENT ON COLUMN cz_scan_log.cz_code IS 'Полный код маркировки ЧЗ (DataMatrix).';
+COMMENT ON COLUMN cz_scan_log.gtin IS 'GTIN продукта (опционально).';
+COMMENT ON COLUMN cz_scan_log.qty IS 'Количество единиц в скане (обычно 1 — бутылка).';
+COMMENT ON COLUMN cz_scan_log.line_code IS 'Код линии розлива (LINE_1, LINE_2, ...) для fallback-сопоставления.';
+COMMENT ON COLUMN cz_scan_log.camera_id IS 'ID камеры технического зрения.';
+
+CREATE INDEX idx_cz_scan_batch ON cz_scan_log(batch_id) WHERE batch_id IS NOT NULL;
+CREATE INDEX idx_cz_scan_task ON cz_scan_log(scheduled_task_id) WHERE scheduled_task_id IS NOT NULL;
+CREATE INDEX idx_cz_scan_time ON cz_scan_log(organization_id, scanned_at DESC);
+CREATE INDEX idx_cz_scan_unresolved ON cz_scan_log(organization_id) WHERE batch_id IS NULL;
+CREATE INDEX idx_cz_scan_camera ON cz_scan_log(organization_id, camera_id) WHERE camera_id IS NOT NULL;
 
 -- ==========================================
 -- 10. ПЕРЕПЛАНИРОВАНИЕ (Итерация 4)
@@ -465,9 +510,15 @@ CREATE INDEX idx_cal_snap_ver ON calendar_snapshot(version_id);
 --   enable_rescheduling, enable_lab_blocking,
 --   enable_operator_pools, enable_manual_station.
 --
--- Итерация 7 завершена (+ hotfix модели деградации):
+-- Итерация 7 завершена (+ hotfix модели деградации охлаждения):
 --   enable_cooling_degradation = true
 --   cooling_degradation_factor = 1.3
+--
+-- Итерация 8 завершена (Честный Знак):
+--   enable_cz_integration = true
+--   cz_completion_threshold = 0.95
+--   cz_api_key = "dev-cz-api-key-change-in-production"
+--   enable_cz_auto_close = false
 -- ==========================================
 
 INSERT INTO organization_settings (organization_id, setting_key, setting_value, description) VALUES
@@ -490,9 +541,13 @@ INSERT INTO organization_settings (organization_id, setting_key, setting_value, 
 
                                                                                                  ('00000000-0000-0000-0000-000000000001', 'enable_cooling_degradation', 'true',                     'Деградация охлаждения (Итерация 7)'),
                                                                                                  ('00000000-0000-0000-0000-000000000001', 'cooling_degradation_factor', '1.3',                      'Коэффициент замедления охлаждения ×1.3 (Итерация 7)'),
-                                                                                                 ('00000000-0000-0000-0000-000000000001', 'enable_cz_integration',      'false',                    'Интеграция с ЧЗ (Итерация 8)')
+
+                                                                                                 ('00000000-0000-0000-0000-000000000001', 'enable_cz_integration',      'true',                     'Интеграция с Честным Знаком (Итерация 8)'),
+                                                                                                 ('00000000-0000-0000-0000-000000000001', 'cz_completion_threshold',    '0.95',                     'Порог завершения маркировки партии (Итерация 8)'),
+                                                                                                 ('00000000-0000-0000-0000-000000000001', 'cz_api_key',                 '"dev-cz-api-key-change-in-production"', 'API-ключ для вебхука от камер ЧЗ (Итерация 8)'),
+                                                                                                 ('00000000-0000-0000-0000-000000000001', 'enable_cz_auto_close',       'false',                    'Автоматически закрывать задачу слива при завершении маркировки (Итерация 8)')
     ON CONFLICT (organization_id, setting_key) DO NOTHING;
 
 -- ==========================================
--- ГОТОВО! Схема создана (v1.8.0).
+-- ГОТОВО! Схема создана (v1.9.0).
 -- ==========================================
