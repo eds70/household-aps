@@ -3,8 +3,8 @@
 Используется SQLAlchemy для корректной работы с кодировкой UTF-8 и типами asyncpg
 """
 import asyncio
-from uuid import UUID
 from datetime import datetime, timezone, timedelta
+from uuid import UUID
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -47,7 +47,44 @@ async def main():
         await session.execute(text("TRUNCATE TABLE organization CASCADE"))
         await session.commit()
         print("✅ Данные очищены")
-        
+
+        # ==========================================
+        # 0. РЕСУРСНЫЕ ПУЛЫ (Итерация 6 + 7)
+        # ==========================================
+        # 6 пулов операторов по ТЗ.
+        # ВАЖНО: тип OPERATOR устарел (удален в add_09.sql).
+        # ON CONFLICT DO UPDATE — идемпотентность.
+        print("👥 Создание пулов операторов...")
+
+        resource_pools = [
+            ("Аппаратчики реакторов",    "REACTOR_OPERATOR", 3, "По ТЗ — 3 человека на 4 реактора. Итерация 6."),
+            ("Операторы линий розлива",  "LINE_OPERATOR",    2, "Работают на линиях розлива. Итерация 6."),
+            ("Операторы ручной станции", "MANUAL_OPERATOR",  1, "Обслуживают ручную станцию (LINE_3). Итерация 6."),
+            ("Лаборатория",              "LAB",              1, "Один лаборант. Итерация 6."),
+            ("Зона охлаждения",          "COOLING_ZONE",     2, "Максимум 2 реактора остывают одновременно. Итерация 7."),
+            ("Бойлер",                   "BOILER",           1, "Один бойлер на весь цех."),
+        ]
+
+        for name, pool_type, capacity, comment in resource_pools:
+            await session.execute(text("""
+                INSERT INTO resource_pool (organization_id, name, type, capacity, comment)
+                VALUES (:org_id, :name, :type, :capacity, :comment)
+                ON CONFLICT (organization_id, type) DO UPDATE
+                    SET name = EXCLUDED.name,
+                        capacity = EXCLUDED.capacity,
+                        comment = EXCLUDED.comment,
+                        updated_at = NOW()
+            """), {
+                "org_id": ORG_ID,
+                "name": name,
+                "type": pool_type,
+                "capacity": capacity,
+                "comment": comment,
+            })
+
+        await session.commit()
+        print(f"✅ Создано/обновлено {len(resource_pools)} пулов операторов")
+
         # 1. Организация
         print("📝 Создание организации...")
         await session.execute(text("""

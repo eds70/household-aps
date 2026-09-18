@@ -2,32 +2,42 @@
 """
 Модуль перепланирования (Итерация 4).
 
-Функции:
-  - Загрузка предыдущего плана из БД (scheduled_task).
-  - Применение изменений:
-      * DELAY: задержка операции (факт позже плана).
-      * BREAKDOWN: поломка оборудования.
-      * QTY_CHANGE: изменение объёма заказа.
-  - Закрепление задач до frozen_before (is_pinned = TRUE).
-  - Пересчёт только затронутых партий.
-  - Сохранение как новой версии.
+Итерация 9 (A3): РЕАЛЬНЫЙ ПЕРЕСЧЁТ РАСПИСАНИЯ.
 
-Ключевое:
-  - Задачи с is_pinned = TRUE не двигаются.
-  - Задачи до frozen_before — тоже не двигаются.
-  - Пересчёт только для партий, затронутых изменением.
+Раньше rescheduler.py просто клонировал задачи из старой версии
+в новую, не пересчитывая расписание. Из-за этого DELAY/BREAKDOWN/
+QTY_CHANGE не влияли на план, а поле parent_version_id у новых
+версий оставалось NULL.
 
-Итерация 4 (fix): корректный SQL для клонирования снапшотов.
-Итерация 5: исключение заблокированных лабораторией партий
-            (batch.is_lab_blocked = TRUE) из новой версии плана.
+Теперь логика такая:
+  1. Применяем изменения к ВХОДНЫМ ДАННЫМ:
+     - BREAKDOWN → INSERT в calendar_event
+     - QTY_CHANGE → UPDATE batch.volume_kg
+     - DELAY → сдвиг planned_start/planned_end + is_pinned=TRUE
+  2. Собираем pinned_tasks (гибридная логика, см. _build_pinned_tasks):
+     - is_pinned = TRUE → жёсткий pinned
+     - actual_start IS NOT NULL → жёсткий pinned
+     - frozen_before → НЕ pinned (только метаданные версии)
+  3. Вызываем ProductionScheduler.build_schedule(pinned_tasks=...)
+  4. FALLBACK: если solver не нашёл решение с pinned — пробуем без pinned.
+  5. Сохраняем результат через ScheduleSaver (он деактивирует старые версии).
+  6. Присваиваем новой версии parent_version_id = from_version_id.
+  7. Пишем запись в reschedule_log.
+
+Ключевые гарантии:
+  - Явно помеченные is_pinned=TRUE не двигаются.
+  - Начатые задачи (actual_start IS NOT NULL) не двигаются.
+  - Заблокированные лабораторией партии исключаются из scheduler'а.
+  - Все старые версии деактивируются (is_active=FALSE).
+  - Если pinned конфликтуют — solver отработает без них с warning.
 """
 
 import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Any, Optional, Tuple
-from uuid import UUID, uuid4
+from typing import Dict, List, Any, Optional
+from uuid import UUID
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -51,6 +61,7 @@ class TaskSnapshot:
     """Снимок задачи из существующего плана."""
     id: str
     batch_id: Optional[str]
+    op_id: Optional[str]
     equipment_id: str
     linked_equipment_id: Optional[str]
     task_role: Optional[str]
@@ -96,10 +107,16 @@ class Rescheduler:
             self.engine, class_=AsyncSession, expire_on_commit=False
         )
 
+    # ==========================================
+    # ЗАГРУЗКА ДАННЫХ ИЗ БД
+    # ==========================================
+
     async def _load_version(self, session, version_id: UUID) -> Optional[Dict]:
+        """Загружает метаданные версии плана."""
         result = await session.execute(
             text("""
-                SELECT id, name, version_type, frozen_before, parent_version_id, created_at
+                SELECT id, name, version_type, frozen_before,
+                       parent_version_id, created_at
                 FROM schedule_version
                 WHERE id = :version_id AND organization_id = :org_id
             """),
@@ -114,24 +131,26 @@ class Rescheduler:
 
         Итерация 5: задачи заблокированных лабораторией партий
         (batch.is_lab_blocked = TRUE) исключаются из выборки — они
-        не попадут в новую версию плана.
+        не попадут в pinned и не будут участвовать в пересчёте.
         """
         result = await session.execute(
             text("""
                 SELECT
                     st.id::text AS id,
                     st.batch_id::text AS batch_id,
+                    st.task_role,
                     st.equipment_id::text AS equipment_id,
                     st.linked_equipment_id::text AS linked_equipment_id,
-                    st.task_role,
                     st.planned_start, st.planned_end,
                     st.actual_start, st.actual_end,
-                    st.status, COALESCE(st.is_pinned, FALSE) AS is_pinned
+                    st.status,
+                    COALESCE(st.is_pinned, FALSE) AS is_pinned
                 FROM scheduled_task st
                 LEFT JOIN batch b ON b.id = st.batch_id
                 WHERE st.schedule_version_id = :version_id
                   AND st.organization_id = :org_id
                   AND COALESCE(b.is_lab_blocked, FALSE) = FALSE
+                ORDER BY st.planned_start
             """),
             {"version_id": version_id, "org_id": self.org_id},
         )
@@ -139,6 +158,7 @@ class Rescheduler:
             TaskSnapshot(
                 id=row.id,
                 batch_id=row.batch_id,
+                op_id=None,  # в БД нет отдельного op_id; полагаемся на task_role + equipment
                 equipment_id=row.equipment_id,
                 linked_equipment_id=row.linked_equipment_id,
                 task_role=row.task_role,
@@ -152,79 +172,11 @@ class Rescheduler:
             for row in result.fetchall()
         ]
 
-    async def _count_blocked_tasks(self, session, version_id: UUID) -> Tuple[int, int]:
-        """
-        Итерация 5: считает, сколько задач и партий было исключено
-        из-за блокировки лабораторией.
+    # ==========================================
+    # ПРИМЕНЕНИЕ ИЗМЕНЕНИЙ К ВХОДНЫМ ДАННЫМ
+    # ==========================================
 
-        Возвращает: (количество задач, количество уникальных партий).
-        """
-        result = await session.execute(
-            text("""
-                SELECT
-                    COUNT(st.id) AS blocked_tasks,
-                    COUNT(DISTINCT st.batch_id) AS blocked_batches
-                FROM scheduled_task st
-                JOIN batch b ON b.id = st.batch_id
-                WHERE st.schedule_version_id = :version_id
-                  AND st.organization_id = :org_id
-                  AND COALESCE(b.is_lab_blocked, FALSE) = TRUE
-            """),
-            {"version_id": version_id, "org_id": self.org_id},
-        )
-        row = result.fetchone()
-        if not row:
-            return 0, 0
-        return int(row.blocked_tasks or 0), int(row.blocked_batches or 0)
-
-    def _is_frozen(self, task: TaskSnapshot, frozen_before: Optional[datetime]) -> bool:
-        """Задача заморожена, если pin, или началась до frozen_before, или уже DONE."""
-        if task.is_pinned:
-            return True
-        if task.status in ("DONE", "CANCELLED"):
-            return True
-        if frozen_before is not None:
-            start = task.planned_start
-            fb = frozen_before
-            if start.tzinfo is not None and fb.tzinfo is None:
-                start = start.replace(tzinfo=None)
-            elif start.tzinfo is None and fb.tzinfo is not None:
-                fb = fb.replace(tzinfo=None)
-            if start < fb:
-                return True
-        return False
-
-    def _find_affected_batch_ids(
-            self,
-            tasks: List[TaskSnapshot],
-            changes: Dict[str, Any],
-    ) -> set:
-        """Определяет партии, затронутые изменением."""
-        affected: set = set()
-
-        delayed_task_id = changes.get("delayed_task_id")
-        if delayed_task_id:
-            for t in tasks:
-                if t.id == str(delayed_task_id):
-                    if t.batch_id:
-                        affected.add(t.batch_id)
-                    break
-
-        broken_equipment_id = changes.get("broken_equipment_id")
-        if broken_equipment_id:
-            for t in tasks:
-                if t.equipment_id == str(broken_equipment_id) or t.linked_equipment_id == str(broken_equipment_id):
-                    if t.batch_id:
-                        affected.add(t.batch_id)
-
-        explicit_batch_ids = changes.get("affected_batch_ids")
-        if explicit_batch_ids:
-            for b in explicit_batch_ids:
-                affected.add(str(b))
-
-        return affected
-
-    async def _add_breakdown_to_calendar(
+    async def _apply_breakdown(
             self,
             session,
             equipment_id: UUID,
@@ -232,7 +184,12 @@ class Rescheduler:
             ends_at: datetime,
             comment: str = "Аварийная остановка",
     ) -> None:
-        """Добавляет BREAKDOWN в calendar_event."""
+        """
+        Добавляет BREAKDOWN в calendar_event.
+
+        При следующем построении расписания solver учтёт этот интервал
+        как запрет работы на оборудовании.
+        """
         await session.execute(
             text("""
                 INSERT INTO calendar_event
@@ -247,179 +204,186 @@ class Rescheduler:
                 "comment": comment,
             },
         )
-
-    def _find_shift_id(self, shifts: List[Dict], dt: datetime) -> Optional[str]:
-        """
-        Находит shift_id для момента времени.
-
-        Алгоритм:
-          1. Точное попадание в окно смены.
-          2. Fallback: ближайшая смена по starts_at.
-        """
-        if not shifts:
-            return None
-
-        if dt.tzinfo is not None:
-            dt_naive = dt.replace(tzinfo=None)
-        else:
-            dt_naive = dt
-
-        for s in shifts:
-            start = s["starts_at"]
-            end = s["ends_at"]
-            if start.tzinfo is not None:
-                start = start.replace(tzinfo=None)
-            if end.tzinfo is not None:
-                end = end.replace(tzinfo=None)
-            if start <= dt_naive <= end:
-                return str(s["id"])
-
-        closest_id = None
-        closest_diff = None
-        for s in shifts:
-            start = s["starts_at"]
-            if start.tzinfo is not None:
-                start = start.replace(tzinfo=None)
-            diff = abs((dt_naive - start).total_seconds())
-            if closest_diff is None or diff < closest_diff:
-                closest_diff = diff
-                closest_id = str(s["id"])
-        return closest_id
-
-    async def _load_shifts(self, session) -> List[Dict]:
-        result = await session.execute(
-            text("""
-                SELECT id::text, starts_at, ends_at
-                FROM shift
-                WHERE organization_id = :org_id
-                ORDER BY starts_at
-            """),
-            {"org_id": self.org_id},
+        log_with_context(
+            logger, logging.INFO,
+            f"A3: добавлен BREAKDOWN для оборудования {str(equipment_id)[:8]}: "
+            f"{starts_at} → {ends_at}",
+            stage="reschedule", org_id=str(self.org_id),
         )
-        return [dict(row._mapping) for row in result.fetchall()]
 
-    async def _clone_snapshots(
+    async def _apply_qty_change(
             self,
             session,
-            from_version_id: UUID,
-            new_version_id: UUID,
+            batch_ids: List[UUID],
+            new_qty: Optional[float] = None,
+            scale_factor: Optional[float] = None,
     ) -> None:
         """
-        Клонирует снапшоты из исходной версии в новую.
-        Для каждой таблицы — свой SQL с явными колонками,
-        потому что наборы колонок разные.
+        Изменяет объём партий.
+
+        При следующем построении расписания пересчитаются:
+          - длительность операций (через duration_formula)
+          - количество сырья
         """
-        await session.execute(
-            text("""
-                INSERT INTO equipment_snapshot
-                (id, organization_id, code, name, type, volume_kg, speed_coeff,
-                 mixer_type, is_active, version_id)
-                SELECT id, organization_id, code, name, type, volume_kg, speed_coeff,
-                       mixer_type, is_active, :new_version_id
-                FROM equipment_snapshot
-                WHERE version_id = :from_version_id
-            """),
-            {"new_version_id": new_version_id, "from_version_id": from_version_id},
-        )
+        if not batch_ids:
+            return
 
-        await session.execute(
-            text("""
-                INSERT INTO product_snapshot
-                (id, organization_id, code, name, type, viscosity_coeff, requires_heating,
-                 bottle_volume_l, fill_speed_per_min, parent_pf_id, route_type, version_id)
-                SELECT id, organization_id, code, name, type, viscosity_coeff, requires_heating,
-                       bottle_volume_l, fill_speed_per_min, parent_pf_id, route_type, :new_version_id
-                FROM product_snapshot
-                WHERE version_id = :from_version_id
-            """),
-            {"new_version_id": new_version_id, "from_version_id": from_version_id},
-        )
-
-        await session.execute(
-            text("""
-                INSERT INTO operation_snapshot
-                (id, organization_id, product_id, stage_order, name, base_duration_mins,
-                 is_setup, is_parallel_group, parallel_group_id, needs_boiler,
-                 needs_cooling_zone, needs_operator, needs_lab, duration_formula,
-                 operator_pool, comment, version_id)
-                SELECT id, organization_id, product_id, stage_order, name, base_duration_mins,
-                       is_setup, is_parallel_group, parallel_group_id, needs_boiler,
-                       needs_cooling_zone, needs_operator, needs_lab, duration_formula,
-                       operator_pool, comment, :new_version_id
-                FROM operation_snapshot
-                WHERE version_id = :from_version_id
-            """),
-            {"new_version_id": new_version_id, "from_version_id": from_version_id},
-        )
-
-        await session.execute(
-            text("""
-                INSERT INTO calendar_snapshot
-                (id, organization_id, equipment_id, event_type, starts_at, ends_at,
-                 comment, version_id)
-                SELECT id, organization_id, equipment_id, event_type, starts_at, ends_at,
-                       comment, :new_version_id
-                FROM calendar_snapshot
-                WHERE version_id = :from_version_id
-            """),
-            {"new_version_id": new_version_id, "from_version_id": from_version_id},
-        )
-
-    async def _clone_tasks(
-            self,
-            session,
-            from_tasks: List[TaskSnapshot],
-            new_version_id: UUID,
-            affected_batch_ids: set,
-            frozen_before: Optional[datetime],
-            shifts: List[Dict],
-    ) -> Tuple[int, int, int]:
-        """
-        Клонирует задачи из исходной версии в новую.
-        Возвращает: (affected_tasks, moved_tasks, frozen_tasks).
-
-        Итерация 5: from_tasks уже отфильтрованы — заблокированных
-        партий тут нет.
-        """
-        affected_count = 0
-        moved_count = 0
-        frozen_count = 0
-
-        for task in from_tasks:
-            frozen = self._is_frozen(task, frozen_before)
-            if frozen:
-                frozen_count += 1
-
-            is_affected = (task.batch_id in affected_batch_ids) and not frozen
-            if is_affected:
-                affected_count += 1
-
-            shift_id = self._find_shift_id(shifts, task.planned_start)
-
+        if new_qty is not None:
             await session.execute(
                 text("""
-                    INSERT INTO scheduled_task
-                    (organization_id, schedule_version_id, batch_id,
-                     operation_template_id, equipment_id, linked_equipment_id,
-                     planned_start, planned_end, actual_start, actual_end,
-                     task_role, shift_id, status, is_pinned)
-                    SELECT
-                        organization_id, :new_version_id, batch_id,
-                        operation_template_id, equipment_id, linked_equipment_id,
-                        planned_start, planned_end, actual_start, actual_end,
-                        task_role, :shift_id, status, is_pinned
-                    FROM scheduled_task
-                    WHERE id = :task_id
+                    UPDATE batch SET volume_kg = :new_qty
+                    WHERE id = ANY(:batch_ids) AND organization_id = :org_id
                 """),
-                {
-                    "new_version_id": new_version_id,
-                    "task_id": task.id,
-                    "shift_id": shift_id,
-                },
+                {"new_qty": new_qty, "batch_ids": batch_ids, "org_id": self.org_id},
             )
-            moved_count += 1
+        elif scale_factor is not None:
+            await session.execute(
+                text("""
+                    UPDATE batch SET volume_kg = volume_kg * :scale
+                    WHERE id = ANY(:batch_ids) AND organization_id = :org_id
+                """),
+                {"scale": scale_factor, "batch_ids": batch_ids, "org_id": self.org_id},
+            )
 
-        return affected_count, moved_count, frozen_count
+        log_with_context(
+            logger, logging.INFO,
+            f"A3: изменён объём {len(batch_ids)} партий: "
+            f"new_qty={new_qty}, scale_factor={scale_factor}",
+            stage="reschedule", org_id=str(self.org_id),
+        )
+
+    async def _apply_delay(
+            self,
+            session,
+            delayed_task_id: UUID,
+            delay_minutes: int,
+    ) -> None:
+        """
+        Применяет задержку к задаче.
+
+        Задача сдвигается на delay_minutes и помечается is_pinned=TRUE,
+        чтобы при пересчёте solver не сдвинул её обратно.
+        """
+        await session.execute(
+            text("""
+                UPDATE scheduled_task
+                SET planned_start = planned_start + (:delay || ' minutes')::interval,
+                    planned_end = planned_end + (:delay || ' minutes')::interval,
+                    is_pinned = TRUE
+                WHERE id = :task_id AND organization_id = :org_id
+            """),
+            {
+                "delay": delay_minutes,
+                "task_id": delayed_task_id,
+                "org_id": self.org_id,
+            },
+        )
+        log_with_context(
+            logger, logging.INFO,
+            f"A3: задержка задачи {str(delayed_task_id)[:8]} на {delay_minutes} мин "
+            f"(is_pinned=TRUE)",
+            stage="reschedule", org_id=str(self.org_id),
+        )
+
+    # ==========================================
+    # СБОР PINNED_TASKS (гибридная логика)
+    # ==========================================
+
+    def _build_pinned_tasks(
+            self,
+            tasks: List[TaskSnapshot],
+            frozen_before: Optional[datetime],
+    ) -> List[Dict[str, Any]]:
+        """
+        Собирает список pinned-задач для ProductionScheduler.
+
+        Итерация 9 (A3, гибридная логика):
+
+        Pinned = задача, если выполняется ХОТЯ БЫ ОДНО условие:
+          1. is_pinned = TRUE — пользователь явно заморозил.
+          2. actual_start IS NOT NULL — задача уже начата (факт внесён).
+
+        НЕ используется frozen_before для pinned:
+          - frozen_before — семантический маркер "перепланируем с этой даты".
+          - Он сохраняется как метаданные версии (schedule_version.frozen_before)
+            и пишется в reschedule_log, но НЕ превращается в constraints.
+          - Причина: попытка жёстко зафиксировать все задачи до frozen_before
+            приводила к конфликтам setup-ограничений → "No feasible solution"
+            (в тестовой БД было 171 задача до frozen_before).
+
+        ВАЖНО: задачи заблокированных лабораторией партий уже исключены
+        на этапе _load_tasks (JOIN batch + фильтр is_lab_blocked = FALSE).
+        """
+        pinned: List[Dict[str, Any]] = []
+
+        for t in tasks:
+            should_pin = False
+
+            # 1. Явная заморозка пользователем
+            if t.is_pinned:
+                should_pin = True
+
+            # 2. Задача уже начата (мастер внёс фактическое начало)
+            if not should_pin and t.actual_start is not None:
+                should_pin = True
+
+            if should_pin:
+                pinned.append({
+                    "batch_id": str(t.batch_id) if t.batch_id else None,
+                    "op_id": t.op_id,
+                    "task_role": t.task_role,
+                    "planned_start": t.planned_start,
+                    "planned_end": t.planned_end,
+                })
+
+        log_with_context(
+            logger, logging.INFO,
+            f"A3: _build_pinned_tasks: pinned={len(pinned)} "
+            f"(из {len(tasks)} задач; "
+            f"is_pinned/started; frozen_before={frozen_before} игнорируется для pinned)",
+            stage="reschedule", org_id=str(self.org_id),
+        )
+
+        return pinned
+
+    # ==========================================
+    # ОПРЕДЕЛЕНИЕ ЗАТРОНУТЫХ ПАРТИЙ
+    # ==========================================
+
+    def _find_affected_batch_ids(
+            self,
+            tasks: List[TaskSnapshot],
+            changes: Dict[str, Any],
+    ) -> set:
+        """Определяет партии, затронутые изменением (для лога)."""
+        affected: set = set()
+
+        delayed_task_id = changes.get("delayed_task_id")
+        if delayed_task_id:
+            for t in tasks:
+                if t.id == str(delayed_task_id):
+                    if t.batch_id:
+                        affected.add(t.batch_id)
+                    break
+
+        broken_equipment_id = changes.get("broken_equipment_id")
+        if broken_equipment_id:
+            for t in tasks:
+                if (t.equipment_id == str(broken_equipment_id)
+                        or t.linked_equipment_id == str(broken_equipment_id)):
+                    if t.batch_id:
+                        affected.add(t.batch_id)
+
+        explicit_batch_ids = changes.get("affected_batch_ids")
+        if explicit_batch_ids:
+            for b in explicit_batch_ids:
+                affected.add(str(b))
+
+        return affected
+
+    # ==========================================
+    # ОСНОВНОЙ МЕТОД: RESCHEDULE
+    # ==========================================
 
     async def reschedule(
             self,
@@ -430,11 +394,32 @@ class Rescheduler:
             comment: Optional[str] = None,
     ) -> RescheduleResult:
         """
-        Выполняет перепланирование.
+        Выполняет перепланирование с реальным пересчётом.
 
-        Итерация 5: заблокированные лабораторией партии автоматически
-        исключаются из новой версии плана (см. _load_tasks).
+        Шаги:
+          1. Загрузить исходную версию и её задачи.
+          2. Применить изменения к входным данным.
+          3. Собрать pinned_tasks.
+          4. Запустить ProductionScheduler.build_schedule(pinned_tasks).
+          5. FALLBACK: если solver не нашёл решение с pinned — пересчёт без них.
+          6. Сохранить результат через ScheduleSaver.
+          7. Присвоить parent_version_id новой версии.
+          8. Записать в reschedule_log.
+
+        Args:
+            from_version_id: Исходная версия.
+            reason: DELAY | BREAKDOWN | QTY_CHANGE | MANUAL.
+            changes: Параметры изменения.
+            frozen_before: Заморозить задачи до этого момента (метаданные).
+            comment: Комментарий к перепланированию.
+
+        Returns:
+            RescheduleResult с to_version_id — ID новой версии.
         """
+        # Локальный импорт во избежание циклической зависимости
+        from app.scheduler.core import ProductionScheduler
+        from app.scheduler.saver import ScheduleSaver
+
         async with self.async_session() as session:
             # 1. Загружаем исходную версию
             from_version = await self._load_version(session, from_version_id)
@@ -448,39 +433,26 @@ class Rescheduler:
 
             log_with_context(
                 logger, logging.INFO,
-                f"Перепланирование: from={str(from_version_id)[:8]}, "
+                f"A3: ПЕРЕПЛАНИРОВАНИЕ START: from={str(from_version_id)[:8]}, "
                 f"reason={reason}, frozen_before={frozen_before}",
                 stage="reschedule", org_id=str(self.org_id),
             )
 
-            # 2. Считаем, сколько задач заблокировано (для diff)
-            blocked_tasks_count, blocked_batches_count = await self._count_blocked_tasks(
-                session, from_version_id
-            )
-            if blocked_tasks_count > 0:
-                log_with_context(
-                    logger, logging.WARNING,
-                    f"Исключено из новой версии: {blocked_tasks_count} задач "
-                    f"({blocked_batches_count} заблокированных партий)",
-                    stage="reschedule", org_id=str(self.org_id),
-                )
-
-            # 3. Загружаем задачи (заблокированные уже отфильтрованы)
+            # 2. Загружаем задачи исходной версии (для pinned и affected)
             from_tasks = await self._load_tasks(session, from_version_id)
             log_with_context(
                 logger, logging.INFO,
-                f"Загружено задач для клонирования: {len(from_tasks)} "
-                f"(исключено: {blocked_tasks_count})",
+                f"A3: загружено задач из исходной версии: {len(from_tasks)}",
                 stage="reschedule", org_id=str(self.org_id),
             )
 
-            # 4. Если BREAKDOWN — добавляем в календарь
+            # 3. Применяем изменения к входным данным
             if reason == RescheduleReason.BREAKDOWN:
                 eq_id = changes.get("broken_equipment_id")
                 start = changes.get("breakdown_start")
                 end = changes.get("breakdown_end")
                 if eq_id and start and end:
-                    await self._add_breakdown_to_calendar(
+                    await self._apply_breakdown(
                         session,
                         UUID(str(eq_id)),
                         datetime.fromisoformat(str(start)) if isinstance(start, str) else start,
@@ -488,73 +460,137 @@ class Rescheduler:
                         comment or "Аварийная остановка",
                         )
 
-            # 5. Определяем затронутые партии
-            affected_batch_ids = self._find_affected_batch_ids(from_tasks, changes)
+            elif reason == RescheduleReason.QTY_CHANGE:
+                batch_ids_raw = changes.get("affected_batch_ids", [])
+                batch_ids = [UUID(str(b)) for b in batch_ids_raw]
+                await self._apply_qty_change(
+                    session,
+                    batch_ids,
+                    new_qty=changes.get("new_qty"),
+                    scale_factor=changes.get("scale_factor"),
+                )
+
+            elif reason == RescheduleReason.DELAY:
+                delayed_task_id = changes.get("delayed_task_id")
+                delay_minutes = changes.get("delay_minutes", 60)
+                if delayed_task_id:
+                    await self._apply_delay(
+                        session,
+                        UUID(str(delayed_task_id)),
+                        delay_minutes,
+                    )
+
+            await session.commit()
+
+            # 4. Собираем pinned_tasks
+            pinned_tasks = self._build_pinned_tasks(from_tasks, frozen_before)
             log_with_context(
                 logger, logging.INFO,
-                f"Затронуто партий: {len(affected_batch_ids)}",
+                f"A3: собрано pinned_tasks: {len(pinned_tasks)} "
+                f"(frozen_before={frozen_before})",
                 stage="reschedule", org_id=str(self.org_id),
             )
 
-            # 6. Создаём новую версию
-            new_version_id = uuid4()
-            new_name = f"Перепланирование от {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            # 5. Запускаем ProductionScheduler заново с pinned
+            scheduler = ProductionScheduler(
+                horizon_hours=2160,
+                org_id=self.org_id,
+            )
+            schedule_result = await scheduler.build_schedule(
+                pinned_tasks=pinned_tasks,
+            )
 
+            # 6. FALLBACK: если solver не нашёл решение с pinned —
+            # пробуем без pinned. Лучше дать валидный план с предупреждением,
+            # чем 500-ку.
+            fallback_used = False
+            if "error" in schedule_result and pinned_tasks:
+                log_with_context(
+                    logger, logging.WARNING,
+                    f"A3: solver не нашёл решение с pinned "
+                    f"({len(pinned_tasks)} задач). Пробуем БЕЗ pinned...",
+                    stage="reschedule", org_id=str(self.org_id),
+                )
+                scheduler2 = ProductionScheduler(
+                    horizon_hours=2160,
+                    org_id=self.org_id,
+                )
+                schedule_result = await scheduler2.build_schedule(
+                    pinned_tasks=None,
+                )
+                if "error" not in schedule_result:
+                    fallback_used = True
+                    pinned_tasks = []  # для diff
+
+            if "error" in schedule_result:
+                log_with_context(
+                    logger, logging.ERROR,
+                    f"A3: пересчёт не удался даже без pinned: "
+                    f"{schedule_result['error']}",
+                    stage="reschedule", org_id=str(self.org_id),
+                )
+                return RescheduleResult(
+                    status="error",
+                    from_version_id=str(from_version_id),
+                    to_version_id=None,
+                    message=f"Пересчёт не удался: {schedule_result['error']}",
+                )
+
+            log_with_context(
+                logger, logging.INFO,
+                f"A3: пересчёт успешен, задач={schedule_result.get('total_tasks', 0)}, "
+                f"makespan={schedule_result.get('makespan_minutes', 0):.0f} мин, "
+                f"fallback_used={fallback_used}",
+                stage="reschedule", org_id=str(self.org_id),
+            )
+
+            # 7. Сохраняем через ScheduleSaver
+            # Saver САМ деактивирует старые версии (см. hotfix Итерации 5).
+            saver = ScheduleSaver(org_id=self.org_id)
+            save_stats = await saver.save_schedule(schedule_result)
+            new_version_id = save_stats["version_id"]
+
+            # 8. Обновляем метаданные новой версии:
+            #    parent_version_id = from_version_id, frozen_before, comment.
             await session.execute(
                 text("""
-                    INSERT INTO schedule_version
-                    (id, organization_id, name, version_type, is_active,
-                     created_at, frozen_before, parent_version_id, comment)
-                    VALUES
-                    (:id, :org_id, :name, 'MONTHLY', FALSE,
-                     NOW(), :frozen_before, :parent_id, :comment)
+                    UPDATE schedule_version
+                    SET parent_version_id = :parent_id,
+                        frozen_before = :frozen_before,
+                        comment = :comment
+                    WHERE id = :new_version_id
+                      AND organization_id = :org_id
                 """),
                 {
-                    "id": new_version_id,
-                    "org_id": self.org_id,
-                    "name": new_name,
-                    "frozen_before": frozen_before,
                     "parent_id": from_version_id,
+                    "frozen_before": frozen_before,
                     "comment": comment or f"Перепланирование: {reason}",
+                    "new_version_id": new_version_id,
+                    "org_id": self.org_id,
                 },
             )
 
-            # 7. Клонируем снапшоты
-            await self._clone_snapshots(
-                session,
-                from_version_id=from_version_id,
-                new_version_id=new_version_id,
-            )
-
-            # 8. Клонируем задачи
-            shifts = await self._load_shifts(session)
-            affected_count, moved_count, frozen_count = await self._clone_tasks(
-                session,
-                from_tasks=from_tasks,
-                new_version_id=new_version_id,
-                affected_batch_ids=affected_batch_ids,
-                frozen_before=frozen_before,
-                shifts=shifts,
-            )
-
-            # 9. Логируем в reschedule_log
+            # 9. Пишем запись в reschedule_log
+            affected_batch_ids = list(self._find_affected_batch_ids(from_tasks, changes))
             await session.execute(
                 text("""
                     INSERT INTO reschedule_log
                     (organization_id, from_version_id, to_version_id, reason,
-                     changes, affected_task_count, moved_task_count, frozen_before, comment)
+                     changes, affected_task_count, moved_task_count,
+                     frozen_before, comment)
                     VALUES
                     (:org_id, :from_version_id, :to_version_id, :reason,
-                     :changes, :affected_task_count, :moved_task_count, :frozen_before, :comment)
+                     :changes, :affected_task_count, :moved_task_count,
+                     :frozen_before, :comment)
                 """),
                 {
                     "org_id": self.org_id,
                     "from_version_id": from_version_id,
                     "to_version_id": new_version_id,
                     "reason": reason,
-                    "changes": json.dumps(changes),
-                    "affected_task_count": affected_count,
-                    "moved_task_count": moved_count,
+                    "changes": json.dumps(changes, default=str),
+                    "affected_task_count": len(affected_batch_ids),
+                    "moved_task_count": save_stats["tasks_saved"],
                     "frozen_before": frozen_before,
                     "comment": comment,
                 },
@@ -564,10 +600,9 @@ class Rescheduler:
 
             log_with_context(
                 logger, logging.INFO,
-                f"Перепланирование завершено: from={str(from_version_id)[:8]} → "
-                f"to={str(new_version_id)[:8]}, affected={affected_count}, "
-                f"moved={moved_count}, frozen={frozen_count}, "
-                f"skipped_blocked={blocked_tasks_count}",
+                f"A3: ПЕРЕПЛАНИРОВАНИЕ DONE: from={str(from_version_id)[:8]} → "
+                f"to={str(new_version_id)[:8]}, tasks={save_stats['tasks_saved']}, "
+                f"pinned={len(pinned_tasks)}, fallback={fallback_used}",
                 stage="reschedule", org_id=str(self.org_id),
             )
 
@@ -575,18 +610,28 @@ class Rescheduler:
                 status="success",
                 from_version_id=str(from_version_id),
                 to_version_id=str(new_version_id),
-                affected_tasks=affected_count,
-                moved_tasks=moved_count,
-                frozen_tasks=frozen_count,
-                message=f"Создана новая версия '{new_name}'",
+                affected_tasks=len(affected_batch_ids),
+                moved_tasks=save_stats["tasks_saved"],
+                frozen_tasks=len(pinned_tasks),
+                message=(
+                        f"Создана новая версия плана (пересчитано "
+                        f"{save_stats['tasks_saved']} задач, pinned={len(pinned_tasks)}"
+                        + (", fallback без pinned" if fallback_used else "")
+                        + ")"
+                ),
                 diff={
                     "reason": reason,
-                    "affected_batch_ids": list(affected_batch_ids),
+                    "affected_batch_ids": affected_batch_ids,
                     "frozen_before": frozen_before.isoformat() if frozen_before else None,
-                    "skipped_blocked_tasks": blocked_tasks_count,
-                    "skipped_blocked_batches": blocked_batches_count,
+                    "pinned_count": len(pinned_tasks),
+                    "deactivated_versions": save_stats.get("deactivated_versions", 0),
+                    "fallback_used": fallback_used,
                 },
             )
+
+    # ==========================================
+    # СРАВНЕНИЕ ВЕРСИЙ
+    # ==========================================
 
     async def compare_versions(
             self,
@@ -595,7 +640,17 @@ class Rescheduler:
     ) -> Dict[str, Any]:
         """
         Сравнивает две версии плана.
-        Возвращает dict с diff по задачам.
+
+        Возвращает:
+          - moved: список задач, изменивших время
+          - unchanged_count: сколько задач не изменилось
+          - only_in_v1 / only_in_v2: задачи, которых нет в другой версии
+
+        ВАЖНО (Итерация 9): после реального пересчёта задач в новой
+        версии могут быть новые task_id (solver строит заново), поэтому
+        only_in_v1 / only_in_v2 могут быть большими. Это ожидаемое
+        поведение. Правильное сопоставление задач — по
+        (batch_id, task_role, equipment_id) — задача Итерации 10.
         """
         async with self.async_session() as session:
             v1_tasks = await self._load_tasks(session, v1_id)
@@ -613,15 +668,17 @@ class Rescheduler:
             for task_id in common:
                 t1 = v1_map[task_id]
                 t2 = v2_map[task_id]
-                if t1.planned_start != t2.planned_start or t1.planned_end != t2.planned_end:
+                if (t1.planned_start != t2.planned_start
+                        or t1.planned_end != t2.planned_end):
+                    delta = (t2.planned_start - t1.planned_start).total_seconds() / 60
                     moved.append({
                         "task_id": task_id,
                         "batch_id": t1.batch_id,
-                        "old_start": t1.planned_start.isoformat(),
-                        "old_end": t1.planned_end.isoformat(),
-                        "new_start": t2.planned_start.isoformat(),
-                        "new_end": t2.planned_end.isoformat(),
-                        "delta_minutes": int((t2.planned_start - t1.planned_start).total_seconds() / 60),
+                        "old_start": t1.planned_start.isoformat() if t1.planned_start else None,
+                        "old_end": t1.planned_end.isoformat() if t1.planned_end else None,
+                        "new_start": t2.planned_start.isoformat() if t2.planned_start else None,
+                        "new_end": t2.planned_end.isoformat() if t2.planned_end else None,
+                        "delta_minutes": int(delta),
                     })
                 else:
                     unchanged.append(task_id)

@@ -398,6 +398,21 @@ export const rescheduleApi = {
         });
         return response.data;
     },
+
+    // Итерация 9 (C2): перемещение задачи drag-and-drop на Ганте.
+    // Меняет planned_start/planned_end и ставит is_pinned=TRUE.
+    // Валидация на backend: длительность не должна меняться.
+    moveTask: async (
+        taskId: string,
+        newStart: string,
+        newEnd: string,
+    ): Promise<import('../types').MoveTaskResponse> => {
+        const response = await api.put(`/api/v1/schedule/task/${taskId}/move`, {
+            new_start: newStart,
+            new_end: newEnd,
+        });
+        return response.data;
+    },
 };
 
 // ==========================================

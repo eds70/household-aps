@@ -8,14 +8,17 @@ API перепланирования (Итерация 4).
   PUT  /api/v1/schedule/task/{id}/pin     — закрепить/открепить задачу
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
-from datetime import datetime
-from typing import List
-from uuid import UUID
 import logging
+from uuid import UUID
 
+from fastapi import APIRouter, HTTPException, Depends, Query
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth.dependencies import get_current_org_id, get_db_session
+from app.scheduler.feature_flags import FeatureFlags
+from app.scheduler.logging_config import setup_scheduler_logging, log_with_context
+from app.scheduler.rescheduler import Rescheduler
 from .reschedule_models import (
     RescheduleRequest,
     RescheduleResponse,
@@ -23,12 +26,9 @@ from .reschedule_models import (
     MovedTaskInfo,
     PinTaskRequest,
     PinTaskResponse,
+    MoveTaskRequest,
+    MoveTaskResponse,
 )
-from app.auth.dependencies import get_current_org_id, get_db_session
-from app.scheduler.feature_flags import FeatureFlags
-from app.scheduler.rescheduler import Rescheduler
-from app.scheduler.logging_config import setup_scheduler_logging, log_with_context
-
 
 router = APIRouter(prefix="/api/v1/schedule", tags=["Перепланирование"])
 logger = setup_scheduler_logging(level=logging.INFO)
@@ -170,4 +170,100 @@ async def pin_task(
         task_id=str(row.id),
         is_pinned=bool(row.is_pinned),
         message="Задача закреплена" if row.is_pinned else "Задача откреплена",
+    )
+
+# ==========================================
+# MOVE TASK (Итерация 9, C2: drag-and-drop)
+# ==========================================
+
+@router.put("/task/{task_id}/move", response_model=MoveTaskResponse)
+async def move_task(
+        task_id: UUID,
+        request: MoveTaskRequest,
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Перемещает задачу на новое время (drag-and-drop на Ганте).
+
+    Логика:
+      1. Валидирует существование задачи.
+      2. Проверяет new_end > new_start.
+      3. Проверяет, что длительность не изменилась.
+      4. Обновляет planned_start, planned_end.
+      5. Ставит is_pinned = TRUE (пользователь явно зафиксировал).
+      6. Возвращает обновлённую задачу.
+
+    Не пересчитывает остальной план. Для этого — POST /schedule/reschedule.
+    """
+    await _check_rescheduling_enabled(db, org_id)
+
+    # 1. Проверяем, что задача существует и принадлежит орг
+    check = await db.execute(
+        text("""
+            SELECT id, planned_start, planned_end, is_pinned
+            FROM scheduled_task
+            WHERE id = :task_id AND organization_id = :org_id
+        """),
+        {"task_id": task_id, "org_id": org_id},
+    )
+    row = check.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+
+    # 2. Валидация времени
+    if request.new_end <= request.new_start:
+        raise HTTPException(
+            status_code=400,
+            detail="new_end должен быть позже new_start",
+        )
+
+    # 3. Проверка длительности
+    original_duration = (row.planned_end - row.planned_start).total_seconds()
+    new_duration = (request.new_end - request.new_start).total_seconds()
+
+    # Допускаем небольшую погрешность (snap 15 мин может дать ±1 сек)
+    if abs(new_duration - original_duration) > 60:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Длительность задачи не должна меняться при перемещении. "
+                f"Было: {int(original_duration / 60)} мин, "
+                f"стало: {int(new_duration / 60)} мин."
+            ),
+        )
+
+    # 4. Обновляем
+    result = await db.execute(
+        text("""
+            UPDATE scheduled_task
+            SET planned_start = :new_start,
+                planned_end = :new_end,
+                is_pinned = TRUE
+            WHERE id = :task_id AND organization_id = :org_id
+            RETURNING id, planned_start, planned_end, is_pinned
+        """),
+        {
+            "task_id": task_id,
+            "org_id": org_id,
+            "new_start": request.new_start,
+            "new_end": request.new_end,
+        },
+    )
+    updated = result.fetchone()
+    await db.commit()
+
+    log_with_context(
+        logger, logging.INFO,
+        f"C2: задача {str(task_id)[:8]} перемещена: "
+        f"{row.planned_start} → {request.new_start}",
+        stage="move_task", org_id=str(org_id),
+    )
+
+    return MoveTaskResponse(
+        task_id=str(updated.id),
+        planned_start=updated.planned_start,
+        planned_end=updated.planned_end,
+        is_pinned=bool(updated.is_pinned),
+        message="Задача перемещена и закреплена (is_pinned=TRUE)",
     )

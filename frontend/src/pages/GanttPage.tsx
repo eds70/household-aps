@@ -39,7 +39,7 @@ import {
 import {Timeline} from 'vis-timeline/standalone';
 import {DataSet} from 'vis-data';
 import 'vis-timeline/styles/vis-timeline-graph2d.min.css';
-import {ganttApi} from '../services/api';
+import {ganttApi, rescheduleApi} from '../services/api';
 import {API_BASE_URL} from '../config';
 import {usePlan} from '../context/PlainContext';
 import type {CoolingMode, CzStatus} from '../types';
@@ -517,6 +517,11 @@ const GanttPage: React.FC = () => {
                     updateGroup: !isReadOnly,
                     remove: false,
                 },
+                // === C2 UX-оптимизация ===
+                moveable: false,          // ← НЕ тащить timeline мышью
+                selectable: true,         // ← клик по задаче выделяет её
+                multiselect: false,       // ← не выбирать много задач
+                // === Конец ===
                 margin: { item: 2, axis: 5 },
                 orientation: 'top' as const,
                 stack: false,
@@ -538,10 +543,88 @@ const GanttPage: React.FC = () => {
                     const ms = 1000 * 60 * minutes;
                     return new Date(Math.round(date.getTime() / ms) * ms);
                 },
-                onMove: (item: any, callback: Function) => {
-                    callback(item);
+                onMove: async (item: any, callback: (item: any) => void) => {
+                    // Итерация 9 (C2): drag-and-drop через API.
+                    //
+                    // Логика:
+                    //   1. Режим просмотра → откат (callback со старым временем).
+                    //   2. Найти оригинальную задачу в state.
+                    //   3. Сравнить новое время со старым.
+                    //   4. Если изменилось — вызвать API moveTask.
+                    //   5. При успехе — обновить state + callback.
+                    //   6. При ошибке — откат + показать ошибку.
+
+                    // 1. Режим просмотра — не сохраняем
+                    if (isReadOnly) {
+                        const original = tasks.find((t) => t.id === item.id);
+                        if (original) {
+                            callback({
+                                ...item,
+                                start: original.start,
+                                end: original.end,
+                            });
+                        } else {
+                            callback(item);
+                        }
+                        return;
+                    }
+
+                    // 2. Найти оригинальную задачу
+                    const task = tasks.find((t) => t.id === item.id);
+                    if (!task) {
+                        callback(item);
+                        return;
+                    }
+
+                    // 3. Сравнить время
+                    const newStart = new Date(item.start).toISOString();
+                    const newEnd = new Date(item.end).toISOString();
+                    const oldStart = new Date(task.start).toISOString();
+                    const oldEnd = new Date(task.end).toISOString();
+
+                    if (newStart === oldStart && newEnd === oldEnd) {
+                        // Ничего не изменилось — просто подтверждаем
+                        callback(item);
+                        return;
+                    }
+
+                    // 4. Вызвать API
+                    try {
+                        await rescheduleApi.moveTask(item.id, newStart, newEnd);
+
+                        // 5. Обновить локальный state
+                        setTasks((prev) =>
+                            prev.map((t) =>
+                                t.id === item.id
+                                    ? { ...t, start: newStart, end: newEnd }
+                                    : t
+                            )
+                        );
+
+                        callback(item);
+
+                        console.log(
+                            `[C2] Задача "${task.operation_name}" перемещена: ` +
+                            `${new Date(oldStart).toLocaleString('ru-RU')} → ` +
+                            `${new Date(newStart).toLocaleString('ru-RU')}`
+                        );
+                    } catch (err: any) {
+                        // 6. Откат при ошибке
+                        const detail = err.response?.data?.detail;
+                        const msg = typeof detail === 'string'
+                            ? detail
+                            : 'Ошибка перемещения задачи';
+
+                        setError(msg);
+
+                        callback({
+                            ...item,
+                            start: task.start,
+                            end: task.end,
+                        });
+                    }
                 },
-                onMoving: (item: any) => item,
+                // onMoving: (item: any) => item,
             };
 
             timelineRef.current = new Timeline(containerRef.current, items, groups, options);
@@ -572,6 +655,8 @@ const GanttPage: React.FC = () => {
             showOnlySlowCooling,
             showOnlyCzIncomplete,
             isReadOnly,
+            tasks,       // ← добавлено для C2 (onMove ищет задачу в state)
+            setError,    // ← добавлено для C2 (обработка ошибок API)
         ]
     );
 
@@ -911,6 +996,7 @@ const GanttPage: React.FC = () => {
                         >
                             <Box
                                 ref={containerRef}
+                                className={isReadOnly ? 'gantt-readonly' : ''}
                                 sx={{
                                     flexGrow: 1,
                                     width: '100%',

@@ -3,10 +3,11 @@
 Pydantic-модели для API перепланирования (Итерация 4).
 """
 
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
 from datetime import datetime
+from typing import List, Optional, Dict, Any
 from uuid import UUID
+
+from pydantic import BaseModel, Field
 
 
 # ==========================================
@@ -76,5 +77,29 @@ class PinTaskRequest(BaseModel):
 
 class PinTaskResponse(BaseModel):
     task_id: str
+    is_pinned: bool
+    message: str
+
+# ==========================================
+# MOVE TASK (Итерация 9, C2: drag-and-drop на Ганте)
+# ==========================================
+
+class MoveTaskRequest(BaseModel):
+    """
+    Запрос на перемещение задачи (drag-and-drop на Ганте).
+
+    Frontend отправляет новое время planned_start/planned_end.
+    Backend обновляет задачу и ставит is_pinned=TRUE, чтобы solver
+    (при следующем пересчете) не сдвинул её обратно.
+    """
+    new_start: datetime = Field(..., description="Новое время начала")
+    new_end: datetime = Field(..., description="Новое время окончания")
+
+
+class MoveTaskResponse(BaseModel):
+    """Ответ на перемещение задачи."""
+    task_id: str
+    planned_start: datetime
+    planned_end: datetime
     is_pinned: bool
     message: str

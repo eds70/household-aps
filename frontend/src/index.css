@@ -187,3 +187,55 @@ body {
   box-shadow: -3px 0 0 0 #ffffff, 3px 0 0 0 #ffffff;
   opacity: 1;
 }
+
+/* ==========================================
+   C2 (Итерация 9): UX оптимизация для drag-and-drop
+   ==========================================
+   Визуальная обратная связь при наведении и перетаскивании
+   задач на диаграмме Ганта (vis-timeline).
+   ========================================== */
+
+/* 1. Hover на задаче — курсор "хватания" + лёгкая подсветка */
+.vis-item.vis-range:hover {
+  cursor: grab;
+  filter: brightness(1.05);
+}
+
+/* 2. Активное перетаскивание — курсор "захвачено" + тень */
+.vis-item.vis-drag-center,
+.vis-item.vis-dragging {
+  cursor: grabbing !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4) !important;
+  opacity: 0.9;
+  z-index: 100 !important;
+}
+
+/* 3. Задача, готовая к перемещению (при mouseDown) — подсветка контура */
+.vis-item.vis-selected {
+  outline: 2px dashed #3498db !important;
+  outline-offset: 2px;
+}
+
+/* 4. Отключаем "палец" на timeline — pan отключён */
+.vis-panel.vis-center {
+  cursor: default;
+}
+
+/* 5. Плавная анимация при hover */
+.vis-item.vis-range {
+  transition: box-shadow 0.15s, filter 0.15s;
+}
+
+/* 6. Явный grab-курсор для downtime и setup — их НЕ тащим */
+.vis-item.item-downtime,
+.vis-item.item-setup {
+  cursor: not-allowed !important;
+}
+
+/* 7. Курсор в режиме просмотра */
+.gantt-readonly .vis-item.vis-range {
+  cursor: default !important;
+}
+.gantt-readonly .vis-item.vis-drag-center {
+  cursor: default !important;
+}

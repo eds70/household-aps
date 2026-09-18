@@ -348,6 +348,23 @@ export interface PinTaskResponse {
 }
 
 // ==========================================
+// MOVE TASK (Итерация 9, C2: drag-and-drop)
+// ==========================================
+
+export interface MoveTaskRequest {
+    new_start: string;   // ISO datetime (например "2026-09-07T08:00:00+03:00")
+    new_end: string;     // ISO datetime
+}
+
+export interface MoveTaskResponse {
+    task_id: string;
+    planned_start: string;
+    planned_end: string;
+    is_pinned: boolean;
+    message: string;
+}
+
+// ==========================================
 // LABORATORY
 // ==========================================
 

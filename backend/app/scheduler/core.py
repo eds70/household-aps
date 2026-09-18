@@ -217,10 +217,30 @@ class ProductionScheduler:
             # если все overlaps = 0, то b_slow_i = 0
             model.Add(ti["b_slow"] <= sum(overlaps))
 
-    async def build_schedule(self) -> Dict[str, Any]:
+    async def build_schedule(
+            self,
+            pinned_tasks: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Строит расписание.
+
+        Итерация 9 (A3): добавлен параметр pinned_tasks — список задач,
+        которые должны быть ЖЁСТКО зафиксированы на своих planned_start
+        и planned_end (если задан). Используется при перепланировании.
+
+        Каждый элемент pinned_tasks — dict:
+          {
+            "batch_id": str,
+            "op_id": str | None,
+            "task_role": str | None,
+            "planned_start": datetime | str,
+            "planned_end": datetime | str | None,
+          }
+        """
         log_with_context(
             logger, logging.INFO,
-            "Начало построения плана",
+            f"Начало построения плана "
+            f"(pinned_tasks={len(pinned_tasks) if pinned_tasks else 0})",
             stage="start", org_id=str(self.org_id),
         )
 
@@ -504,6 +524,19 @@ class ProductionScheduler:
             )
 
         # ==========================================
+        # A3 (Итерация 9): ПРИМЕНЕНИЕ PINNED CONSTRAINTS
+        # ==========================================
+        # Жёстко фиксируем pinned-задачи на их planned_start.
+        # Делается ПОСЛЕ создания всех self.tasks, ДО применения
+        # остальных ограничений и минимизации makespan.
+        if pinned_tasks:
+            self._apply_pinned_constraints(model, pinned_tasks)
+
+        # ==========================================
+        # ИТЕРАЦИЯ 7 (FIX): МОДЕЛЬ ДЕГРАДАЦИИ ОХЛАЖДЕНИЯ
+        # ==========================================
+
+        # ==========================================
         # ИТЕРАЦИЯ 7 (FIX): МОДЕЛЬ ДЕГРАДАЦИИ ОХЛАЖДЕНИЯ
         # ==========================================
         # Собираем все cooling-задачи и связываем b_slow с фактическим
@@ -714,6 +747,118 @@ class ProductionScheduler:
                 "status": solver.StatusName(status),
                 "skipped_batches": self.skipped_batches,
             }
+
+    def _apply_pinned_constraints(
+            self,
+            model: cp_model.CpModel,
+            pinned_tasks: List[Dict[str, Any]],
+    ) -> None:
+        """
+        Итерация 9 (A3): жёстко фиксирует pinned-задачи
+        на их planned_start (и planned_end, если задан).
+
+        Как ищет задачу в модели:
+          1. По (batch_id, op_id) — если op_id задан.
+          2. Иначе по (batch_id, task_role) — первое совпадение.
+
+        Побочный эффект:
+          Задачи, зависящие от pinned (через depends_on_op_ids),
+          тоже сдвинутся — это правильно.
+
+        Если pinned-задача не найдена (партия заблокирована
+        лабораторией или отсутствует), она пропускается
+        с WARNING в лог.
+        """
+        if not pinned_tasks:
+            return
+
+        applied_count = 0
+        skipped_count = 0
+
+        # Индексы для быстрого поиска задач
+        by_batch_op: Dict[Tuple[str, str], Dict] = {}
+        by_batch_role: Dict[Tuple[str, str], Dict] = {}
+
+        for key, task in self.tasks.items():
+            batch_id = task.get("batch_id")
+            op_id = task.get("op_id")
+            role = task.get("role")
+            if batch_id and op_id:
+                by_batch_op[(str(batch_id), str(op_id))] = task
+            if batch_id and role:
+                rkey = (str(batch_id), str(role))
+                if rkey not in by_batch_role:
+                    by_batch_role[rkey] = task
+
+        for pinned in pinned_tasks:
+            batch_id = str(pinned.get("batch_id") or "")
+            op_id = str(pinned.get("op_id") or "")
+            task_role = str(pinned.get("task_role") or "")
+            planned_start = pinned.get("planned_start")
+            planned_end = pinned.get("planned_end")
+
+            # Ищем задачу
+            task = None
+            if batch_id and op_id:
+                task = by_batch_op.get((batch_id, op_id))
+            if task is None and batch_id and task_role:
+                task = by_batch_role.get((batch_id, task_role))
+
+            if task is None:
+                skipped_count += 1
+                log_with_context(
+                    logger, logging.WARNING,
+                    f"A3: pinned-задача не найдена в модели: "
+                    f"batch={batch_id[:8] if batch_id else '?'}, "
+                    f"op_id={op_id[:8] if op_id else '?'}, "
+                    f"role={task_role}",
+                    stage="pinned", org_id=str(self.org_id),
+                )
+                continue
+
+            if planned_start is None:
+                skipped_count += 1
+                continue
+
+            # Приводим start к минутам от t0
+            start_minutes = self._coerce_to_minutes(planned_start)
+            if start_minutes is None:
+                skipped_count += 1
+                continue
+
+            # Фиксируем start
+            model.Add(task["start"] == start_minutes)
+
+            # Фиксируем end, если задан
+            if planned_end is not None:
+                end_minutes = self._coerce_to_minutes(planned_end)
+                if end_minutes is not None:
+                    model.Add(task["end"] == end_minutes)
+
+            applied_count += 1
+
+        log_with_context(
+            logger, logging.INFO,
+            f"A3: применено pinned-constraints: {applied_count}, "
+            f"пропущено: {skipped_count}",
+            stage="pinned", org_id=str(self.org_id),
+        )
+
+    def _coerce_to_minutes(self, value: Any) -> Optional[int]:
+        """
+        Приводит значение (datetime | str) к минутам от self.t0.
+        Возвращает None, если преобразование невозможно.
+        """
+        if isinstance(value, datetime):
+            return self._datetime_to_minutes(value)
+        if isinstance(value, str):
+            try:
+                dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                return self._datetime_to_minutes(dt)
+            except (ValueError, TypeError):
+                return None
+        return None
+
 
     def _get_product_code_for_batch(
             self,

@@ -44,9 +44,6 @@ v_org_id UUID := '00000000-0000-0000-0000-000000000001';
     v_line1 UUID; v_line2 UUID; v_line3 UUID;
     v_boiler UUID;
 
-    -- Ресурсы
-    v_res_operators UUID; v_res_cooling UUID; v_res_boiler UUID; v_res_lab UUID;
-
     -- Рецептуры
     v_recipe_cream UUID; v_recipe_dish UUID; v_recipe_antiseptic UUID;
 
@@ -205,19 +202,35 @@ INSERT INTO equipment_capability (organization_id, equipment_id, product_id, max
     ON CONFLICT DO NOTHING;
 
 -- ==========================================
--- 8. РЕСУРСНЫЕ ПУЛЫ
+-- 8. РЕСУРСНЫЕ ПУЛЫ (Итерация 6 + 7)
 -- ==========================================
-v_res_operators := gen_random_uuid();
-v_res_cooling := gen_random_uuid();
-v_res_boiler := gen_random_uuid();
-v_res_lab := gen_random_uuid();
+-- 6 пулов операторов по ТЗ:
+--   REACTOR_OPERATOR — 3 аппаратчика на 4 реактора
+--   LINE_OPERATOR    — 2 оператора на 3 линии розлива
+--   MANUAL_OPERATOR  — 1 оператор ручной станции (LINE_3)
+--   LAB              — 1 лаборант
+--   COOLING_ZONE     — 2 реактора могут остывать одновременно (Итерация 7)
+--   BOILER           — 1 бойлер
+--
+-- ВАЖНО: тип OPERATOR устарел (удален в add_09.sql). Используем
+-- актуальные типы, иначе планировщик не применит OperatorPoolConstraint
+-- и LabConstraint.
+--
+-- ON CONFLICT DO UPDATE обеспечивает идемпотентность: повторное
+-- применение не создаст дублей и обновит существующие записи.
 
-INSERT INTO resource_pool (id, organization_id, name, type, capacity) VALUES
-                                                                          (v_res_operators, v_org_id, 'Аппаратчики реакторов', 'OPERATOR',     3),
-                                                                          (v_res_cooling,   v_org_id, 'Зона охлаждения',       'COOLING_ZONE', 2),
-                                                                          (v_res_boiler,    v_org_id, 'Бойлер',                'BOILER',       1),
-                                                                          (v_res_lab,       v_org_id, 'Лаборатория',           'LAB',          1)
-    ON CONFLICT DO NOTHING;
+INSERT INTO resource_pool (organization_id, name, type, capacity, comment) VALUES
+                                                                               (v_org_id, 'Аппаратчики реакторов',    'REACTOR_OPERATOR', 3, 'По ТЗ — 3 человека на 4 реактора. Итерация 6.'),
+                                                                               (v_org_id, 'Операторы линий розлива',  'LINE_OPERATOR',    2, 'Работают на линиях розлива. Итерация 6.'),
+                                                                               (v_org_id, 'Операторы ручной станции', 'MANUAL_OPERATOR',  1, 'Обслуживают ручную станцию (LINE_3). Итерация 6.'),
+                                                                               (v_org_id, 'Лаборатория',              'LAB',              1, 'Один лаборант. Итерация 6.'),
+                                                                               (v_org_id, 'Зона охлаждения',          'COOLING_ZONE',     2, 'Максимум 2 реактора остывают одновременно. Итерация 7.'),
+                                                                               (v_org_id, 'Бойлер',                   'BOILER',           1, 'Один бойлер на весь цех.')
+    ON CONFLICT (organization_id, type) DO UPDATE
+                                               SET name = EXCLUDED.name,
+                                               capacity = EXCLUDED.capacity,
+                                               comment = EXCLUDED.comment,
+                                               updated_at = NOW();
 
 -- ==========================================
 -- 9. РЕЦЕПТУРЫ

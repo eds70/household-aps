@@ -101,28 +101,25 @@ def test_find_tank_for_reactor2_is_none():
 
 
 def test_find_line_for_reactor2_direct():
+    """Р2 → LINE_1 или LINE_2 (DIRECT-маршрут, без танка)."""
     line = _find_line_for_product(
         reactor_id="REACTOR_2",
         tank_id=None,
-        product_code="PF_DISH",
         equipment_links=_make_links(),
         equipment_map=_make_equipment_map(),
-        products_map=_make_products_map(),
     )
     assert line in ("LINE_1", "LINE_2")
 
 
 def test_find_line_via_tank():
+    """Р1 → TANK_1 → LINE_1."""
     line = _find_line_for_product(
         reactor_id="REACTOR_1",
         tank_id="TANK_1",
-        product_code="PF_CREAM",
         equipment_links=_make_links(),
         equipment_map=_make_equipment_map(),
-        products_map=_make_products_map(),
     )
     assert line == "LINE_1"
-
 
 # ==========================================
 # ТЕСТЫ: ПОСТРОЕНИЕ ЦЕПОЧКИ

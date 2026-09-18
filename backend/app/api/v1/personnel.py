@@ -10,6 +10,10 @@ API персонала (Итерация 6).
 
 Итерация 6 (доработка): _compute_pool_load читает operator_pool
 напрямую из scheduled_task (а не через JOIN на operation_template).
+
+Итерация 9: расширен PERSONNEL_POOL_TYPES — добавлены COOLING_ZONE
+и BOILER. Эти пулы тоже являются ресурсами с ограниченной capacity,
+и их полезно видеть на странице «Персонал» вместе с остальными.
 """
 
 import logging
@@ -41,11 +45,18 @@ logger = setup_scheduler_logging(level=logging.INFO)
 # КОНСТАНТЫ
 # ==========================================
 
+# Итерация 9: расширен список типов пулов.
+# Раньше отдавались только "люди" (операторы + лаборанты).
+# Теперь включаем и технические пулы (зона охлаждения, бойлер) —
+# они тоже являются ресурсами с ограниченной capacity и
+# отображаются на странице «Персонал» вместе с остальными.
 PERSONNEL_POOL_TYPES = {
     "REACTOR_OPERATOR",
     "LINE_OPERATOR",
     "MANUAL_OPERATOR",
     "LAB",
+    "COOLING_ZONE",
+    "BOILER",
 }
 
 EDIT_ALLOWED_ROLES = {"ADMIN", "PLANNER"}
@@ -118,7 +129,7 @@ async def _resolve_version_id(
 
 
 # ==========================================
-# COMPUTE POOL LOAD (Итерация 6, доработка)
+# COMPUTE POOL LOAD
 # ==========================================
 
 async def _compute_pool_load(
@@ -141,7 +152,7 @@ async def _compute_pool_load(
     Алгоритм peak_concurrent:
       - Собираем все интервалы [start, end).
       - Идём по событиям: start = +1, end = -1.
-      - Сортируем события: по времени, при равенстве — сначала +1.
+      - Сортируем события: по времени, при равенстве — сначала -1.
       - Peak = максимум счётчика.
     """
     if version_id is None:
@@ -190,6 +201,25 @@ async def _compute_pool_load(
 
 
 # ==========================================
+# SQL ORDER BY для пулов (единый для list_pools и get_load)
+# ==========================================
+# Итерация 9: порядок фиксированный и предсказуемый.
+# COOLING_ZONE и BOILER идут после "людей" — так удобнее в UI.
+
+_POOL_ORDER_BY = """
+    CASE type
+        WHEN 'REACTOR_OPERATOR' THEN 1
+        WHEN 'LINE_OPERATOR'    THEN 2
+        WHEN 'MANUAL_OPERATOR'  THEN 3
+        WHEN 'LAB'              THEN 4
+        WHEN 'COOLING_ZONE'     THEN 5
+        WHEN 'BOILER'           THEN 6
+        ELSE 99
+    END
+"""
+
+
+# ==========================================
 # GET /pools — список пулов
 # ==========================================
 
@@ -220,19 +250,12 @@ async def list_pools(
 
     # Загружаем пулы
     result = await db.execute(
-        text("""
+        text(f"""
             SELECT id, organization_id, name, type, capacity, comment, updated_at
             FROM resource_pool
             WHERE organization_id = :org_id
               AND type = ANY(:types)
-            ORDER BY
-                CASE type
-                    WHEN 'REACTOR_OPERATOR' THEN 1
-                    WHEN 'LINE_OPERATOR' THEN 2
-                    WHEN 'MANUAL_OPERATOR' THEN 3
-                    WHEN 'LAB' THEN 4
-                    ELSE 99
-                END
+            ORDER BY {_POOL_ORDER_BY}
         """),
         {"org_id": org_id, "types": list(PERSONNEL_POOL_TYPES)},
     )
@@ -428,19 +451,12 @@ async def get_load(
     resolved_version_id = await _resolve_version_id(db, org_id, version_id)
 
     result = await db.execute(
-        text("""
+        text(f"""
             SELECT type, capacity
             FROM resource_pool
             WHERE organization_id = :org_id
               AND type = ANY(:types)
-            ORDER BY
-                CASE type
-                    WHEN 'REACTOR_OPERATOR' THEN 1
-                    WHEN 'LINE_OPERATOR' THEN 2
-                    WHEN 'MANUAL_OPERATOR' THEN 3
-                    WHEN 'LAB' THEN 4
-                    ELSE 99
-                END
+            ORDER BY {_POOL_ORDER_BY}
         """),
         {"org_id": org_id, "types": list(PERSONNEL_POOL_TYPES)},
     )
