@@ -19,6 +19,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
 from .logging_config import setup_scheduler_logging, log_with_context
+from .shifts import find_shift_id_for_time
 
 logger = setup_scheduler_logging(level=logging.INFO)
 
@@ -58,31 +59,11 @@ class ScheduleSaver:
         return dt
 
     def _find_shift_for_time(self, shifts: List[Dict], dt: datetime) -> Optional[str]:
-        if not shifts:
-            return None
-
-        dt_naive = self._to_naive(dt)
-
-        for shift in shifts:
-            start = self._to_naive(shift["starts_at"])
-            end = self._to_naive(shift["ends_at"])
-            if start <= dt_naive <= end:
-                return str(shift["id"])
-
-        closest_shift = None
-        closest_diff = None
-
-        for shift in shifts:
-            start = self._to_naive(shift["starts_at"])
-            diff = abs((dt_naive - start).total_seconds())
-            if closest_diff is None or diff < closest_diff:
-                closest_diff = diff
-                closest_shift = shift
-
-        if closest_shift is not None:
-            return str(closest_shift["id"])
-
-        return None
+        """
+        Итерация 9 (B1): обёртка над shifts.find_shift_id_for_time.
+        Единая логика для saver.py и rescheduler.py.
+        """
+        return find_shift_id_for_time(shifts, dt)
 
     async def save_schedule(self, schedule_data: Dict[str, Any]) -> Dict[str, Any]:
         tasks = schedule_data["tasks"]

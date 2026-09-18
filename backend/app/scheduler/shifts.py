@@ -11,13 +11,10 @@
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Any, Optional
-from uuid import UUID
-from decimal import Decimal
 
-from .logging_config import setup_scheduler_logging, log_with_context
-
+from .logging_config import setup_scheduler_logging
 
 logger = setup_scheduler_logging(level=logging.INFO)
 
@@ -153,5 +150,81 @@ def get_previous_working_shift(
     for i in range(current_idx - 1, -1, -1):
         if sorted_shifts[i].is_working:
             return sorted_shifts[i]
+
+    return None
+
+# ==========================================
+# Итерация 9 (B1): единая функция поиска смены по времени
+# ==========================================
+# Используется и в saver.py (привязка задач к сменам),
+# и в rescheduler.py. Работает с «сырыми» dict'ами из БД,
+# чтобы не зависеть от dataclass Shift.
+
+def find_shift_id_for_time(
+        shifts: List[Dict],
+        dt: datetime,
+) -> Optional[str]:
+    """
+    Находит ID смены для момента времени.
+
+    Args:
+        shifts: Список словарей с ключами id, starts_at, ends_at.
+        dt: Момент времени (timezone-aware или naive).
+
+    Returns:
+        str(id) найденной смены или None, если смен нет.
+
+    Логика:
+      1. Точное попадание в [starts_at, ends_at].
+      2. Если ни одна смена не покрывает dt — берём ближайшую
+         по |dt - starts_at| (fallback).
+
+    Полуоткрытый интервал [start, end]:
+      Задача, начавшаяся в момент окончания смены, считается
+      следующей сменой, а не текущей.
+    """
+    if not shifts:
+        return None
+
+    # Нормализуем dt к naive
+    if dt.tzinfo is not None:
+        dt_naive = dt.replace(tzinfo=None)
+    else:
+        dt_naive = dt
+
+    # 1. Точное попадание
+    for shift in shifts:
+        start = shift.get("starts_at")
+        end = shift.get("ends_at")
+        if start is None or end is None:
+            continue
+
+        if start.tzinfo is not None:
+            start = start.replace(tzinfo=None)
+        if end.tzinfo is not None:
+            end = end.replace(tzinfo=None)
+
+        if start <= dt_naive <= end:
+            return str(shift["id"])
+
+    # 2. Fallback: ближайшая смена по starts_at
+    closest_shift = None
+    closest_diff = None
+
+    for shift in shifts:
+        start = shift.get("starts_at")
+        if start is None:
+            continue
+
+        if start.tzinfo is not None:
+            start = start.replace(tzinfo=None)
+
+        diff = abs((dt_naive - start).total_seconds())
+        if closest_diff is None or diff < closest_diff:
+            closest_diff = diff
+            closest_shift = shift
+
+    if closest_shift is not None:
+        return str(closest_shift["id"])
 
     return None

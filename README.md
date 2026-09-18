@@ -2,7 +2,7 @@
 
 **Система автоматического планирования производства на базе OR-Tools CP-SAT**
 
-Версия: **1.9.0** (Итерации 0–8 завершены)
+Версия: **2.0.0** (Итерации 0–9 завершены)
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -283,12 +283,50 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 - ✅ **UI `MainLayout.tsx`:** пункт меню **«Честный Знак»**
 - ✅ **API `/api/v1/gantt/`** расширен полями `task_role`, `cz_status`, `cz_marked_qty`.
 
+### Итерация 9 — Рефакторинг, реальное перепланирование, drag-and-drop
+
+**Реальное перепланирование (A3):**
+- ✅ `rescheduler.py` больше не клонирует задачи — запускает `ProductionScheduler.build_schedule()` заново
+- ✅ Изменения применяются к входным данным:
+  - `BREAKDOWN` → `calendar_event`
+  - `QTY_CHANGE` → `batch.volume_kg`
+  - `DELAY` → сдвиг `planned_start` + `is_pinned = TRUE`
+- ✅ Гибридная логика pinned:
+  - `is_pinned = TRUE` → жёсткий constraint
+  - `actual_start IS NOT NULL` → жёсткий constraint
+  - `frozen_before` → только метаданные (не constraint)
+- ✅ Fallback: если solver не нашёл решение с pinned — пробует без них
+- ✅ Новая версия получает `parent_version_id = from_version_id`
+- ✅ `frozen_before` корректно записывается в БД (UTC)
+- ✅ 25 новых тестов в `test_rescheduler.py`
+
+**Drag-and-Drop на диаграмме Ганта (C2):**
+- ✅ Новый эндпоинт `PUT /api/v1/schedule/task/{id}/move`
+- ✅ Валидация: длительность задачи не может меняться при перемещении
+- ✅ Frontend `onMove` в `GanttPage.tsx` вызывает API и обновляет state
+- ✅ UX-оптимизация:
+  - Hover-курсор `grab` на задачах
+  - Активное перетаскивание — `grabbing` + тень + снижение прозрачности
+  - Пунктирная синяя рамка на выбранной задаче
+  - `not-allowed` на downtime/setup (они не таскаются)
+  - Отключён pan диаграммы (`moveable: false`) — устранена конкуренция за drag
+- ✅ При ошибке API задача возвращается на исходное место
+
+**Рефакторинг (A1, B1, B2):**
+- ✅ Удалён мёртвый код `PLUGIN_MANAGED_RESOURCE_TYPES`
+- ✅ Единая функция `find_shift_id_for_time` в `shifts.py` — используется в `saver.py`
+- ✅ Расширен `PERSONNEL_POOL_TYPES` — теперь UI показывает все 6 пулов
+- ✅ `routing.py`: операции `needs_cooling_zone` и `needs_boiler` получают `operator_pool`
+- ✅ `REACTOR_OPERATOR.capacity` исправлен на 3 (по ТЗ)
+
 ### Общие возможности
 - ✅ JWT авторизация и ролевая модель (ADMIN, PLANNER, MASTER, LAB, VIEWER)
 - ✅ Управление оборудованием, продуктами, материалами, рецептурами
 - ✅ Технологические карты с формулами расчёта длительностей
 - ✅ Автоматическое разбиение заказов на партии
 - ✅ Диаграмма Ганта с интерактивным просмотром
+- ✅ Drag-and-drop задач на диаграмме Ганта (Итерация 9, C2)
+- ✅ Реальное перепланирование с пересчётом расписания (Итерация 9, A3)
 - ✅ Экспорт плана в Excel (с колонками «Заблокировано», «Причина», «Режим охлаждения»)
 - ✅ Версионирование планов через снапшоты
 
@@ -980,7 +1018,7 @@ docker exec -i aps_postgres psql -U aps -d household -c "UPDATE organization_set
 | 7 | Охлаждение с деградацией | 1.5 нед | 🔥 | ✅ |
 | 7h | Hotfix: модель деградации охлаждения | 2 дня | 🔥🔥🔥 | ✅ |
 | 8 | ЧЗ и интеграции | 2 нед | 🔥 | ✅ |
-| 9 | Рефакторинг и качество | 2 нед | 🟡 | 📋 Next |
+| 9 | Рефакторинг, A3 (реальный пересчет), C2 (drag-and-drop) | 2 нед | 🟡 | ✅ |
 | 10 | Multi-objective и what-if | 2 нед | 🟡 | ⏳ |
 | 11 | Встроенная справка пользователя | 1 нед | 🟡 | ⏳ |
 
@@ -990,8 +1028,4 @@ docker exec -i aps_postgres psql -U aps -d household -c "UPDATE organization_set
 
 ---
 
-**Итерации 0, 1, 2, 3, 4, 5, 5h, 6, 7, 7h, 8 завершены.**
-
-**Итерация 8 hotfix — интеграция с Честным Знаком.**
-
-**Готовы к Итерации 9 — рефакторинг и качество.**
+**Итерации 0, 1, 2, 3, 4, 5, 5h, 6, 7, 7h, 8, 9 завершены.**

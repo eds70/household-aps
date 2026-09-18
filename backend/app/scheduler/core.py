@@ -35,11 +35,6 @@ from .saver import ScheduleSaver
 
 logger = setup_scheduler_logging(level=logging.INFO)
 
-# Итерация 7: типы ресурсов, для которых НЕ создаём NoOverlap
-# (обрабатываются плагинами отдельно).
-PLUGIN_MANAGED_RESOURCE_TYPES = {"COOLING_ZONE"}
-
-
 class ProductionScheduler:
     def __init__(self, horizon_hours: int = 2160, org_id: UUID = None):
         self.horizon_minutes = horizon_hours * 60
