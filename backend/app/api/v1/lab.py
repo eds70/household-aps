@@ -10,6 +10,8 @@ API лаборатории (Итерация 5).
   POST /api/v1/lab/batch/{batch_id}/unblock   — разблокировать (одобрить)
   POST /api/v1/lab/batch/{batch_id}/approve   — одобрить после анализа
   POST /api/v1/lab/batch/{batch_id}/request   — запросить анализ
+
+Итерация 11 (Шаг 5): чтение флага enable_lab_blocking через settings_reader.
 """
 
 import logging
@@ -25,8 +27,8 @@ from app.auth.dependencies import (
     get_current_user,
     get_db_session,
 )
-from app.scheduler.feature_flags import FeatureFlags
 from app.scheduler.logging_config import setup_scheduler_logging, log_with_context
+from app.scheduler.settings_reader import read_feature_flags
 from .lab_models import (
     BlockBatchRequest,
     UnblockBatchRequest,
@@ -57,22 +59,12 @@ VALID_LAB_STATUSES = {
 
 
 async def _check_lab_blocking_enabled(db: AsyncSession, org_id: UUID) -> None:
-    """Проверяет, включён ли feature-флаг enable_lab_blocking."""
-    result = await db.execute(
-        text("""
-            SELECT setting_value FROM organization_settings
-            WHERE organization_id = :org_id AND setting_key = 'enable_lab_blocking'
-        """),
-        {"org_id": org_id},
-    )
-    row = result.fetchone()
-    if not row:
-        raise HTTPException(
-            status_code=400,
-            detail="Feature enable_lab_blocking не настроен",
-        )
+    """
+    Проверяет, включён ли feature-флаг enable_lab_blocking.
 
-    flags = FeatureFlags({"enable_lab_blocking": row.setting_value})
+    Итерация 11 (Шаг 5): читает из app_settings через settings_reader.
+    """
+    flags = await read_feature_flags(db, org_id)
     if not flags.enable_lab_blocking:
         raise HTTPException(
             status_code=400,
@@ -102,10 +94,6 @@ async def _validate_scheduled_task_id(
     """
     Проверяет, что scheduled_task_id существует в БД и принадлежит org_id.
     Если не существует или None — возвращает None (запись в лог будет без FK).
-
-    Это защита от placeholder'ов Swagger UI, которые подставляют
-    демо-UUID (например, 3fa85f64-5717-4562-b3fc-2c963f66afa6),
-    которых нет в БД.
     """
     if scheduled_task_id is None:
         return None
@@ -147,11 +135,7 @@ async def _write_lab_log(
 ) -> Optional[UUID]:
     """
     Создаёт запись в lab_analysis_log. Возвращает ID записи.
-
-    Итерация 5 (fix): перед вставкой проверяем scheduled_task_id —
-    если такой задачи нет в БД, пишем NULL, чтобы не падать на FK.
     """
-    # Проверяем FK — если task не существует, обнуляем
     safe_task_id = await _validate_scheduled_task_id(db, org_id, scheduled_task_id)
 
     insert = await db.execute(
@@ -190,11 +174,7 @@ async def list_pending_batches(
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """
-    Возвращает партии, ожидающие анализа (PENDING_LAB) или заблокированные (BLOCKED).
-
-    Используется на рабочем месте лаборанта для отображения очереди.
-    """
+    """Возвращает партии, ожидающие анализа (PENDING_LAB) или заблокированные (BLOCKED)."""
     await _check_lab_blocking_enabled(db, org_id)
 
     statuses = []
@@ -391,11 +371,7 @@ async def request_analysis(
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """
-    Помечает партию как ожидающую лабораторного анализа (PENDING_LAB).
-    Обычно вызывается автоматически после завершения операции needs_lab,
-    но может быть вызвано вручную мастером.
-    """
+    """Помечает партию как ожидающую лабораторного анализа (PENDING_LAB)."""
     await _check_lab_blocking_enabled(db, org_id)
     _check_role(current_user)
 
@@ -459,10 +435,7 @@ async def block_batch(
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """
-    Блокирует партию лабораторией. После этого партия не участвует
-    в дальнейшем планировании до разблокировки.
-    """
+    """Блокирует партию лабораторией."""
     await _check_lab_blocking_enabled(db, org_id)
     _check_role(current_user)
 
@@ -546,10 +519,7 @@ async def unblock_batch(
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """
-    Разблокирует партию. После этого партия снова участвует
-    в планировании.
-    """
+    """Разблокирует партию."""
     await _check_lab_blocking_enabled(db, org_id)
     _check_role(current_user)
 
@@ -625,14 +595,7 @@ async def approve_batch(
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """
-    Одобряет партию после успешного лабораторного анализа.
-    Устанавливает lab_status = 'APPROVED', снимает блокировку (если была).
-
-    Итерация 5 (fix): используем два разных UPDATE-запроса
-    (для PASSED и FAILED), чтобы избежать DatatypeMismatchError
-    при использовании CASE WHEN с UUID в asyncpg.
-    """
+    """Одобряет партию после успешного лабораторного анализа."""
     await _check_lab_blocking_enabled(db, org_id)
     _check_role(current_user)
 
@@ -655,9 +618,6 @@ async def approve_batch(
 
     user_id = UUID(current_user["user_id"])
 
-    # ==========================================
-    # Итерация 5 (fix): два разных UPDATE вместо CASE WHEN
-    # ==========================================
     if payload.result == "FAILED":
         # Блокируем партию
         await db.execute(

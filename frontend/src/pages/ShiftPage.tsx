@@ -56,6 +56,10 @@ import type {
     TaskFactRequest,
 } from '../types';
 
+// ==========================================
+// КОНСТАНТЫ
+// ==========================================
+
 const STATUS_LABELS: Record<ShiftTaskStatus, string> = {
     PLANNED: 'Запланировано',
     IN_PROGRESS: 'В работе',
@@ -93,7 +97,6 @@ const LAB_STATUS_COLORS: Record<LabStatus, 'default' | 'info' | 'success' | 'err
     BLOCKED: 'error',
 };
 
-// Итерация 8: подписи и цвета статусов ЧЗ
 const CZ_STATUS_LABELS: Record<CzStatus, string> = {
     NOT_APPLICABLE: 'Без ЧЗ',
     PENDING: 'ЧЗ: ожидает',
@@ -108,11 +111,22 @@ const CZ_STATUS_COLORS: Record<CzStatus, 'default' | 'warning' | 'info' | 'succe
     COMPLETED: 'success',
 };
 
+// ==========================================
+// КОМПОНЕНТ
+// ==========================================
+
 const ShiftPage: React.FC = () => {
     const [selectedDate, setSelectedDate] = useState<string>(
         new Date().toISOString().split('T')[0]
     );
+
+    // ==========================================
+    // Итерация 11: список смен дня + выбранная смена
+    // ==========================================
+    const [shiftsOfDay, setShiftsOfDay] = useState<Shift[]>([]);
+    const [selectedShiftId, setSelectedShiftId] = useState<string | null>(null);
     const [currentShift, setCurrentShift] = useState<Shift | null>(null);
+
     const [tasksData, setTasksData] = useState<ShiftTasksResponse | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -133,25 +147,58 @@ const ShiftPage: React.FC = () => {
     const [unblockingTask, setUnblockingTask] = useState<ShiftTask | null>(null);
     const [unblockComment, setUnblockComment] = useState('');
 
-    // Итерация 8: прогресс ЧЗ по партиям (batch_id → CzProgress)
+    // Итерация 8: прогресс ЧЗ
     const [czProgress, setCzProgress] = useState<Record<string, CzProgress>>({});
     const [czLoading, setCzLoading] = useState(false);
 
-    const loadShift = useCallback(async (dateStr: string) => {
+    // ==========================================
+    // Загрузка данных смены
+    // ==========================================
+    const loadShift = useCallback(async (
+        dateStr: string,
+        shiftIdToSelect?: string | null,
+    ) => {
         setLoading(true);
         setError(null);
         try {
-            const shift = await shiftApi.getByDate(dateStr);
+            // 1. Загружаем ВСЕ смены за день
+            const shifts = await shiftApi.getByDate(dateStr);
+
+            if (!shifts || shifts.length === 0) {
+                setShiftsOfDay([]);
+                setSelectedShiftId(null);
+                setCurrentShift(null);
+                setTasksData(null);
+                setError(`Смены на ${dateStr} не найдены`);
+                return;
+            }
+
+            setShiftsOfDay(shifts);
+
+            // 2. Выбираем смену:
+            //    - если передан shiftIdToSelect — его
+            //    - иначе — первую рабочую, либо первую из списка
+            let shift: Shift;
+            if (shiftIdToSelect) {
+                shift = shifts.find((s) => s.id === shiftIdToSelect) || shifts[0];
+            } else {
+                shift = shifts.find((s) => s.is_working) || shifts[0];
+            }
+
+            setSelectedShiftId(shift.id);
             setCurrentShift(shift);
 
+            // 3. Загружаем задачи выбранной смены
             const tasks = await shiftApi.getTasks(shift.id);
             setTasksData(tasks);
 
-            // Итерация 8: подгружаем прогресс ЧЗ для всех batch_id в смене
+            // 4. Итерация 8: подгружаем прогресс ЧЗ
             await loadCzProgressForTasks(tasks);
         } catch (err: any) {
             const detail = err.response?.data?.detail;
             setError(typeof detail === 'string' ? detail : 'Ошибка загрузки смены');
+            setShiftsOfDay([]);
+            setSelectedShiftId(null);
             setCurrentShift(null);
             setTasksData(null);
             setCzProgress({});
@@ -160,7 +207,9 @@ const ShiftPage: React.FC = () => {
         }
     }, []);
 
-    // Итерация 8: подгрузка прогресса ЧЗ для набора задач
+    // ==========================================
+    // Итерация 8: прогресс ЧЗ по задачам
+    // ==========================================
     const loadCzProgressForTasks = useCallback(async (tasks: ShiftTasksResponse) => {
         const batchIds = new Set<string>();
         tasks.groups.forEach((g) =>
@@ -196,10 +245,35 @@ const ShiftPage: React.FC = () => {
         }
     };
 
+    // ==========================================
+    // Первичная загрузка и загрузка при смене даты
+    // ==========================================
     useEffect(() => {
         loadShift(selectedDate);
     }, [selectedDate, loadShift]);
 
+    // ==========================================
+    // Итерация 11: смена выбранной смены
+    // ==========================================
+    const handleShiftChange = async (newShiftId: string) => {
+        setSelectedShiftId(newShiftId);
+        const shift = shiftsOfDay.find((s) => s.id === newShiftId);
+        if (shift) {
+            setCurrentShift(shift);
+            try {
+                const tasks = await shiftApi.getTasks(shift.id);
+                setTasksData(tasks);
+                await loadCzProgressForTasks(tasks);
+            } catch (err: any) {
+                const detail = err.response?.data?.detail;
+                setError(typeof detail === 'string' ? detail : 'Ошибка загрузки заданий');
+            }
+        }
+    };
+
+    // ==========================================
+    // Обработчики задач
+    // ==========================================
     const handleOpenFactDialog = (task: ShiftTask) => {
         setSelectedTask(task);
         setFactForm({
@@ -259,8 +333,9 @@ const ShiftPage: React.FC = () => {
         }
     };
 
-    // ========== Итерация 5: блокировка ==========
-
+    // ==========================================
+    // Итерация 5: блокировка
+    // ==========================================
     const handleOpenBlockDialog = (task: ShiftTask) => {
         if (!task.batch_id) {
             setError('Задача не привязана к партии');
@@ -322,17 +397,17 @@ const ShiftPage: React.FC = () => {
         }
     };
 
-    // ========== Итерация 8: рендер прогресса ЧЗ ==========
+    // ==========================================
+    // Итерация 8: рендер прогресса ЧЗ
+    // ==========================================
     const renderCzProgress = (task: ShiftTask) => {
-        // Показываем только для LINE_FILL задач с партией
         if (task.task_role !== 'LINE_FILL' || !task.batch_id) return null;
 
         const progress = czProgress[task.batch_id];
         if (!progress) {
-            // Данных ещё нет — показываем нейтральный чип
             return (
                 <Chip
-                    icon={<QrCodeScannerIcon />}
+                    icon={<QrCodeScannerIcon/>}
                     label="ЧЗ: нет данных"
                     size="small"
                     variant="outlined"
@@ -348,7 +423,7 @@ const ShiftPage: React.FC = () => {
             <Box sx={{mt: 0.5, width: '100%', maxWidth: 320}}>
                 <Box sx={{display: 'flex', alignItems: 'center', gap: 1, mb: 0.25}}>
                     <Chip
-                        icon={<QrCodeScannerIcon />}
+                        icon={<QrCodeScannerIcon/>}
                         label={CZ_STATUS_LABELS[status]}
                         size="small"
                         color={CZ_STATUS_COLORS[status]}
@@ -363,18 +438,16 @@ const ShiftPage: React.FC = () => {
                 <LinearProgress
                     variant="determinate"
                     value={percent}
-                    color={
-                        percent >= 95 ? 'success' :
-                            percent > 0 ? 'info' : 'warning'
-                    }
+                    color={percent >= 95 ? 'success' : percent > 0 ? 'info' : 'warning'}
                     sx={{height: 6, borderRadius: 1}}
                 />
             </Box>
         );
     };
 
-    // ========== Рендер задачи ==========
-
+    // ==========================================
+    // Рендер задачи
+    // ==========================================
     const renderTask = (task: ShiftTask) => {
         const startTime = new Date(task.planned_start).toLocaleTimeString('ru-RU', {
             hour: '2-digit', minute: '2-digit',
@@ -411,23 +484,15 @@ const ShiftPage: React.FC = () => {
             <Card
                 key={task.id}
                 variant="outlined"
-                sx={{
-                    mb: 1,
-                    borderLeft,
-                    bgcolor,
-                }}
+                sx={{mb: 1, borderLeft, bgcolor}}
             >
-                <CardContent sx={{ py: 1.5, px: 2, '&:last-child': { pb: 1.5 } }}>
-                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 1 }}>
-                        <Box sx={{ flexGrow: 1 }}>
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5, flexWrap: 'wrap' }}>
-                                {isLabBlocked && (
-                                    <LockIcon fontSize="small" sx={{ color: '#e74c3c' }} />
-                                )}
-                                {isSlowCooling && (
-                                    <HourglassIcon fontSize="small" sx={{ color: '#e67e22' }} />
-                                )}
-                                <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                <CardContent sx={{py: 1.5, px: 2, '&:last-child': {pb: 1.5}}}>
+                    <Box sx={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 1}}>
+                        <Box sx={{flexGrow: 1}}>
+                            <Box sx={{display: 'flex', alignItems: 'center', gap: 1, mb: 0.5, flexWrap: 'wrap'}}>
+                                {isLabBlocked && <LockIcon fontSize="small" sx={{color: '#e74c3c'}}/>}
+                                {isSlowCooling && <HourglassIcon fontSize="small" sx={{color: '#e67e22'}}/>}
+                                <Typography variant="subtitle2" sx={{fontWeight: 600}}>
                                     {task.operation_name}
                                 </Typography>
                                 {task.task_role && (
@@ -439,7 +504,7 @@ const ShiftPage: React.FC = () => {
                                 )}
                                 {task.is_carryover && (
                                     <Chip
-                                        icon={<HistoryIcon />}
+                                        icon={<HistoryIcon/>}
                                         label="Переходящее"
                                         size="small"
                                         color="warning"
@@ -447,7 +512,7 @@ const ShiftPage: React.FC = () => {
                                 )}
                                 {labStatus !== 'NOT_REQUIRED' && (
                                     <Chip
-                                        icon={<ScienceIcon />}
+                                        icon={<ScienceIcon/>}
                                         label={LAB_STATUS_LABELS[labStatus]}
                                         size="small"
                                         color={LAB_STATUS_COLORS[labStatus]}
@@ -456,7 +521,7 @@ const ShiftPage: React.FC = () => {
                                 )}
                                 {coolingMode === 'slow' && (
                                     <Chip
-                                        icon={<HourglassIcon />}
+                                        icon={<HourglassIcon/>}
                                         label="Замедленное охлаждение ×1.3"
                                         size="small"
                                         color="warning"
@@ -465,7 +530,7 @@ const ShiftPage: React.FC = () => {
                                 )}
                                 {coolingMode === 'fast' && (
                                     <Chip
-                                        icon={<AcUnitIcon />}
+                                        icon={<AcUnitIcon/>}
                                         label="Охлаждение (норма)"
                                         size="small"
                                         color="info"
@@ -474,7 +539,7 @@ const ShiftPage: React.FC = () => {
                                 )}
                             </Box>
 
-                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                            <Typography variant="caption" color="text.secondary" sx={{display: 'block'}}>
                                 {task.product_code} — {task.product_name}
                             </Typography>
                             <Typography variant="caption" color="text.secondary">
@@ -482,51 +547,48 @@ const ShiftPage: React.FC = () => {
                             </Typography>
 
                             {task.linked_equipment_name && (
-                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                <Typography variant="caption" color="text.secondary" sx={{display: 'block'}}>
                                     + {task.linked_equipment_name}
                                 </Typography>
                             )}
 
-                            {/* Итерация 8: прогресс ЧЗ для задач слива */}
                             {renderCzProgress(task)}
 
                             {task.lab_block_reason && (
                                 <Alert
                                     severity="error"
-                                    icon={<WarningIcon fontSize="inherit" />}
-                                    sx={{ mt: 0.5, py: 0 }}
+                                    icon={<WarningIcon fontSize="inherit"/>}
+                                    sx={{mt: 0.5, py: 0}}
                                 >
-                                    <Typography variant="caption">
-                                        {task.lab_block_reason}
-                                    </Typography>
+                                    <Typography variant="caption">{task.lab_block_reason}</Typography>
                                 </Alert>
                             )}
 
                             {task.material_load_at && (
                                 <Chip
-                                    label={`Сырьё загружено: ${new Date(task.material_load_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`}
+                                    label={`Сырьё загружено: ${new Date(task.material_load_at).toLocaleTimeString('ru-RU', {hour: '2-digit', minute: '2-digit'})}`}
                                     size="small"
                                     color="info"
                                     variant="outlined"
-                                    sx={{ mt: 0.5 }}
+                                    sx={{mt: 0.5}}
                                 />
                             )}
 
                             {task.actual_qty && (
-                                <Typography variant="caption" sx={{ display: 'block', mt: 0.5 }}>
+                                <Typography variant="caption" sx={{display: 'block', mt: 0.5}}>
                                     Факт: {task.actual_qty}
                                 </Typography>
                             )}
                         </Box>
 
-                        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 0.5 }}>
+                        <Box sx={{display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 0.5}}>
                             <Chip
                                 label={STATUS_LABELS[task.status]}
                                 color={STATUS_COLORS[task.status]}
                                 size="small"
                             />
 
-                            <Box sx={{ display: 'flex', gap: 0.5, mt: 0.5 }}>
+                            <Box sx={{display: 'flex', gap: 0.5, mt: 0.5}}>
                                 {task.batch_id && !isLabBlocked && (
                                     <Tooltip title="Заблокировать лабораторией">
                                         <IconButton
@@ -534,7 +596,7 @@ const ShiftPage: React.FC = () => {
                                             color="error"
                                             onClick={() => handleOpenBlockDialog(task)}
                                         >
-                                            <LockIcon fontSize="small" />
+                                            <LockIcon fontSize="small"/>
                                         </IconButton>
                                     </Tooltip>
                                 )}
@@ -545,7 +607,7 @@ const ShiftPage: React.FC = () => {
                                             color="success"
                                             onClick={() => handleOpenUnblockDialog(task)}
                                         >
-                                            <LockOpenIcon fontSize="small" />
+                                            <LockOpenIcon fontSize="small"/>
                                         </IconButton>
                                     </Tooltip>
                                 )}
@@ -557,7 +619,7 @@ const ShiftPage: React.FC = () => {
                                             color="info"
                                             onClick={() => handleMaterialLoad(task)}
                                         >
-                                            <PlayIcon fontSize="small" />
+                                            <PlayIcon fontSize="small"/>
                                         </IconButton>
                                     </Tooltip>
                                 )}
@@ -568,7 +630,7 @@ const ShiftPage: React.FC = () => {
                                             color="success"
                                             onClick={() => handleComplete(task)}
                                         >
-                                            <CheckCircleIcon fontSize="small" />
+                                            <CheckCircleIcon fontSize="small"/>
                                         </IconButton>
                                     </Tooltip>
                                 )}
@@ -577,7 +639,7 @@ const ShiftPage: React.FC = () => {
                                         size="small"
                                         onClick={() => handleOpenFactDialog(task)}
                                     >
-                                        <SaveIcon fontSize="small" />
+                                        <SaveIcon fontSize="small"/>
                                     </IconButton>
                                 </Tooltip>
                             </Box>
@@ -588,75 +650,104 @@ const ShiftPage: React.FC = () => {
         );
     };
 
+    // ==========================================
+    // Рендер
+    // ==========================================
     return (
-        <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, flexWrap: 'wrap', gap: 2 }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                    <ScheduleIcon color="primary" sx={{ fontSize: 32 }} />
-                    <Typography variant="h4" component="h1" sx={{ fontWeight: 600, color: '#2c3e50' }}>
-                        Рабочее место мастера
-                    </Typography>
-                </Box>
-                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                    <TextField
-                        type="date"
-                        size="small"
-                        label="Дата смены"
-                        value={selectedDate}
-                        onChange={(e) => setSelectedDate(e.target.value)}
-                        slotProps={{ inputLabel: { shrink: true } }}
-                    />
-                    <Tooltip title="Обновить данные смены">
-                        <Button
-                            variant="outlined"
-                            startIcon={<RefreshIcon />}
-                            onClick={() => loadShift(selectedDate)}
-                        >
-                            Обновить
-                        </Button>
-                    </Tooltip>
-                    <Tooltip title="Обновить только прогресс ЧЗ">
-                        <span>
+        <Box sx={{height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0}}>
+            {/* ====== ФИКСИРОВАННАЯ ШАПКА ====== */}
+            <Box sx={{flexShrink: 0}}>
+                <Box sx={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    mb: 2,
+                    flexWrap: 'wrap',
+                    gap: 2,
+                }}>
+                    <Box sx={{display: 'flex', alignItems: 'center', gap: 2}}>
+                        <ScheduleIcon color="primary" sx={{fontSize: 32}}/>
+                        <Typography variant="h4" component="h1" sx={{fontWeight: 600, color: '#2c3e50'}}>
+                            Рабочее место мастера
+                        </Typography>
+                    </Box>
+                    <Box sx={{display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap'}}>
+                        {/* Итерация 11: селектор смены */}
+                        {shiftsOfDay.length > 0 && (
+                            <FormControl size="small" sx={{minWidth: 260}}>
+                                <InputLabel>Смена</InputLabel>
+                                <Select
+                                    value={selectedShiftId || ''}
+                                    label="Смена"
+                                    onChange={(e) => handleShiftChange(e.target.value as string)}
+                                >
+                                    {shiftsOfDay.map((s) => (
+                                        <MenuItem key={s.id} value={s.id}>
+                                            {s.name} {s.is_working ? '' : '(выходной)'}
+                                        </MenuItem>
+                                    ))}
+                                </Select>
+                            </FormControl>
+                        )}
+
+                        <TextField
+                            type="date"
+                            size="small"
+                            label="Дата смены"
+                            value={selectedDate}
+                            onChange={(e) => setSelectedDate(e.target.value)}
+                            slotProps={{inputLabel: {shrink: true}}}
+                        />
+                        <Tooltip title="Обновить данные смены">
                             <Button
                                 variant="outlined"
-                                color="secondary"
-                                startIcon={czLoading ? <CircularProgress size={16} /> : <QrCodeScannerIcon />}
-                                onClick={reloadCzProgress}
-                                disabled={!tasksData || czLoading}
+                                startIcon={<RefreshIcon/>}
+                                onClick={() => loadShift(selectedDate, selectedShiftId)}
                             >
-                                ЧЗ
+                                Обновить
                             </Button>
-                        </span>
-                    </Tooltip>
+                        </Tooltip>
+                        <Tooltip title="Обновить только прогресс ЧЗ">
+                            <span>
+                                <Button
+                                    variant="outlined"
+                                    color="secondary"
+                                    startIcon={czLoading ? <CircularProgress size={16}/> : <QrCodeScannerIcon/>}
+                                    onClick={reloadCzProgress}
+                                    disabled={!tasksData || czLoading}
+                                >
+                                    ЧЗ
+                                </Button>
+                            </span>
+                        </Tooltip>
+                    </Box>
                 </Box>
-            </Box>
 
-            {error && (
-                <Alert severity="warning" sx={{ mb: 2 }} onClose={() => setError(null)}>
-                    {error}
-                </Alert>
-            )}
+                {error && (
+                    <Alert severity="warning" sx={{mb: 2}} onClose={() => setError(null)}>
+                        {error}
+                    </Alert>
+                )}
 
-            {loading && (
-                <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>
-                    <CircularProgress />
-                </Box>
-            )}
+                {loading && (
+                    <Box sx={{display: 'flex', justifyContent: 'center', mt: 4}}>
+                        <CircularProgress/>
+                    </Box>
+                )}
 
-            {!loading && currentShift && tasksData && (
-                <>
-                    <Card sx={{ mb: 2, bgcolor: '#f8f9fa' }}>
-                        <CardContent sx={{ py: 1.5 }}>
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
-                                <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                {!loading && currentShift && tasksData && (
+                    <Card sx={{mb: 2, bgcolor: '#f8f9fa'}}>
+                        <CardContent sx={{py: 1.5}}>
+                            <Box sx={{display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap'}}>
+                                <Typography variant="h6" sx={{fontWeight: 600}}>
                                     {currentShift.name}
                                 </Typography>
                                 <Chip
-                                    label={`${new Date(currentShift.starts_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })} — ${new Date(currentShift.ends_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`}
+                                    label={`${new Date(currentShift.starts_at).toLocaleTimeString('ru-RU', {hour: '2-digit', minute: '2-digit'})} — ${new Date(currentShift.ends_at).toLocaleTimeString('ru-RU', {hour: '2-digit', minute: '2-digit'})}`}
                                     variant="outlined"
                                 />
                                 {!currentShift.is_working && (
-                                    <Chip label="Нерабочая смена" color="default" />
+                                    <Chip label="Нерабочая смена" color="default"/>
                                 )}
                                 <Chip
                                     label={`Всего задач: ${tasksData.total_tasks}`}
@@ -665,7 +756,7 @@ const ShiftPage: React.FC = () => {
                                 />
                                 {tasksData.carryover_count > 0 && (
                                     <Chip
-                                        icon={<HistoryIcon />}
+                                        icon={<HistoryIcon/>}
                                         label={`Переходящих: ${tasksData.carryover_count}`}
                                         color="warning"
                                     />
@@ -678,7 +769,12 @@ const ShiftPage: React.FC = () => {
                             </Box>
                         </CardContent>
                     </Card>
+                )}
+            </Box>
 
+            {/* ====== ПРОКРУЧИВАЕМЫЙ СПИСОК ЗАДАЧ ====== */}
+            {!loading && currentShift && tasksData && (
+                <Box sx={{flexGrow: 1, minHeight: 0, overflow: 'auto', pr: 1}}>
                     {tasksData.groups.length === 0 ? (
                         <Card>
                             <CardContent>
@@ -688,56 +784,50 @@ const ShiftPage: React.FC = () => {
                             </CardContent>
                         </Card>
                     ) : (
-                        <Box sx={{ flexGrow: 1, overflow: 'auto' }}>
-                            {tasksData.groups.map((group) => {
-                                const blockedCount = group.tasks.filter(t => t.is_lab_blocked).length;
-                                return (
-                                    <Accordion
-                                        key={group.equipment_id}
-                                        defaultExpanded
-                                        sx={{ mb: 1, boxShadow: '0 2px 6px rgba(0,0,0,0.08)' }}
-                                    >
-                                        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
-                                                <Typography sx={{ fontWeight: 600 }}>
-                                                    {group.equipment_name}
-                                                </Typography>
-                                                {group.equipment_code && (
+                        tasksData.groups.map((group) => {
+                            const blockedCount = group.tasks.filter(t => t.is_lab_blocked).length;
+                            return (
+                                <Accordion
+                                    key={group.equipment_id}
+                                    defaultExpanded
+                                    sx={{mb: 1, boxShadow: '0 2px 6px rgba(0,0,0,0.08)'}}
+                                >
+                                    <AccordionSummary expandIcon={<ExpandMoreIcon/>}>
+                                        <Box sx={{display: 'flex', alignItems: 'center', gap: 1, width: '100%'}}>
+                                            <Typography sx={{fontWeight: 600}}>
+                                                {group.equipment_name}
+                                            </Typography>
+                                            {group.equipment_code && (
+                                                <Chip label={group.equipment_code} size="small" variant="outlined"/>
+                                            )}
+                                            {blockedCount > 0 && (
+                                                <Badge badgeContent={blockedCount} color="error">
                                                     <Chip
-                                                        label={group.equipment_code}
+                                                        icon={<LockIcon/>}
+                                                        label="Заблокировано"
                                                         size="small"
+                                                        color="error"
                                                         variant="outlined"
                                                     />
-                                                )}
-                                                {blockedCount > 0 && (
-                                                    <Badge badgeContent={blockedCount} color="error">
-                                                        <Chip
-                                                            icon={<LockIcon />}
-                                                            label="Заблокировано"
-                                                            size="small"
-                                                            color="error"
-                                                            variant="outlined"
-                                                        />
-                                                    </Badge>
-                                                )}
-                                                <Chip
-                                                    label={`${group.tasks.length} задач`}
-                                                    size="small"
-                                                    color="primary"
-                                                    variant="outlined"
-                                                    sx={{ ml: 'auto' }}
-                                                />
-                                            </Box>
-                                        </AccordionSummary>
-                                        <AccordionDetails>
-                                            {group.tasks.map(renderTask)}
-                                        </AccordionDetails>
-                                    </Accordion>
-                                );
-                            })}
-                        </Box>
+                                                </Badge>
+                                            )}
+                                            <Chip
+                                                label={`${group.tasks.length} задач`}
+                                                size="small"
+                                                color="primary"
+                                                variant="outlined"
+                                                sx={{ml: 'auto'}}
+                                            />
+                                        </Box>
+                                    </AccordionSummary>
+                                    <AccordionDetails>
+                                        {group.tasks.map(renderTask)}
+                                    </AccordionDetails>
+                                </Accordion>
+                            );
+                        })
                     )}
-                </>
+                </Box>
             )}
 
             {!loading && !currentShift && !error && (
@@ -750,26 +840,28 @@ const ShiftPage: React.FC = () => {
                 </Card>
             )}
 
-            {/* ========== Диалог внесения факта ========== */}
+            {/* ====== ДИАЛОГИ ====== */}
+
+            {/* Диалог внесения факта */}
             <Dialog open={editDialogOpen} onClose={() => setEditDialogOpen(false)} maxWidth="sm" fullWidth>
-                <DialogTitle sx={{ fontWeight: 600 }}>
+                <DialogTitle sx={{fontWeight: 600}}>
                     {selectedTask && `${selectedTask.operation_name} — внести факт`}
                 </DialogTitle>
                 <DialogContent>
                     {selectedTask && (
-                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
+                        <Box sx={{display: 'flex', flexDirection: 'column', gap: 2, mt: 1}}>
                             <Box>
                                 <Typography variant="body2" color="text.secondary">
-                                    <b>Продукт:</b> {selectedTask.product_code} — {selectedTask.product_name}<br />
+                                    <b>Продукт:</b> {selectedTask.product_code} — {selectedTask.product_name}<br/>
                                     <b>Оборудование:</b> {selectedTask.equipment_name}
-                                    {selectedTask.linked_equipment_name && ` + ${selectedTask.linked_equipment_name}`}<br />
+                                    {selectedTask.linked_equipment_name && ` + ${selectedTask.linked_equipment_name}`}<br/>
                                     <b>План:</b> {new Date(selectedTask.planned_start).toLocaleString('ru-RU')} — {new Date(selectedTask.planned_end).toLocaleString('ru-RU')}
                                 </Typography>
                                 {selectedTask.cooling_mode && (
                                     <Alert
                                         severity={selectedTask.cooling_mode === 'slow' ? 'warning' : 'info'}
-                                        sx={{ mt: 1 }}
-                                        icon={selectedTask.cooling_mode === 'slow' ? <HourglassIcon /> : <AcUnitIcon />}
+                                        sx={{mt: 1}}
+                                        icon={selectedTask.cooling_mode === 'slow' ? <HourglassIcon/> : <AcUnitIcon/>}
                                     >
                                         <Typography variant="caption">
                                             {selectedTask.cooling_mode === 'slow'
@@ -778,9 +870,8 @@ const ShiftPage: React.FC = () => {
                                         </Typography>
                                     </Alert>
                                 )}
-                                {/* Итерация 8: ЧЗ-прогресс в диалоге */}
                                 {selectedTask.task_role === 'LINE_FILL' && selectedTask.batch_id && czProgress[selectedTask.batch_id] && (
-                                    <Alert severity="info" sx={{ mt: 1 }} icon={<QrCodeScannerIcon />}>
+                                    <Alert severity="info" sx={{mt: 1}} icon={<QrCodeScannerIcon/>}>
                                         <Typography variant="caption">
                                             <b>ЧЗ:</b> {CZ_STATUS_LABELS[czProgress[selectedTask.batch_id].cz_status]}
                                             {' — '}
@@ -794,15 +885,15 @@ const ShiftPage: React.FC = () => {
                                 )}
                             </Box>
 
-                            <Divider />
+                            <Divider/>
 
                             <TextField
                                 label="Факт. начало"
                                 type="datetime-local"
                                 fullWidth
                                 value={factForm.actual_start?.slice(0, 16) || ''}
-                                onChange={(e) => setFactForm({ ...factForm, actual_start: e.target.value ? new Date(e.target.value).toISOString() : undefined })}
-                                slotProps={{ inputLabel: { shrink: true } }}
+                                onChange={(e) => setFactForm({...factForm, actual_start: e.target.value ? new Date(e.target.value).toISOString() : undefined})}
+                                slotProps={{inputLabel: {shrink: true}}}
                             />
 
                             <TextField
@@ -810,8 +901,8 @@ const ShiftPage: React.FC = () => {
                                 type="datetime-local"
                                 fullWidth
                                 value={factForm.actual_end?.slice(0, 16) || ''}
-                                onChange={(e) => setFactForm({ ...factForm, actual_end: e.target.value ? new Date(e.target.value).toISOString() : undefined })}
-                                slotProps={{ inputLabel: { shrink: true } }}
+                                onChange={(e) => setFactForm({...factForm, actual_end: e.target.value ? new Date(e.target.value).toISOString() : undefined})}
+                                slotProps={{inputLabel: {shrink: true}}}
                             />
 
                             <TextField
@@ -819,8 +910,8 @@ const ShiftPage: React.FC = () => {
                                 type="datetime-local"
                                 fullWidth
                                 value={factForm.material_load_at?.slice(0, 16) || ''}
-                                onChange={(e) => setFactForm({ ...factForm, material_load_at: e.target.value ? new Date(e.target.value).toISOString() : undefined })}
-                                slotProps={{ inputLabel: { shrink: true } }}
+                                onChange={(e) => setFactForm({...factForm, material_load_at: e.target.value ? new Date(e.target.value).toISOString() : undefined})}
+                                slotProps={{inputLabel: {shrink: true}}}
                             />
 
                             <TextField
@@ -828,7 +919,7 @@ const ShiftPage: React.FC = () => {
                                 type="number"
                                 fullWidth
                                 value={factForm.actual_qty || ''}
-                                onChange={(e) => setFactForm({ ...factForm, actual_qty: e.target.value ? Number(e.target.value) : undefined })}
+                                onChange={(e) => setFactForm({...factForm, actual_qty: e.target.value ? Number(e.target.value) : undefined})}
                             />
 
                             <FormControl fullWidth variant="outlined">
@@ -837,7 +928,7 @@ const ShiftPage: React.FC = () => {
                                     value={factForm.status || 'PLANNED'}
                                     label="Статус"
                                     variant="outlined"
-                                    onChange={(e) => setFactForm({ ...factForm, status: e.target.value as ShiftTaskStatus })}
+                                    onChange={(e) => setFactForm({...factForm, status: e.target.value as ShiftTaskStatus})}
                                 >
                                     <MenuItem value="PLANNED">Запланировано</MenuItem>
                                     <MenuItem value="IN_PROGRESS">В работе</MenuItem>
@@ -850,21 +941,21 @@ const ShiftPage: React.FC = () => {
                 </DialogContent>
                 <DialogActions>
                     <Button onClick={() => setEditDialogOpen(false)}>Отмена</Button>
-                    <Button onClick={handleSaveFact} variant="contained" startIcon={<SaveIcon />}>
+                    <Button onClick={handleSaveFact} variant="contained" startIcon={<SaveIcon/>}>
                         Сохранить
                     </Button>
                 </DialogActions>
             </Dialog>
 
-            {/* ========== Итерация 5: Диалог блокировки ========== */}
+            {/* Диалог блокировки */}
             <Dialog open={blockDialogOpen} onClose={() => setBlockDialogOpen(false)} maxWidth="sm" fullWidth>
-                <DialogTitle sx={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <LockIcon color="error" />
+                <DialogTitle sx={{fontWeight: 600, display: 'flex', alignItems: 'center', gap: 1}}>
+                    <LockIcon color="error"/>
                     Заблокировать партию лабораторией
                 </DialogTitle>
                 <DialogContent>
                     {blockingTask && (
-                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
+                        <Box sx={{display: 'flex', flexDirection: 'column', gap: 2, mt: 1}}>
                             <Alert severity="warning">
                                 Партия <b>{blockingTask.batch_name || blockingTask.batch_id?.substring(0, 8)}</b>{' '}
                                 ({blockingTask.product_name}) не будет участвовать в дальнейшем
@@ -900,22 +991,22 @@ const ShiftPage: React.FC = () => {
                         variant="contained"
                         color="error"
                         disabled={blockBusy || blockReason.trim().length < 3}
-                        startIcon={<LockIcon />}
+                        startIcon={<LockIcon/>}
                     >
                         {blockBusy ? 'Блокировка...' : 'Заблокировать'}
                     </Button>
                 </DialogActions>
             </Dialog>
 
-            {/* ========== Итерация 5: Диалог разблокировки ========== */}
+            {/* Диалог разблокировки */}
             <Dialog open={unblockDialogOpen} onClose={() => setUnblockDialogOpen(false)} maxWidth="sm" fullWidth>
-                <DialogTitle sx={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <LockOpenIcon color="success" />
+                <DialogTitle sx={{fontWeight: 600, display: 'flex', alignItems: 'center', gap: 1}}>
+                    <LockOpenIcon color="success"/>
                     Разблокировать партию
                 </DialogTitle>
                 <DialogContent>
                     {unblockingTask && (
-                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
+                        <Box sx={{display: 'flex', flexDirection: 'column', gap: 2, mt: 1}}>
                             <Alert severity="info">
                                 Партия <b>{unblockingTask.batch_name || unblockingTask.batch_id?.substring(0, 8)}</b>{' '}
                                 будет снова участвовать в планировании.
@@ -944,7 +1035,7 @@ const ShiftPage: React.FC = () => {
                         onClick={handleDoUnblock}
                         variant="contained"
                         color="success"
-                        startIcon={<LockOpenIcon />}
+                        startIcon={<LockOpenIcon/>}
                     >
                         Разблокировать
                     </Button>

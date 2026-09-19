@@ -347,7 +347,11 @@ export const shiftApi = {
         return response.data;
     },
 
-    getByDate: async (shiftDate: string): Promise<import('../types').Shift> => {
+    /**
+     * Итерация 11: возвращает МАССИВ смен за день
+     * (для режимов 3x8 и 2x12 в день несколько смен).
+     */
+    getByDate: async (shiftDate: string): Promise<import('../types').Shift[]> => {
         const response = await api.get(`/api/v1/shift/by-date/${shiftDate}`);
         return response.data;
     },
@@ -580,6 +584,55 @@ export const czApi = {
     /** Удаление скана (только ADMIN) */
     deleteScan: async (scanId: string): Promise<import('../types').CzActionResponse> => {
         const response = await api.delete(`/api/v1/cz/scan/${scanId}`);
+        return response.data;
+    },
+};
+
+// ==========================================
+// Settings API (Итерация 11)
+// ==========================================
+export const settingsApi = {
+    /** Полный реестр настроек с метаданными */
+    getSchema: async (): Promise<import('../types').SettingsSchema> => {
+        const response = await api.get('/api/v1/settings/schema');
+        return response.data;
+    },
+
+    /** Список категорий */
+    getCategories: async (): Promise<import('../types').SettingsCategory[]> => {
+        const response = await api.get('/api/v1/settings/categories');
+        return response.data;
+    },
+
+    /** Все настройки организации */
+    getAll: async (): Promise<Record<string, any>> => {
+        const response = await api.get('/api/v1/settings/');
+        return response.data;
+    },
+
+    /** Настройки одной категории */
+    getCategory: async (category: string): Promise<Record<string, any>> => {
+        const response = await api.get(`/api/v1/settings/category/${category}`);
+        return response.data;
+    },
+
+    /** Массовое обновление */
+    updateBulk: async (settings: Record<string, any>): Promise<any> => {
+        const response = await api.put('/api/v1/settings/', { settings });
+        return response.data;
+    },
+
+    /** Обновление одной настройки */
+    updateSingle: async (key: string, value: any): Promise<any> => {
+        const response = await api.put(`/api/v1/settings/${key}`, { value });
+        return response.data;
+    },
+
+    /** Смена режима смен (ADMIN) */
+    changeShiftMode: async (shiftMode: string): Promise<any> => {
+        const response = await api.post('/api/v1/settings/shift-mode', {
+            shift_mode: shiftMode,
+        });
         return response.data;
     },
 };

@@ -1,12 +1,14 @@
 ﻿# backend/app/api/v1/schedule.py
-from fastapi import APIRouter, HTTPException, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
+from datetime import datetime
 from typing import List, Dict, Any
 from uuid import UUID, uuid4
-from datetime import datetime
-from .models import ScheduleBuildRequest, ScheduleBuildResponse
+
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.auth.dependencies import get_current_org_id, get_db_session
+from .models import ScheduleBuildRequest, ScheduleBuildResponse
 
 router = APIRouter(prefix="/api/v1/schedule", tags=["Планирование"])
 
@@ -23,9 +25,12 @@ async def build_schedule(
         from app.scheduler.core import ProductionScheduler
         from app.scheduler.saver import ScheduleSaver
 
-        # Передаём org_id в планировщик
+        # ==========================================
+        # Итерация 10 (fix #13): передаём timeout_seconds из запроса.
+        # ==========================================
         scheduler = ProductionScheduler(
             horizon_hours=request.horizon_hours,
+            timeout_seconds=request.timeout_seconds,
             org_id=org_id,
         )
         result = await scheduler.build_schedule()
@@ -33,7 +38,6 @@ async def build_schedule(
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
 
-        # Передаём org_id в сохранитель
         saver = ScheduleSaver(org_id=org_id)
         save_stats = await saver.save_schedule(result)
 
@@ -61,7 +65,10 @@ async def build_schedule(
 @router.get("/last-result")
 async def get_last_result():
     if not _last_schedule_result:
-        raise HTTPException(status_code=404, detail="Нет данных. Сначала запустите /build")
+        raise HTTPException(
+            status_code=404,
+            detail="Нет данных. Сначала запустите /build",
+        )
     return {
         "status": "success",
         "total_tasks": len(_last_schedule_result.get("tasks", [])),
@@ -75,7 +82,7 @@ async def get_schedule_versions(
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """Получить список всех версий планов"""
+    """Получить список всех версий планов."""
     result = await db.execute(
         text("""
             SELECT id, name, version_type, is_active, created_at, comment
@@ -104,19 +111,19 @@ async def create_schedule_version(
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """
-    Создать новую версию плана (пустую, без задач).
-    """
+    """Создать новую версию плана (пустую, без задач)."""
     version_id = uuid4()
     name = request.get("name", "Без названия")
     version_type = request.get("version_type", "MONTHLY")
     comment = request.get("comment", "")
 
-    # Создаем версию плана
     await db.execute(
         text("""
-            INSERT INTO schedule_version (id, organization_id, name, version_type, is_active, created_at, comment)
-            VALUES (:id, :org_id, :name, :version_type, FALSE, NOW(), :comment)
+            INSERT INTO schedule_version
+                (id, organization_id, name, version_type, is_active,
+                 created_at, comment)
+            VALUES
+                (:id, :org_id, :name, :version_type, FALSE, NOW(), :comment)
         """),
         {
             "id": version_id,
@@ -143,9 +150,12 @@ async def save_current_schedule(
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """Сохранить текущий рассчитанный план как версию"""
+    """Сохранить текущий рассчитанный план как версию."""
     if not _last_schedule_result:
-        raise HTTPException(status_code=400, detail="Нет рассчитанного плана для сохранения")
+        raise HTTPException(
+            status_code=400,
+            detail="Нет рассчитанного плана для сохранения",
+        )
 
     if "version_id" in _last_schedule_result and _last_schedule_result["version_id"]:
         return {
@@ -174,9 +184,12 @@ async def delete_schedule_version(
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """Удалить версию плана и все связанные данные (CASCADE)"""
+    """Удалить версию плана и все связанные данные (CASCADE)."""
     result = await db.execute(
-        text("DELETE FROM schedule_version WHERE id = :version_id AND organization_id = :org_id"),
+        text(
+            "DELETE FROM schedule_version "
+            "WHERE id = :version_id AND organization_id = :org_id"
+        ),
         {"version_id": version_id, "org_id": org_id},
     )
     if result.rowcount == 0:

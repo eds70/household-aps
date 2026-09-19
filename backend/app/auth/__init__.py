@@ -1,20 +1,17 @@
 # backend/app/auth/__init__.py
 """
 Пакет auth — модуль авторизации и аутентификации.
-
-Содержит:
-- security.py: утилиты для хеширования паролей и работы с JWT
-- models.py: Pydantic-модели для запросов/ответов
-- dependencies.py: FastAPI dependencies для извлечения данных из токена
 """
 
-from .security import (
-    verify_password,
-    get_password_hash,
-    create_access_token,
-    decode_token,
+from .dependencies import (
+    get_current_user,
+    get_current_org_id,
+    get_current_user_id,
+    require_admin,
+    require_role,
+    get_db_session,
+    get_optional_user,
 )
-
 from .models import (
     LoginRequest,
     RegisterRequest,
@@ -29,19 +26,22 @@ from .models import (
     AuthError,
     ForbiddenError,
 )
-
-from .dependencies import (
-    get_current_user,
-    get_current_org_id,
-    get_current_user_id,
-    require_admin,
-    require_role,
-    get_db_session,
-    get_optional_user,
+from .security import (
+    # Async (для FastAPI-эндпоинтов)
+    verify_password_async,
+    get_password_hash_async,
+    # Синхронные (для скриптов/тестов)
+    verify_password,
+    get_password_hash,
+    create_access_token,
+    decode_token,
 )
 
 __all__ = [
-    # Security utilities
+    # Security utilities (async)
+    "verify_password_async",
+    "get_password_hash_async",
+    # Security utilities (sync)
     "verify_password",
     "get_password_hash",
     "create_access_token",

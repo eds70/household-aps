@@ -19,6 +19,7 @@ from app.api.v1.products import router as products_router
 from app.api.v1.recipes import router as recipes_router
 from app.api.v1.reschedule import router as reschedule_router
 from app.api.v1.schedule import router as schedule_router
+from app.api.v1.settings import router as settings_router
 from app.api.v1.shift import router as shift_router
 from app.core.config import settings
 
@@ -40,6 +41,7 @@ tags_metadata = [
     {"name": "Персонал"},           # Итерация 6
     {"name": "Честный Знак"},       # Итерация 8
     {"name": "Система"},
+    {"name": "Настройки"},
 ]
 
 app = FastAPI(
@@ -76,6 +78,7 @@ app.include_router(reschedule_router)
 app.include_router(lab_router)
 app.include_router(personnel_router)   # Итерация 6
 app.include_router(cz_router)          # Итерация 8
+app.include_router(settings_router)
 
 
 @app.get("/health", tags=["Система"])

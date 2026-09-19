@@ -1,5 +1,5 @@
 // src/pages/SchedulePage.tsx
-import React, {useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useState} from 'react';
 import {type PlanVersion, usePlan} from '../context/PlainContext';
 import {AgGridReact} from 'ag-grid-react';
 import type {ColDef, GridReadyEvent} from 'ag-grid-community';
@@ -41,12 +41,13 @@ import {
     Info as InfoIcon,
     PlayArrow as PlayIcon,
     Refresh as RefreshIcon,
+    Save as SaveIcon,
     Visibility as ViewIcon,
     Warning as WarningIcon,
 } from '@mui/icons-material';
 import {Allotment} from 'allotment';
 import 'allotment/dist/style.css';
-import {advisorApi, rescheduleApi, scheduleApi} from '../services/api';
+import {advisorApi, rescheduleApi, scheduleApi, settingsApi} from '../services/api';
 import type {AdvisorResponse, AdvisorSeverity, RescheduleReason, RescheduleResponse,} from '../types';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
@@ -75,11 +76,21 @@ const SEVERITY_ICONS: Record<AdvisorSeverity, React.ReactNode> = {
     INFO: <InfoIcon fontSize="small" />,
 };
 
+// ==========================================
+// Дефолты (используются, если настройки ещё не созданы в БД)
+// ==========================================
+const DEFAULT_HORIZON_HOURS = 720;
+const DEFAULT_TIMEOUT_SECONDS = 600;
+
 const SchedulePage: React.FC = () => {
     const { versions, setPlan, loadVersions, currentVersionId } = usePlan();
 
-    const [horizonHours, setHorizonHours] = useState(2160);
-    const [solverTimeout, setSolverTimeout] = useState(120);
+    // Параметры расчёта — читаются из app_settings
+    const [horizonHours, setHorizonHours] = useState<number>(DEFAULT_HORIZON_HOURS);
+    const [solverTimeout, setSolverTimeout] = useState<number>(DEFAULT_TIMEOUT_SECONDS);
+    const [settingsLoaded, setSettingsLoaded] = useState(false);
+    const [settingsSaving, setSettingsSaving] = useState(false);
+
     const [loading, setLoading] = useState(false);
     const [result, setResult] = useState<any>(null);
     const [error, setError] = useState<string | null>(null);
@@ -112,9 +123,55 @@ const SchedulePage: React.FC = () => {
     const [rescheduling, setRescheduling] = useState(false);
     const [rescheduleResult, setRescheduleResult] = useState<RescheduleResponse | null>(null);
 
+    // ==========================================
+    // Шаг 6: Загрузка настроек планирования из app_settings
+    // ==========================================
+    const loadPlanningSettings = useCallback(async () => {
+        try {
+            const settings = await settingsApi.getCategory('planning');
+            if (typeof settings.horizon_hours === 'number') {
+                setHorizonHours(settings.horizon_hours);
+            }
+            if (typeof settings.timeout_seconds === 'number') {
+                setSolverTimeout(settings.timeout_seconds);
+            }
+        } catch (err: any) {
+            // Если настройки ещё не созданы — используем дефолты
+            console.warn('[SchedulePage] Не удалось загрузить настройки planning, используются дефолты:', err);
+        } finally {
+            setSettingsLoaded(true);
+        }
+    }, []);
+
+    // ==========================================
+    // Шаг 6: Сохранение настроек в app_settings
+    // ==========================================
+    const savePlanningSettings = useCallback(async (
+        horizon: number,
+        timeout: number,
+    ): Promise<boolean> => {
+        setSettingsSaving(true);
+        try {
+            await settingsApi.updateBulk({
+                horizon_hours: horizon,
+                timeout_seconds: timeout,
+            });
+            return true;
+        } catch (err: any) {
+            const detail = err.response?.data?.detail;
+            const msg = typeof detail === 'string' ? detail : 'Ошибка сохранения настроек';
+            setError(msg);
+            return false;
+        } finally {
+            setSettingsSaving(false);
+        }
+    }, []);
+
     useEffect(() => {
         loadVersions();
-    }, []);
+        loadPlanningSettings();
+        loadAdvisor();
+    }, [loadVersions, loadPlanningSettings]);
 
     const loadAdvisor = async () => {
         setAdvisorLoading(true);
@@ -131,15 +188,15 @@ const SchedulePage: React.FC = () => {
         }
     };
 
-    useEffect(() => {
-        loadAdvisor();
-    }, []);
-
     const handleBuildSchedule = async () => {
         setLoading(true);
         setError(null);
         setResult(null);
         try {
+            // Шаг 6: сохраняем текущие параметры в app_settings ПЕРЕД расчётом.
+            // Так пользователь не забудет их сохранить.
+            await savePlanningSettings(horizonHours, solverTimeout);
+
             const data = await scheduleApi.build({
                 horizon_hours: horizonHours,
                 timeout_seconds: solverTimeout,
@@ -157,6 +214,14 @@ const SchedulePage: React.FC = () => {
             setError(errorMsg);
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleSaveSettings = async () => {
+        const ok = await savePlanningSettings(horizonHours, solverTimeout);
+        if (ok) {
+            // Небольшая визуальная обратная связь
+            setError(null);
         }
     };
 
@@ -467,9 +532,31 @@ const SchedulePage: React.FC = () => {
             {/* Параметры расчёта */}
             <Card sx={{ mb: 2, flexShrink: 0 }}>
                 <CardContent sx={{ py: 2, '&:last-child': { pb: 2 } }}>
-                    <Typography variant="h6" gutterBottom sx={{ fontWeight: 600, fontSize: '1rem' }}>
-                        Параметры расчёта
-                    </Typography>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                        <Typography variant="h6" sx={{ fontWeight: 600, fontSize: '1rem' }}>
+                            Параметры расчёта
+                        </Typography>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                            {settingsLoaded && (
+                                <Chip
+                                    label="Из настроек"
+                                    size="small"
+                                    color="info"
+                                    variant="outlined"
+                                />
+                            )}
+                            <Button
+                                size="small"
+                                variant="outlined"
+                                startIcon={<SaveIcon />}
+                                onClick={handleSaveSettings}
+                                disabled={settingsSaving}
+                                sx={{ textTransform: 'none' }}
+                            >
+                                {settingsSaving ? 'Сохранение...' : 'Сохранить настройки'}
+                            </Button>
+                        </Box>
+                    </Box>
                     <Box sx={{ display: 'flex', gap: 2, mb: 1.5, flexWrap: 'wrap', alignItems: 'center' }}>
                         <TextField
                             label="Горизонт (часы)"
@@ -478,6 +565,7 @@ const SchedulePage: React.FC = () => {
                             onChange={(e) => setHorizonHours(Number(e.target.value))}
                             size="small"
                             sx={{ width: 160 }}
+                            helperText="Сохраняется в app_settings"
                         />
                         <TextField
                             label="Таймаут solver (сек)"
@@ -486,6 +574,7 @@ const SchedulePage: React.FC = () => {
                             onChange={(e) => setSolverTimeout(Number(e.target.value))}
                             size="small"
                             sx={{ width: 180 }}
+                            helperText="Сохраняется в app_settings"
                         />
                         <Button
                             variant="contained"
@@ -497,6 +586,9 @@ const SchedulePage: React.FC = () => {
                             {loading ? 'Расчёт...' : 'Построить план'}
                         </Button>
                     </Box>
+                    <Typography variant="caption" color="text.secondary">
+                        💡 Параметры автоматически сохраняются в app_settings при построении плана
+                    </Typography>
                     {result && (
                         <Alert severity="success" sx={{ mt: 1 }}>
                             Расчёт завершён: {result.total_tasks} задач, Makespan: {result.makespan_hours.toFixed(1)} ч

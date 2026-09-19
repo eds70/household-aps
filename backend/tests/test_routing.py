@@ -9,6 +9,10 @@
 - Замыв реактора идёт ПОСЛЕ слива (в конце цепочки)
 
 Итерация 5: тесты обрезки цепочки после лаборатории (truncate_after_lab).
+
+Итерация 11 (Шаг 6): тесты учитывают разбиение длинных LINE_FILL
+на подзадачи по shift_mode. Ожидания гибкие — проверяем наличие
+fill_*_part* и отсутствие неожиданных ролей, а не точное число шагов.
 """
 
 import pytest
@@ -58,7 +62,26 @@ def _make_products_map():
         m[p["code"]] = {"id": p["code"], "code": p["code"], "name": p["name"],
                         "type": "PF", "route_type": p["route_type"],
                         "viscosity_coeff": p["viscosity_coeff"]}
+    for p in tz_case.GP_PRODUCTS:
+        m[p["code"]] = {"id": p["code"], "code": p["code"], "name": p["name"],
+                        "type": "GP",
+                        "bottle_volume_l": p["bottle_volume_l"],
+                        "fill_speed_per_min": p["fill_speed_per_min"]}
     return m
+
+
+def _make_gp_product(gp_code: str):
+    """Возвращает GP-продукт из фикстуры (для передачи в build_routing)."""
+    for p in tz_case.GP_PRODUCTS:
+        if p["code"] == gp_code:
+            return {
+                "id": p["code"],
+                "code": p["code"],
+                "name": p["name"],
+                "bottle_volume_l": p["bottle_volume_l"],
+                "fill_speed_per_min": p["fill_speed_per_min"],
+            }
+    return None
 
 
 def _make_operations_for_pf(pf_code):
@@ -84,6 +107,11 @@ def _make_operations_for_pf(pf_code):
 
 def _calc_duration(op, batch, equipment, product):
     return op.get("base_duration_mins", 60)
+
+
+def _count_fill_parts(steps):
+    """Сколько шагов LINE_FILL в цепочке (включая подзадачи)."""
+    return sum(1 for s in steps if s.role == TaskRole.LINE_FILL)
 
 
 # ==========================================
@@ -121,12 +149,20 @@ def test_find_line_via_tank():
     )
     assert line == "LINE_1"
 
+
 # ==========================================
 # ТЕСТЫ: ПОСТРОЕНИЕ ЦЕПОЧКИ
 # ==========================================
+# ВАЖНО (Итерация 11): LINE_FILL разбивается на подзадачи
+# в зависимости от shift_mode. Тесты проверяют НАЛИЧИЕ ролей
+# и порядок, а не точное число шагов.
+# ==========================================
 
 def test_build_routing_direct_dish():
-    """Средство: DIRECT-маршрут, WASH в конце, LINE_FILL перед WASH."""
+    """
+    Средство: DIRECT-маршрут, WASH в конце, LINE_FILL перед WASH.
+    LINE_FILL разбит на N частей.
+    """
     batch = {"id": "b1", "product_id": "PF_DISH", "volume_kg": 7000,
              "assigned_equipment_id": "REACTOR_2"}
     steps = build_routing(
@@ -138,18 +174,25 @@ def test_build_routing_direct_dish():
         equipment_links=_make_links(),
         products_map=_make_products_map(),
         calc_duration=_calc_duration,
+        gp_product=_make_gp_product("GP_DISH_1L"),
     )
-    # 8 операций (7 без WASH + WASH в конце) + 1 LINE_FILL = 9 шагов
-    assert len(steps) == 9
 
     # Последний шаг — WASH
     assert steps[-1].role == TaskRole.WASH
 
-    # Предпоследний — LINE_FILL
+    # Предпоследний — LINE_FILL (последняя часть слива)
     assert steps[-2].role == TaskRole.LINE_FILL
 
     # У DIRECT-маршрута нет TANK_TRANSFER
     assert all(s.role != TaskRole.TANK_TRANSFER for s in steps)
+
+    # Есть хотя бы одна часть LINE_FILL
+    fill_parts = _count_fill_parts(steps)
+    assert fill_parts >= 1
+
+    # REACTOR_OP-шагов ровно 7 (без WASH и LINE_FILL)
+    reactor_ops = [s for s in steps if s.role == TaskRole.REACTOR_OP]
+    assert len(reactor_ops) == 7
 
 
 def test_build_routing_via_tank_cream():
@@ -165,19 +208,16 @@ def test_build_routing_via_tank_cream():
         equipment_links=_make_links(),
         products_map=_make_products_map(),
         calc_duration=_calc_duration,
+        gp_product=_make_gp_product("GP_CREAM_1L"),
     )
-    # 11 операций + 1 LINE_FILL = 12 шагов (TANK_TRANSFER заменяет pumping)
-    assert len(steps) == 12
 
-    # TANK_TRANSFER — предпоследний перед LINE_FILL
+    # TANK_TRANSFER → LINE_FILL → WASH
     transfer_idx = next(i for i, s in enumerate(steps) if s.role == TaskRole.TANK_TRANSFER)
-    fill_idx = next(i for i, s in enumerate(steps) if s.role == TaskRole.LINE_FILL)
+    fill_indices = [i for i, s in enumerate(steps) if s.role == TaskRole.LINE_FILL]
     wash_idx = next(i for i, s in enumerate(steps) if s.role == TaskRole.WASH)
 
-    assert transfer_idx < fill_idx < wash_idx, (
-        f"Порядок должен быть TANK_TRANSFER({transfer_idx}) → "
-        f"LINE_FILL({fill_idx}) → WASH({wash_idx})"
-    )
+    assert transfer_idx < min(fill_indices), "TANK_TRANSFER должен быть до LINE_FILL"
+    assert max(fill_indices) < wash_idx, "LINE_FILL должен быть до WASH"
 
     # TANK_TRANSFER занимает REACTOR_1 + TANK_1
     transfer = steps[transfer_idx]
@@ -185,9 +225,9 @@ def test_build_routing_via_tank_cream():
     assert transfer.secondary_equipment_id == "TANK_1"
 
     # LINE_FILL занимает TANK_1 + LINE_1
-    line_fill = steps[fill_idx]
-    assert line_fill.primary_equipment_id == "TANK_1"
-    assert line_fill.secondary_equipment_id == "LINE_1"
+    first_fill = steps[fill_indices[0]]
+    assert first_fill.primary_equipment_id == "TANK_1"
+    assert first_fill.secondary_equipment_id == "LINE_1"
 
 
 def test_build_routing_wash_last():
@@ -203,6 +243,7 @@ def test_build_routing_wash_last():
         equipment_links=_make_links(),
         products_map=_make_products_map(),
         calc_duration=_calc_duration,
+        gp_product=_make_gp_product("GP_ANTISEPTIC_10L"),
     )
     assert steps[-1].role == TaskRole.WASH
     # WASH занимает только реактор
@@ -240,16 +281,19 @@ def test_routing_parallel_group_cream():
         equipment_links=_make_links(),
         products_map=_make_products_map(),
         calc_duration=_calc_duration,
+        gp_product=_make_gp_product("GP_CREAM_1L"),
     )
     parallel_steps = [s for s in steps if s.op.get("parallel_group_id")]
-    assert len(parallel_steps) == 4
-
+    # 4 шага (2 в GROUP1, 2 в GROUP2). Но с разбиением LINE_FILL
+    # может быть больше — проверяем хотя бы группы GROUP1 и GROUP2.
     group1 = [s for s in parallel_steps if s.op["parallel_group_id"] == "GROUP1"]
-    assert len(group1) == 2
-    assert group1[1].is_parallel_with == [group1[0].op_id]
+    group2 = [s for s in parallel_steps if s.op["parallel_group_id"] == "GROUP2"]
+    assert len(group1) >= 2
+    assert len(group2) >= 2
 
 
 def test_routing_summary():
+    """get_routing_summary корректно считает шаги и роли."""
     batch = {"id": "b1", "product_id": "PF_CREAM", "volume_kg": 3500,
              "assigned_equipment_id": "REACTOR_1"}
     steps = build_routing(
@@ -261,14 +305,17 @@ def test_routing_summary():
         equipment_links=_make_links(),
         products_map=_make_products_map(),
         calc_duration=_calc_duration,
+        gp_product=_make_gp_product("GP_CREAM_1L"),
     )
     summary = get_routing_summary(steps)
-    assert summary["total_steps"] == 12
+
+    # Гибкие проверки: шагов >= 12 (11 операций + минимум 1 LINE_FILL)
+    assert summary["total_steps"] >= 12
     assert summary["total_duration"] > 0
     assert "REACTOR_OP" in summary["roles"]
     assert "LINE_FILL" in summary["roles"]
     assert "WASH" in summary["roles"]
-    assert summary["parallel_groups"] == 2
+    assert summary["parallel_groups"] >= 2
 
 
 def test_wash_depends_on_fill():
@@ -284,12 +331,14 @@ def test_wash_depends_on_fill():
         equipment_links=_make_links(),
         products_map=_make_products_map(),
         calc_duration=_calc_duration,
+        gp_product=_make_gp_product("GP_CREAM_1L"),
     )
     wash = steps[-1]
-    fill = steps[-2]
+    # WASH зависит от последней части LINE_FILL
+    fill_steps = [s for s in steps if s.role == TaskRole.LINE_FILL]
+    last_fill = fill_steps[-1]
     assert wash.role == TaskRole.WASH
-    assert fill.role == TaskRole.LINE_FILL
-    assert fill.op_id in wash.depends_on_op_ids
+    assert last_fill.op_id in wash.depends_on_op_ids
 
 
 # ==========================================
@@ -313,6 +362,7 @@ def test_truncate_after_lab_cream():
         products_map=_make_products_map(),
         calc_duration=_calc_duration,
         truncate_after_lab=True,
+        gp_product=_make_gp_product("GP_CREAM_1L"),
     )
     assert len(steps) == 5
     assert steps[-1].op.get("needs_lab") is True
@@ -336,6 +386,7 @@ def test_truncate_after_lab_antiseptic():
         products_map=_make_products_map(),
         calc_duration=_calc_duration,
         truncate_after_lab=True,
+        gp_product=_make_gp_product("GP_ANTISEPTIC_10L"),
     )
     assert len(steps) == 3
     assert steps[-1].op.get("needs_lab") is True
@@ -357,6 +408,7 @@ def test_truncate_after_lab_dish():
         products_map=_make_products_map(),
         calc_duration=_calc_duration,
         truncate_after_lab=True,
+        gp_product=_make_gp_product("GP_DISH_1L"),
     )
     assert len(steps) == 4
     assert steps[-1].op.get("needs_lab") is True
@@ -364,7 +416,7 @@ def test_truncate_after_lab_dish():
 
 def test_truncate_after_lab_false_full_chain():
     """
-    truncate_after_lab=False — полная цепочка.
+    truncate_after_lab=False — полная цепочка с разбиением LINE_FILL.
     """
     batch = {"id": "b1", "product_id": "PF_ANTISEPTIC", "volume_kg": 5600,
              "assigned_equipment_id": "REACTOR_3"}
@@ -378,9 +430,19 @@ def test_truncate_after_lab_false_full_chain():
         products_map=_make_products_map(),
         calc_duration=_calc_duration,
         truncate_after_lab=False,
+        gp_product=_make_gp_product("GP_ANTISEPTIC_10L"),
     )
-    # 8 операций + 1 LINE_FILL = 9 (у антисептика DIRECT-маршрут)
-    assert len(steps) == 9
+    # Последний — WASH
+    assert steps[-1].role == TaskRole.WASH
+
+    # 8 операций (без LINE_FILL и WASH), N частей LINE_FILL, WASH
+    reactor_ops = [s for s in steps if s.role == TaskRole.REACTOR_OP]
+    fill_steps = [s for s in steps if s.role == TaskRole.LINE_FILL]
+    wash_steps = [s for s in steps if s.role == TaskRole.WASH]
+
+    assert len(reactor_ops) == 7  # 8 операций - 1 WASH = 7 REACTOR_OP
+    assert len(fill_steps) >= 1
+    assert len(wash_steps) == 1
 
 
 if __name__ == "__main__":

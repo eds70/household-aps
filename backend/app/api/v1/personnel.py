@@ -8,12 +8,10 @@ API персонала (Итерация 6).
   PUT  /api/v1/personnel/pools/{id}    — обновить capacity / name
   GET  /api/v1/personnel/load          — текущая загрузка всех пулов
 
-Итерация 6 (доработка): _compute_pool_load читает operator_pool
-напрямую из scheduled_task (а не через JOIN на operation_template).
-
 Итерация 9: расширен PERSONNEL_POOL_TYPES — добавлены COOLING_ZONE
-и BOILER. Эти пулы тоже являются ресурсами с ограниченной capacity,
-и их полезно видеть на странице «Персонал» вместе с остальными.
+и BOILER.
+
+Итерация 11 (Шаг 5): чтение флага enable_operator_pools через settings_reader.
 """
 
 import logging
@@ -29,8 +27,8 @@ from app.auth.dependencies import (
     get_current_user,
     get_db_session,
 )
-from app.scheduler.feature_flags import FeatureFlags
 from app.scheduler.logging_config import setup_scheduler_logging, log_with_context
+from app.scheduler.settings_reader import read_feature_flags
 from .personnel_models import (
     PersonnelPoolResponse,
     PersonnelPoolUpdate,
@@ -45,11 +43,6 @@ logger = setup_scheduler_logging(level=logging.INFO)
 # КОНСТАНТЫ
 # ==========================================
 
-# Итерация 9: расширен список типов пулов.
-# Раньше отдавались только "люди" (операторы + лаборанты).
-# Теперь включаем и технические пулы (зона охлаждения, бойлер) —
-# они тоже являются ресурсами с ограниченной capacity и
-# отображаются на странице «Персонал» вместе с остальными.
 PERSONNEL_POOL_TYPES = {
     "REACTOR_OPERATOR",
     "LINE_OPERATOR",
@@ -67,22 +60,12 @@ EDIT_ALLOWED_ROLES = {"ADMIN", "PLANNER"}
 # ==========================================
 
 async def _check_feature_flag(db: AsyncSession, org_id: UUID) -> None:
-    """Проверяет, включён ли enable_operator_pools."""
-    result = await db.execute(
-        text("""
-            SELECT setting_value FROM organization_settings
-            WHERE organization_id = :org_id AND setting_key = 'enable_operator_pools'
-        """),
-        {"org_id": org_id},
-    )
-    row = result.fetchone()
-    if not row:
-        raise HTTPException(
-            status_code=400,
-            detail="Feature enable_operator_pools не настроен",
-        )
+    """
+    Проверяет, включён ли enable_operator_pools.
 
-    flags = FeatureFlags({"enable_operator_pools": row.setting_value})
+    Итерация 11 (Шаг 5): читает из app_settings через settings_reader.
+    """
+    flags = await read_feature_flags(db, org_id)
     if not flags.enable_operator_pools:
         raise HTTPException(
             status_code=400,
@@ -141,15 +124,9 @@ async def _compute_pool_load(
     """
     Считает загрузку пула в указанной версии плана.
 
-    Итерация 6 (доработка):
-      - Читает operator_pool напрямую из scheduled_task.
-      - Это позволяет учитывать fill_* операции (слив),
-        которые создаются динамически в routing.py и не имеют
-        шаблона в operation_template.
-
     Возвращает: (scheduled_count, peak_concurrent).
 
-    Алгоритм peak_concurrent:
+    Алгоритм peak_concurrent — метод «заметающей прямой»:
       - Собираем все интервалы [start, end).
       - Идём по событиям: start = +1, end = -1.
       - Сортируем события: по времени, при равенстве — сначала -1.
@@ -178,16 +155,11 @@ async def _compute_pool_load(
     if scheduled_count == 0:
         return 0, 0
 
-    # Метод "заметающей прямой" для peak_concurrent
     events = []
     for row in rows:
         events.append((row.planned_start, +1))
         events.append((row.planned_end, -1))
 
-    # Для полуоткрытых интервалов [start, end) при одинаковом времени
-    # сначала обрабатываем END (-1), потом START (+1).
-    # Тогда задача A[10:00, 11:00) и B[11:00, 12:00) не считаются
-    # пересекающимися в 11:00.
     events.sort(key=lambda e: (e[0], e[1]))
 
     current = 0
@@ -201,10 +173,8 @@ async def _compute_pool_load(
 
 
 # ==========================================
-# SQL ORDER BY для пулов (единый для list_pools и get_load)
+# SQL ORDER BY для пулов
 # ==========================================
-# Итерация 9: порядок фиксированный и предсказуемый.
-# COOLING_ZONE и BOILER идут после "людей" — так удобнее в UI.
 
 _POOL_ORDER_BY = """
     CASE type
@@ -235,10 +205,8 @@ async def list_pools(
     """Возвращает список пулов операторов с загрузкой в текущем плане."""
     await _check_feature_flag(db, org_id)
 
-    # Определяем версию
     resolved_version_id = await _resolve_version_id(db, org_id, version_id)
 
-    # Название версии
     version_name = None
     if resolved_version_id:
         v_result = await db.execute(
@@ -248,7 +216,6 @@ async def list_pools(
         v_row = v_result.fetchone()
         version_name = v_row.name if v_row else None
 
-    # Загружаем пулы
     result = await db.execute(
         text(f"""
             SELECT id, organization_id, name, type, capacity, comment, updated_at
@@ -363,7 +330,6 @@ async def update_pool(
     """
     await _check_feature_flag(db, org_id)
 
-    # Проверка роли
     role = current_user.get("role")
     if role not in EDIT_ALLOWED_ROLES:
         raise HTTPException(
@@ -371,7 +337,6 @@ async def update_pool(
             detail=f"Доступ запрещён. Разрешённые роли: {sorted(EDIT_ALLOWED_ROLES)}",
         )
 
-    # Проверяем, что пул существует
     check = await db.execute(
         text("""
             SELECT id, type FROM resource_pool
@@ -382,14 +347,12 @@ async def update_pool(
     if not check.fetchone():
         raise HTTPException(status_code=404, detail="Пул не найден")
 
-    # Валидация capacity
     if payload.capacity is not None and payload.capacity < 0:
         raise HTTPException(
             status_code=400,
             detail="capacity не может быть отрицательным",
         )
 
-    # Собираем UPDATE
     update_fields = []
     params = {"pool_id": pool_id, "org_id": org_id}
 
@@ -406,7 +369,6 @@ async def update_pool(
     if not update_fields:
         raise HTTPException(status_code=400, detail="Нет данных для обновления")
 
-    # Обновляем + updated_at
     await db.execute(
         text(f"""
             UPDATE resource_pool
@@ -423,7 +385,6 @@ async def update_pool(
         stage="personnel_update", org_id=str(org_id),
     )
 
-    # Возвращаем актуальный пул
     return await get_pool(pool_id=pool_id, version_id=None, org_id=org_id, db=db)
 
 

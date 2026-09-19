@@ -6,6 +6,9 @@ API перепланирования (Итерация 4).
   POST /api/v1/schedule/reschedule        — перепланировать
   GET  /api/v1/schedule/compare           — сравнить две версии
   PUT  /api/v1/schedule/task/{id}/pin     — закрепить/открепить задачу
+  PUT  /api/v1/schedule/task/{id}/move    — переместить задачу (C2)
+
+Итерация 11 (Шаг 5): чтение флага enable_rescheduling через settings_reader.
 """
 
 import logging
@@ -16,9 +19,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_org_id, get_db_session
-from app.scheduler.feature_flags import FeatureFlags
 from app.scheduler.logging_config import setup_scheduler_logging, log_with_context
 from app.scheduler.rescheduler import Rescheduler
+from app.scheduler.settings_reader import read_feature_flags
 from .reschedule_models import (
     RescheduleRequest,
     RescheduleResponse,
@@ -35,21 +38,17 @@ logger = setup_scheduler_logging(level=logging.INFO)
 
 
 async def _check_rescheduling_enabled(db: AsyncSession, org_id: UUID) -> None:
-    """Проверяет feature-флаг enable_rescheduling."""
-    result = await db.execute(
-        text("""
-            SELECT setting_value FROM organization_settings
-            WHERE organization_id = :org_id AND setting_key = 'enable_rescheduling'
-        """),
-        {"org_id": org_id},
-    )
-    row = result.fetchone()
-    if not row:
-        raise HTTPException(status_code=400, detail="Feature enable_rescheduling не настроен")
+    """
+    Проверяет feature-флаг enable_rescheduling.
 
-    flags = FeatureFlags({"enable_rescheduling": row.setting_value})
+    Итерация 11 (Шаг 5): читает из app_settings через settings_reader.
+    """
+    flags = await read_feature_flags(db, org_id)
     if not flags.enable_rescheduling:
-        raise HTTPException(status_code=400, detail="Перепланирование отключено (enable_rescheduling = false)")
+        raise HTTPException(
+            status_code=400,
+            detail="Перепланирование отключено (enable_rescheduling = false)",
+        )
 
 
 @router.post("/reschedule", response_model=RescheduleResponse)
@@ -172,6 +171,7 @@ async def pin_task(
         message="Задача закреплена" if row.is_pinned else "Задача откреплена",
     )
 
+
 # ==========================================
 # MOVE TASK (Итерация 9, C2: drag-and-drop)
 # ==========================================
@@ -222,7 +222,6 @@ async def move_task(
     original_duration = (row.planned_end - row.planned_start).total_seconds()
     new_duration = (request.new_end - request.new_start).total_seconds()
 
-    # Допускаем небольшую погрешность (snap 15 мин может дать ±1 сек)
     if abs(new_duration - original_duration) > 60:
         raise HTTPException(
             status_code=400,

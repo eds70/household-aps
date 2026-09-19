@@ -77,6 +77,18 @@ def _make_products_map():
         }
     return m
 
+def _make_gp_product(gp_code: str):
+    """Возвращает GP-продукт из фикстуры (для передачи в build_routing)."""
+    for p in tz_case.GP_PRODUCTS:
+        if p["code"] == gp_code:
+            return {
+                "id": p["code"],
+                "code": p["code"],
+                "name": p["name"],
+                "bottle_volume_l": p["bottle_volume_l"],
+                "fill_speed_per_min": p["fill_speed_per_min"],
+            }
+    return None
 
 def _make_operations_for_pf(pf_code):
     ops = []
@@ -283,7 +295,7 @@ def test_routing_truncate_after_lab_dish():
 
 def test_routing_no_truncate_full_chain_cream():
     """
-    Без truncate_after_lab — полная цепочка (12 шагов для крем-мыла).
+    Без truncate_after_lab — полная цепочка с разбиением LINE_FILL.
     """
     batch = {
         "id": "b1", "product_id": "PF_CREAM", "volume_kg": 3500,
@@ -299,15 +311,16 @@ def test_routing_no_truncate_full_chain_cream():
         products_map=_make_products_map(),
         calc_duration=_calc_duration,
         truncate_after_lab=False,
+        gp_product=_make_gp_product("GP_CREAM_1L"),
     )
 
-    assert len(steps) == 12
+    # 11 операций + N частей LINE_FILL. С разбиением — минимум 12.
+    assert len(steps) >= 12
 
     roles = [s.role for s in steps]
     assert TaskRole.TANK_TRANSFER in roles
     assert TaskRole.LINE_FILL in roles
     assert TaskRole.WASH in roles
-
 
 def test_routing_truncate_flags():
     """После обрезки флаги is_first/is_last установлены."""

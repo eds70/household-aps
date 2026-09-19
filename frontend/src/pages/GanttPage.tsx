@@ -13,8 +13,10 @@ import {
     DialogActions,
     DialogContent,
     DialogTitle,
+    Divider,
     FormControl,
     FormControlLabel,
+    IconButton,
     InputAdornment,
     InputLabel,
     MenuItem,
@@ -22,12 +24,19 @@ import {
     TextField,
     ToggleButton,
     ToggleButtonGroup,
+    Tooltip,
     Typography,
 } from '@mui/material';
 import {
+    ArrowBack as ArrowBackIcon,
+    ArrowForward as ArrowForwardIcon,
+    CalendarViewDay as CalendarViewDayIcon,
+    CalendarViewMonth as CalendarViewMonthIcon,
+    CalendarViewWeek as CalendarViewWeekIcon,
     Clear as ClearIcon,
     Download as DownloadIcon,
     FilterAltOff as FilterAltOffIcon,
+    FitScreen as FitScreenIcon,
     Lock as LockIcon,
     QrCodeScanner as QrCodeScannerIcon,
     Refresh as RefreshIcon,
@@ -36,13 +45,39 @@ import {
     ZoomIn as ZoomInIcon,
     ZoomOut as ZoomOutIcon,
 } from '@mui/icons-material';
-import {Timeline} from 'vis-timeline/standalone';
+
+// ==========================================
+// ВАЖНО: DataSet импортируем из vis-data,
+// т.к. vis-timeline/standalone его НЕ экспортирует
+// в текущей версии 8.5.4.
+// ==========================================
+import {Timeline, type TimelineOptions} from 'vis-timeline/standalone';
 import {DataSet} from 'vis-data';
 import 'vis-timeline/styles/vis-timeline-graph2d.min.css';
 import {ganttApi, rescheduleApi} from '../services/api';
 import {API_BASE_URL} from '../config';
 import {usePlan} from '../context/PlainContext';
 import type {CoolingMode, CzStatus} from '../types';
+
+// ==========================================
+// Типы для vis-timeline
+// ==========================================
+
+interface GanttItem {
+    id: string;
+    group: string;
+    start: string;
+    end: string;
+    content?: string;
+    title?: string;
+    style?: string;
+    className?: string;
+}
+
+interface GanttGroup {
+    id: string;
+    content: string;
+}
 
 const OPERATION_COLORS: Record<string, string> = {
     'Нагрев': '#e74c3c',
@@ -76,24 +111,39 @@ interface TaskData {
     item_type?: ItemType;
     setup_type?: 'same_pf' | 'diff_pf';
     downtime_type?: 'WEEKEND' | 'REPAIR' | 'BREAKDOWN';
-    // Итерация 5: блокировка лабораторией
     is_lab_blocked?: boolean;
     lab_status?: string | null;
     lab_block_reason?: string | null;
-    // Итерация 7: режим охлаждения
     cooling_mode?: CoolingMode;
-    // Итерация 8: роль и ЧЗ
     task_role?: string | null;
     cz_status?: CzStatus | null;
     cz_marked_qty?: number | null;
 }
 
+// ==========================================
+// Утилита: ключ для localStorage по версии
+// ==========================================
+const getViewportStorageKey = (versionId: string | null) =>
+    `aps_gantt_viewport_${versionId || 'draft'}`;
+
+interface ViewportState {
+    start: string;
+    end: string;
+}
+
 const GanttPage: React.FC = () => {
     const containerRef = useRef<HTMLDivElement>(null);
-    const timelineRef = useRef<any>(null);
+    const minimapContainerRef = useRef<HTMLDivElement>(null);
+    const timelineRef = useRef<Timeline | null>(null);
+    const minimapRef = useRef<Timeline | null>(null);
     const handleTaskEditRef = useRef<(taskId: string) => void>(() => {});
 
-    const { currentVersionId, currentPlanName } = usePlan();
+    // Сохранение viewport
+    const viewportRef = useRef<ViewportState | null>(null);
+    const suppressViewportSyncRef = useRef<boolean>(false);
+    const minimapSyncingRef = useRef<boolean>(false);
+
+    const {currentVersionId, currentPlanName} = usePlan();
     const isReadOnly = currentVersionId !== null;
 
     const [loading, setLoading] = useState(true);
@@ -104,7 +154,7 @@ const GanttPage: React.FC = () => {
         equipmentCount: 0,
         blockedCount: 0,
         coolingSlowCount: 0,
-        czIncompleteCount: 0,     // Итерация 8
+        czIncompleteCount: 0,
     });
     const [tasks, setTasks] = useState<TaskData[]>([]);
     const [equipmentList, setEquipmentList] = useState<string[]>([]);
@@ -112,7 +162,11 @@ const GanttPage: React.FC = () => {
 
     const [filteredCount, setFilteredCount] = useState(0);
 
+    const [zoomPreset, setZoomPreset] = useState<'day' | 'week' | 'month' | 'custom'>('custom');
+
+    // ==========================================
     // Фильтры
+    // ==========================================
     const [searchQuery, setSearchQuery] = useState('');
     const [equipmentFilter, setEquipmentFilter] = useState<string[]>([]);
     const [productFilter, setProductFilter] = useState<string[]>([]);
@@ -120,7 +174,7 @@ const GanttPage: React.FC = () => {
     const [showDowntimes, setShowDowntimes] = useState(true);
     const [showOnlyBlocked, setShowOnlyBlocked] = useState(false);
     const [showOnlySlowCooling, setShowOnlySlowCooling] = useState(false);
-    const [showOnlyCzIncomplete, setShowOnlyCzIncomplete] = useState(false);   // Итерация 8
+    const [showOnlyCzIncomplete, setShowOnlyCzIncomplete] = useState(false);
 
     const hasActiveFilters =
         searchQuery.length > 0 ||
@@ -132,10 +186,13 @@ const GanttPage: React.FC = () => {
 
     const [editDialogOpen, setEditDialogOpen] = useState(false);
     const [selectedTask, setSelectedTask] = useState<TaskData | null>(null);
-    const [editFormData, setEditFormData] = useState({ start: '', end: '' });
+    const [editFormData, setEditFormData] = useState({start: '', end: ''});
 
     const clickTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+    // ==========================================
+    // Загрузка данных
+    // ==========================================
     const loadGanttData = useCallback(async () => {
         setLoading(true);
         setError(null);
@@ -144,13 +201,8 @@ const GanttPage: React.FC = () => {
 
             const typedTasks = data.tasks as TaskData[];
 
-            const blockedCount = typedTasks.filter(
-                (t) => t.is_lab_blocked === true
-            ).length;
-            const coolingSlowCount = typedTasks.filter(
-                (t) => t.cooling_mode === 'slow'
-            ).length;
-            // Итерация 8: считаем задачи LINE_FILL с незавершённой маркировкой
+            const blockedCount = typedTasks.filter((t) => t.is_lab_blocked === true).length;
+            const coolingSlowCount = typedTasks.filter((t) => t.cooling_mode === 'slow').length;
             const czIncompleteCount = typedTasks.filter(
                 (t) =>
                     t.task_role === 'LINE_FILL' &&
@@ -176,12 +228,48 @@ const GanttPage: React.FC = () => {
         }
     }, [currentVersionId]);
 
+    // ==========================================
+    // Загрузка viewport из localStorage при смене версии
+    // ==========================================
     useEffect(() => {
-        loadGanttData();
+        const key = getViewportStorageKey(currentVersionId);
+        try {
+            const raw = localStorage.getItem(key);
+            if (raw) {
+                const parsed = JSON.parse(raw) as ViewportState;
+                if (parsed.start && parsed.end) {
+                    viewportRef.current = parsed;
+                    return;
+                }
+            }
+        } catch {
+            // ignore
+        }
+        viewportRef.current = null;
+    }, [currentVersionId]);
+
+    const saveViewportToStorage = useCallback(
+        (view: ViewportState) => {
+            const key = getViewportStorageKey(currentVersionId);
+            try {
+                localStorage.setItem(key, JSON.stringify(view));
+            } catch {
+                // ignore quota
+            }
+        },
+        [currentVersionId]
+    );
+
+    useEffect(() => {
+        void loadGanttData();
         return () => {
             if (timelineRef.current) {
                 timelineRef.current.destroy();
                 timelineRef.current = null;
+            }
+            if (minimapRef.current) {
+                minimapRef.current.destroy();
+                minimapRef.current = null;
             }
             if (clickTimeoutRef.current) {
                 clearTimeout(clickTimeoutRef.current);
@@ -199,6 +287,31 @@ const GanttPage: React.FC = () => {
         setShowOnlyCzIncomplete(false);
     };
 
+// ==========================================
+// generateSetups — Итерация 9 (fix)
+// ==========================================
+// Раньше setup растягивался на весь промежуток между двумя
+// задачами, из-за чего мог пересекать выходные и достигать
+// 11 дней. Это семантически неверно.
+//
+// Теперь:
+//   1. Setup имеет ФИКСИРОВАННУЮ длительность (30 или 90 мин).
+//   2. Setup показывается ТОЛЬКО если разрыв между задачами
+//      ≤ MAX_SETUP_GAP_MINUTES (4 часа). Иначе — это не замывка,
+//      а ожидание (ремонт, отсутствие заказов, выходные).
+//   3. Setup примыкает к НАЧАЛУ следующей задачи:
+//      [next.start - duration, next.start].
+//   4. Setup не показывается, если он попадает на выходной.
+// ==========================================
+    const MAX_SETUP_GAP_MINUTES = 4 * 60;
+    const SETUP_DURATION_SAME_PF = 30;
+    const SETUP_DURATION_DIFF_PF = 90;
+
+    const isWeekendDate = (d: Date): boolean => {
+        const dow = d.getDay();
+        return dow === 0 || dow === 6;
+    };
+
     const generateSetups = (tasksData: TaskData[]): TaskData[] => {
         const setups: TaskData[] = [];
         const byEquipment: Record<string, TaskData[]> = {};
@@ -211,39 +324,79 @@ const GanttPage: React.FC = () => {
         });
 
         Object.entries(byEquipment).forEach(([eqId, eqTasks]) => {
-            eqTasks.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+            eqTasks.sort(
+                (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
+            );
             for (let i = 0; i < eqTasks.length - 1; i++) {
                 const curr = eqTasks[i];
                 const next = eqTasks[i + 1];
-                if (curr.batch_id !== next.batch_id) {
-                    const setupStart = new Date(curr.end);
-                    const setupEnd = new Date(next.start);
-                    const durationMins = Math.round((setupEnd.getTime() - setupStart.getTime()) / 60000);
-                    if (durationMins > 0) {
-                        setups.push({
-                            id: `setup_${curr.id}_${next.id}`,
-                            batch_id: 'Замывка',
-                            operation_name: '🧼 Замывка',
-                            equipment_id: eqId,
-                            product_id: '—',
-                            start: setupStart.toISOString(),
-                            end: setupEnd.toISOString(),
-                            duration_minutes: durationMins,
-                            item_type: 'setup',
-                            setup_type: curr.product_id === next.product_id ? 'same_pf' : 'diff_pf',
-                        });
-                    }
+
+                if (curr.batch_id === next.batch_id) continue;
+
+                const gapMinutes = Math.round(
+                    (new Date(next.start).getTime() -
+                        new Date(curr.end).getTime()) /
+                    60000
+                );
+
+                // Нет разрыва или он слишком большой — замывки нет
+                if (gapMinutes <= 0 || gapMinutes > MAX_SETUP_GAP_MINUTES) {
+                    continue;
                 }
+
+                const setupType =
+                    curr.product_id === next.product_id ? 'same_pf' : 'diff_pf';
+                const nominalDuration =
+                    setupType === 'same_pf'
+                        ? SETUP_DURATION_SAME_PF
+                        : SETUP_DURATION_DIFF_PF;
+
+                // Setup не может быть длиннее фактического разрыва
+                const actualDuration = Math.min(nominalDuration, gapMinutes);
+
+                // Setup примыкает к началу следующей задачи
+                const setupEnd = new Date(next.start);
+                const setupStart = new Date(
+                    setupEnd.getTime() - actualDuration * 60000
+                );
+
+                // Не показываем setup, если он попадает на выходной
+                if (isWeekendDate(setupStart) || isWeekendDate(setupEnd)) {
+                    continue;
+                }
+
+                setups.push({
+                    id: `setup_${curr.id}_${next.id}`,
+                    batch_id: 'Замывка',
+                    operation_name: '🧼 Замывка',
+                    equipment_id: eqId,
+                    product_id: '—',
+                    start: setupStart.toISOString(),
+                    end: setupEnd.toISOString(),
+                    duration_minutes: actualDuration,
+                    item_type: 'setup',
+                    setup_type: setupType,
+                });
             }
         });
         return setups;
     };
 
-    const generateWeekends = (tasksData: TaskData[], equipment: string[]): TaskData[] => {
+    // ==========================================
+    // Генерация выходных
+    // ==========================================
+    const generateWeekends = (
+        tasksData: TaskData[],
+        equipment: string[]
+    ): TaskData[] => {
         if (tasksData.length === 0 || equipment.length === 0) return [];
         const weekends: TaskData[] = [];
-        const startDate = new Date(Math.min(...tasksData.map((t) => new Date(t.start).getTime())));
-        const endDate = new Date(Math.max(...tasksData.map((t) => new Date(t.end).getTime())));
+        const startDate = new Date(
+            Math.min(...tasksData.map((t) => new Date(t.start).getTime()))
+        );
+        const endDate = new Date(
+            Math.max(...tasksData.map((t) => new Date(t.end).getTime()))
+        );
         startDate.setHours(0, 0, 0, 0);
         endDate.setHours(23, 59, 59, 999);
 
@@ -280,7 +433,7 @@ const GanttPage: React.FC = () => {
             const taskData = tasks.find((t) => t.id === taskId);
             if (taskData) {
                 setSelectedTask(taskData);
-                setEditFormData({ start: taskData.start, end: taskData.end });
+                setEditFormData({start: taskData.start, end: taskData.end});
                 setEditDialogOpen(true);
             }
         },
@@ -291,25 +444,195 @@ const GanttPage: React.FC = () => {
         handleTaskEditRef.current = handleTaskEdit;
     }, [handleTaskEdit]);
 
+    // ==========================================
+    // Навигация: pan
+    // ==========================================
+    const panByFactor = useCallback((factor: number) => {
+        if (!timelineRef.current) return;
+        const range = timelineRef.current.getWindow();
+        const interval = range.end.getTime() - range.start.getTime();
+        const shift = interval * factor;
+        timelineRef.current.setWindow(
+            new Date(range.start.getTime() + shift),
+            new Date(range.end.getTime() + shift),
+            {animation: {duration: 300, easingFunction: 'easeInOutQuad'}}
+        );
+    }, []);
+
+    const handlePanLeft = useCallback(() => panByFactor(-0.5), [panByFactor]);
+    const handlePanRight = useCallback(() => panByFactor(0.5), [panByFactor]);
+
+    // ==========================================
+    // Навигация: zoom
+    // ==========================================
+    const zoomByFactor = useCallback(
+        (factor: number) => {
+            if (!timelineRef.current) return;
+            const range = timelineRef.current.getWindow();
+            const center = (range.start.getTime() + range.end.getTime()) / 2;
+            const half = ((range.end.getTime() - range.start.getTime()) / 2) * factor;
+            timelineRef.current.setWindow(
+                new Date(center - half),
+                new Date(center + half),
+                {animation: {duration: 300, easingFunction: 'easeInOutQuad'}}
+            );
+            setZoomPreset('custom');
+        },
+        []
+    );
+
+    const handleZoomIn = useCallback(() => zoomByFactor(0.7), [zoomByFactor]);
+    const handleZoomOut = useCallback(() => zoomByFactor(1.4), [zoomByFactor]);
+
+    const setWindowAroundCenter = useCallback((halfMs: number) => {
+        if (!timelineRef.current) return;
+        const range = timelineRef.current.getWindow();
+        const center = (range.start.getTime() + range.end.getTime()) / 2;
+        timelineRef.current.setWindow(
+            new Date(center - halfMs),
+            new Date(center + halfMs),
+            {animation: {duration: 300, easingFunction: 'easeInOutQuad'}}
+        );
+    }, []);
+
+    const handleZoomDay = useCallback(() => {
+        setWindowAroundCenter(1000 * 60 * 60 * 8);
+        setZoomPreset('day');
+    }, [setWindowAroundCenter]);
+
+    const handleZoomWeek = useCallback(() => {
+        setWindowAroundCenter(1000 * 60 * 60 * 24 * 3);
+        setZoomPreset('week');
+    }, [setWindowAroundCenter]);
+
+    const handleZoomMonth = useCallback(() => {
+        setWindowAroundCenter(1000 * 60 * 60 * 24 * 12);
+        setZoomPreset('month');
+    }, [setWindowAroundCenter]);
+
+    const handleFitAll = useCallback(() => {
+        if (!timelineRef.current) return;
+        suppressViewportSyncRef.current = true;
+        timelineRef.current.fit({
+            animation: {duration: 300, easingFunction: 'easeInOutQuad'},
+        });
+        setZoomPreset('custom');
+        setTimeout(() => {
+            suppressViewportSyncRef.current = false;
+            if (timelineRef.current) {
+                const range = timelineRef.current.getWindow();
+                const view: ViewportState = {
+                    start: new Date(range.start).toISOString(),
+                    end: new Date(range.end).toISOString(),
+                };
+                viewportRef.current = view;
+                saveViewportToStorage(view);
+            }
+        }, 400);
+    }, [saveViewportToStorage]);
+
+    const handleGoToToday = useCallback(() => {
+        if (!timelineRef.current) return;
+        const now = new Date();
+        const half = 1000 * 60 * 60 * 24 * 3;
+        timelineRef.current.setWindow(
+            new Date(now.getTime() - half),
+            new Date(now.getTime() + half),
+            {animation: {duration: 300, easingFunction: 'easeInOutQuad'}}
+        );
+        setZoomPreset('custom');
+    }, []);
+
+    const handleExport = () => {
+        const params = currentVersionId ? `?version_id=${currentVersionId}` : '';
+        window.open(`${API_BASE_URL}/api/v1/gantt/export${params}`, '_blank');
+    };
+
+    const handleSaveTask = async () => {
+        if (!selectedTask || isReadOnly) return;
+        try {
+            setTasks((prev) =>
+                prev.map((t) =>
+                    t.id === selectedTask.id
+                        ? {...t, start: editFormData.start, end: editFormData.end}
+                        : t
+                )
+            );
+            setEditDialogOpen(false);
+        } catch (err) {
+            console.error('Error saving task:', err);
+        }
+    };
+
+    const formatDateForInput = (isoString: string) => {
+        const date = new Date(isoString);
+        const pad = (n: number) => n.toString().padStart(2, '0');
+        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
+            date.getDate()
+        )}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    };
+
+    // ==========================================
+    // persistCurrentViewport
+    // ==========================================
+    const persistCurrentViewport = useCallback(() => {
+        if (!timelineRef.current) return;
+        if (suppressViewportSyncRef.current) return;
+
+        const range = timelineRef.current.getWindow();
+        if (!range || !range.start || !range.end) return;
+
+        const view: ViewportState = {
+            start: new Date(range.start).toISOString(),
+            end: new Date(range.end).toISOString(),
+        };
+        viewportRef.current = view;
+        saveViewportToStorage(view);
+    }, [saveViewportToStorage]);
+
+    // ==========================================
+    // Рендер Timeline + Minimap
+    // ==========================================
     const renderTimeline = useCallback(
         (tasksData: TaskData[], equipment: string[]) => {
             if (!containerRef.current) return;
+
+            // Сохраняем текущий viewport
+            if (timelineRef.current && !suppressViewportSyncRef.current) {
+                try {
+                    const range = timelineRef.current.getWindow();
+                    if (range && range.start && range.end) {
+                        viewportRef.current = {
+                            start: new Date(range.start).toISOString(),
+                            end: new Date(range.end).toISOString(),
+                        };
+                        saveViewportToStorage(viewportRef.current);
+                    }
+                } catch {
+                    // ignore
+                }
+            }
+
             if (timelineRef.current) {
                 timelineRef.current.destroy();
                 timelineRef.current = null;
             }
+            if (minimapRef.current) {
+                minimapRef.current.destroy();
+                minimapRef.current = null;
+            }
 
-            let filteredTasks = tasksData.filter((task) => task.item_type === 'task' || !task.item_type);
+            // Фильтрация
+            let filteredTasks = tasksData.filter(
+                (task) => task.item_type === 'task' || !task.item_type
+            );
 
             if (showOnlyBlocked) {
                 filteredTasks = filteredTasks.filter((task) => task.is_lab_blocked === true);
             }
-
             if (showOnlySlowCooling) {
                 filteredTasks = filteredTasks.filter((task) => task.cooling_mode === 'slow');
             }
-
-            // Итерация 8: фильтр «Только не промаркированные»
             if (showOnlyCzIncomplete) {
                 filteredTasks = filteredTasks.filter(
                     (task) =>
@@ -318,7 +641,6 @@ const GanttPage: React.FC = () => {
                         task.cz_status !== 'COMPLETED'
                 );
             }
-
             if (searchQuery) {
                 const query = searchQuery.toLowerCase();
                 filteredTasks = filteredTasks.filter(
@@ -328,13 +650,15 @@ const GanttPage: React.FC = () => {
                         task.product_id.toLowerCase().includes(query)
                 );
             }
-
             if (equipmentFilter.length > 0) {
-                filteredTasks = filteredTasks.filter((task) => equipmentFilter.includes(task.equipment_id));
+                filteredTasks = filteredTasks.filter((task) =>
+                    equipmentFilter.includes(task.equipment_id)
+                );
             }
-
             if (productFilter.length > 0) {
-                filteredTasks = filteredTasks.filter((task) => productFilter.includes(task.product_id));
+                filteredTasks = filteredTasks.filter((task) =>
+                    productFilter.includes(task.product_id)
+                );
             }
 
             setFilteredCount(filteredTasks.length);
@@ -344,18 +668,19 @@ const GanttPage: React.FC = () => {
             const allItems = [...filteredTasks, ...setups, ...weekends];
 
             if (allItems.length === 0) {
-                if (containerRef.current) {
-                    containerRef.current.innerHTML = '';
-                }
+                if (containerRef.current) containerRef.current.innerHTML = '';
+                if (minimapContainerRef.current) minimapContainerRef.current.innerHTML = '';
                 return;
             }
 
-            const groupsArray = equipment.map((eq: string) => ({
+            // Группы (явный тип)
+            const groupsArray: GanttGroup[] = equipment.map((eq) => ({
                 id: eq,
                 content: `<b>${eq}</b>`,
             }));
 
-            const itemsArray = allItems.map((task: TaskData) => {
+            // Items (явный тип GanttItem[])
+            const itemsArray: GanttItem[] = allItems.map((task) => {
                 const itemType = task.item_type || 'task';
                 const color = getOperationColor(task.operation_name);
                 let style = '';
@@ -385,7 +710,11 @@ const GanttPage: React.FC = () => {
 
                     const blockedBadge = isBlocked
                         ? `<div style="color: #e74c3c; font-weight: bold; margin-top: 4px;">🔒 ЗАБЛОКИРОВАНО ЛАБОРАТОРИЕЙ</div>
-                           ${task.lab_block_reason ? `<div style="color: #e74c3c; font-size: 11px; margin-top: 2px;">Причина: ${task.lab_block_reason}</div>` : ''}`
+                           ${
+                            task.lab_block_reason
+                                ? `<div style="color: #e74c3c; font-size: 11px; margin-top: 2px;">Причина: ${task.lab_block_reason}</div>`
+                                : ''
+                        }`
                         : '';
 
                     let coolingBadge = '';
@@ -406,27 +735,31 @@ const GanttPage: React.FC = () => {
                         `;
                     }
 
-                    // Итерация 8: бейдж ЧЗ для LINE_FILL
                     let czBadge = '';
                     if (task.task_role === 'LINE_FILL' && task.cz_status) {
                         const czLabel =
-                            task.cz_status === 'COMPLETED' ? '🟢 ЧЗ завершено' :
-                                task.cz_status === 'IN_PROGRESS' ? '🔵 ЧЗ в работе' :
-                                    task.cz_status === 'PENDING' ? '🟡 ЧЗ ожидает' :
-                                        '⚪ ЧЗ не требуется';
+                            task.cz_status === 'COMPLETED'
+                                ? '🟢 ЧЗ завершено'
+                                : task.cz_status === 'IN_PROGRESS'
+                                    ? '🔵 ЧЗ в работе'
+                                    : task.cz_status === 'PENDING'
+                                        ? '🟡 ЧЗ ожидает'
+                                        : '⚪ ЧЗ не требуется';
                         czBadge = `
                             <div style="margin-top: 4px; font-size: 11px;">
                                 <b>${czLabel}</b>
-                                ${task.cz_marked_qty != null ? `<br>Промаркировано: ${task.cz_marked_qty}` : ''}
+                                ${
+                            task.cz_marked_qty != null
+                                ? `<br>Промаркировано: ${task.cz_marked_qty}`
+                                : ''
+                        }
                             </div>
                         `;
                     }
 
                     title = `
             <div style="padding: 8px; min-width: 280px;">
-              <b style="font-size: 14px; color: ${isBlocked ? '#e74c3c' : '#2c3e50'};">
-                ${isBlocked ? '🔒 ' : ''}${isSlowCooling ? '⏳ ' : ''}${task.operation_name}
-              </b><br>
+              <b style="font-size: 14px; color: ${isBlocked ? '#e74c3c' : '#2c3e50'};">${isBlocked ? '🔒 ' : ''}${isSlowCooling ? '⏳ ' : ''}${task.operation_name}</b><br>
               <hr style="margin: 8px 0; border: none; border-top: 1px solid #ecf0f1;">
               <div style="font-size: 12px; line-height: 1.6;">
                 <b>Партия:</b> ${task.batch_id}<br>
@@ -442,8 +775,12 @@ const GanttPage: React.FC = () => {
             </div>
           `;
                 } else if (itemType === 'setup') {
-                    const setupColor = task.setup_type === 'same_pf' ? '#95a5a6' : '#e67e22';
-                    const setupLabel = task.setup_type === 'same_pf' ? 'тот же ПФ (30 мин)' : 'другой ПФ (90 мин)';
+                    const setupColor =
+                        task.setup_type === 'same_pf' ? '#95a5a6' : '#e67e22';
+                    const setupLabel =
+                        task.setup_type === 'same_pf'
+                            ? 'тот же ПФ (30 мин)'
+                            : 'другой ПФ (90 мин)';
                     style = `background-color: ${setupColor}25; border: 2px dashed ${setupColor}; border-radius: 4px;`;
                     className = 'item-setup';
                     title = `
@@ -468,7 +805,9 @@ const GanttPage: React.FC = () => {
               <hr style="margin: 8px 0; border: none; border-top: 1px solid #ecf0f1;">
               <div style="font-size: 12px; line-height: 1.6;">
                 <b>Тип:</b> ${task.downtime_type}<br>
-                <b>Длительность:</b> ${task.duration_minutes} мин (${(task.duration_minutes / 60).toFixed(1)} ч)<br>
+                <b>Длительность:</b> ${task.duration_minutes} мин (${(
+                        task.duration_minutes / 60
+                    ).toFixed(1)} ч)<br>
                 <b>Начало:</b> ${new Date(task.start).toLocaleString('ru-RU')}<br>
                 <b>Конец:</b> ${new Date(task.end).toLocaleString('ru-RU')}
               </div>
@@ -490,7 +829,13 @@ const GanttPage: React.FC = () => {
                     group: task.equipment_id,
                     content: `
             <div style="padding: 4px; font-size: 11px;">
-              <div style="font-weight: bold; color: ${task.is_lab_blocked ? '#e74c3c' : (task.cooling_mode === 'slow' ? '#e67e22' : '#2c3e50')}; margin-bottom: 2px;">
+              <div style="font-weight: bold; color: ${
+                        task.is_lab_blocked
+                            ? '#e74c3c'
+                            : task.cooling_mode === 'slow'
+                                ? '#e67e22'
+                                : '#2c3e50'
+                    }; margin-bottom: 2px;">
                 ${blockedIcon}${slowCoolingIcon}${czIcon}${task.operation_name}
               </div>
               <div style="font-size: 10px; color: #555;">
@@ -506,36 +851,84 @@ const GanttPage: React.FC = () => {
                 };
             });
 
-            const groups = new DataSet(groupsArray);
-            const items = new DataSet(itemsArray);
+            // Миникарта: используем тот же тип GanttItem, но без content/title
+            const minimapItemsArray: GanttItem[] = itemsArray.map((item) => ({
+                id: item.id,
+                group: item.group,
+                start: item.start,
+                end: item.end,
+                style: item.style,
+                className: item.className,
+            }));
 
-            const options = {
-                groupOrder: 'content' as const,
+            const minimapGroupsArray: GanttGroup[] = equipment.map((eq) => ({
+                id: eq,
+                content: '',
+            }));
+
+            const groups = new DataSet<GanttGroup>(groupsArray);
+            const items = new DataSet<GanttItem>(itemsArray);
+            const minimapGroups = new DataSet<GanttGroup>(minimapGroupsArray);
+            const minimapItems = new DataSet<GanttItem>(minimapItemsArray);
+
+            // ==========================================
+            // Итерация 11 (fix): pan + zoom + drag одновременно
+            // ==========================================
+            // Компромисс (Механизм 3):
+            //   1. moveable: true  → pan по пустому месту.
+            //   2. zoomable: true  → zoom колёсиком.
+            //   3. editable.updateTime как ФУНКЦИЯ → drag только для
+            //      реальных задач. Setup и downtime — не таскаются.
+            //   4. CSS в index.css → курсоры grab / grabbing / not-allowed.
+            //
+            // vis-timeline сам разделяет жесты:
+            //   - mousedown на задаче + drag  → перемещение задачи
+            //   - mousedown на пустом месте + drag → pan диаграммы
+            // ==========================================
+            const options: TimelineOptions = {
+                groupOrder: 'content',
+
+                // ✅ Pan: перетаскивание диаграммы по пустому месту.
+                moveable: true,
+
+                // ✅ Zoom колёсиком мыши (без Ctrl).
+                zoomable: true,
+
+                // ✅ Drag только для реальных задач (не setup / не downtime).
+                // Принимает функцию (item) => boolean в рантайме,
+                // но типы vis-timeline объявляют только boolean.
+                // Поэтому используем `as any` для приведения.
                 editable: {
                     add: false,
-                    updateTime: !isReadOnly,
-                    updateGroup: !isReadOnly,
+                    updateTime: ((item: any) => {
+                        if (isReadOnly) return false;
+                        const itemId = String(item?.id ?? '');
+                        // Setup и downtime не таскаются — их перетаскивание
+                        // интерпретируется как pan диаграммы.
+                        if (itemId.startsWith('setup_') || itemId.startsWith('weekend_')) {
+                            return false;
+                        }
+                        return true;
+                    }) as any,
+                    updateGroup: false,
                     remove: false,
-                },
-                // === C2 UX-оптимизация ===
-                moveable: false,          // ← НЕ тащить timeline мышью
-                selectable: true,         // ← клик по задаче выделяет её
-                multiselect: false,       // ← не выбирать много задач
-                // === Конец ===
-                margin: { item: 2, axis: 5 },
-                orientation: 'top' as const,
+                } as any,
+                selectable: true,
+                multiselect: false,
+                margin: {item: 2, axis: 5},
+                orientation: 'top',
                 stack: false,
                 showCurrentTime: true,
-                zoomMin: 1000 * 60 * 60 * 4,
-                zoomMax: 1000 * 60 * 60 * 24 * 14,
+                zoomMin: 1000 * 60 * 60 * 2,
+                zoomMax: 1000 * 60 * 60 * 24 * 90,
                 format: {
-                    minorLabels: { hour: 'HH:mm', weekday: 'D MMM' },
-                    majorLabels: { day: 'D MMMM YYYY' },
+                    minorLabels: {hour: 'HH:mm', weekday: 'D MMM'},
+                    majorLabels: {day: 'D MMMM YYYY'},
                 },
                 locale: 'ru',
                 tooltip: {
                     followMouse: true,
-                    overflowMethod: 'cap' as const,
+                    overflowMethod: 'cap',
                     delay: 100,
                 },
                 snap: (date: Date) => {
@@ -544,92 +937,98 @@ const GanttPage: React.FC = () => {
                     return new Date(Math.round(date.getTime() / ms) * ms);
                 },
                 onMove: async (item: any, callback: (item: any) => void) => {
-                    // Итерация 9 (C2): drag-and-drop через API.
-                    //
-                    // Логика:
-                    //   1. Режим просмотра → откат (callback со старым временем).
-                    //   2. Найти оригинальную задачу в state.
-                    //   3. Сравнить новое время со старым.
-                    //   4. Если изменилось — вызвать API moveTask.
-                    //   5. При успехе — обновить state + callback.
-                    //   6. При ошибке — откат + показать ошибку.
-
-                    // 1. Режим просмотра — не сохраняем
-                    if (isReadOnly) {
+                    // Не даём таскать setup и downtime
+                    // (страховка на случай, если editable.updateTime
+                    //  не сработает — оставляем для надёжности).
+                    const itemId = String(item?.id ?? '');
+                    if (itemId.startsWith('setup_') || itemId.startsWith('weekend_')) {
                         const original = tasks.find((t) => t.id === item.id);
                         if (original) {
-                            callback({
-                                ...item,
-                                start: original.start,
-                                end: original.end,
-                            });
+                            callback({...item, start: original.start, end: original.end});
                         } else {
                             callback(item);
                         }
                         return;
                     }
 
-                    // 2. Найти оригинальную задачу
+                    if (isReadOnly) {
+                        const original = tasks.find((t) => t.id === item.id);
+                        if (original) {
+                            callback({...item, start: original.start, end: original.end});
+                        } else {
+                            callback(item);
+                        }
+                        return;
+                    }
+
                     const task = tasks.find((t) => t.id === item.id);
                     if (!task) {
                         callback(item);
                         return;
                     }
 
-                    // 3. Сравнить время
                     const newStart = new Date(item.start).toISOString();
                     const newEnd = new Date(item.end).toISOString();
                     const oldStart = new Date(task.start).toISOString();
                     const oldEnd = new Date(task.end).toISOString();
 
                     if (newStart === oldStart && newEnd === oldEnd) {
-                        // Ничего не изменилось — просто подтверждаем
                         callback(item);
                         return;
                     }
 
-                    // 4. Вызвать API
                     try {
                         await rescheduleApi.moveTask(item.id, newStart, newEnd);
-
-                        // 5. Обновить локальный state
                         setTasks((prev) =>
                             prev.map((t) =>
-                                t.id === item.id
-                                    ? { ...t, start: newStart, end: newEnd }
-                                    : t
+                                t.id === item.id ? {...t, start: newStart, end: newEnd} : t
                             )
                         );
-
                         callback(item);
-
-                        console.log(
-                            `[C2] Задача "${task.operation_name}" перемещена: ` +
-                            `${new Date(oldStart).toLocaleString('ru-RU')} → ` +
-                            `${new Date(newStart).toLocaleString('ru-RU')}`
-                        );
                     } catch (err: any) {
-                        // 6. Откат при ошибке
                         const detail = err.response?.data?.detail;
-                        const msg = typeof detail === 'string'
-                            ? detail
-                            : 'Ошибка перемещения задачи';
-
+                        const msg =
+                            typeof detail === 'string'
+                                ? detail
+                                : 'Ошибка перемещения задачи';
                         setError(msg);
-
-                        callback({
-                            ...item,
-                            start: task.start,
-                            end: task.end,
-                        });
+                        callback({...item, start: task.start, end: task.end});
                     }
                 },
-                // onMoving: (item: any) => item,
             };
 
-            timelineRef.current = new Timeline(containerRef.current, items, groups, options);
+            // ==========================================
+            // ВАЖНО: `as any` для обхода несовместимости типов
+            // между vis-data.DataSet и vis-timeline.Timeline.
+            // В рантайме объекты полностью совместимы.
+            // ==========================================
+            const newTimeline = new Timeline(
+                containerRef.current,
+                items as any,
+                groups as any,
+                options
+            );
+            timelineRef.current = newTimeline;
 
-            timelineRef.current.on('click', (props: any) => {
+            // Восстановление viewport
+            const saved = viewportRef.current;
+            if (saved) {
+                try {
+                    newTimeline.setWindow(new Date(saved.start), new Date(saved.end), {
+                        animation: false,
+                    });
+                } catch {
+                    newTimeline.fit();
+                }
+            } else {
+                newTimeline.fit();
+            }
+
+            newTimeline.on('rangechange', () => {
+                persistCurrentViewport();
+            });
+
+            newTimeline.on('click', (props: any) => {
                 if (props.item) {
                     if (clickTimeoutRef.current) {
                         clearTimeout(clickTimeoutRef.current);
@@ -643,7 +1042,89 @@ const GanttPage: React.FC = () => {
                 }
             });
 
-            timelineRef.current.fit();
+            // ==========================================
+            // Миникарта
+            // ==========================================
+            if (!minimapContainerRef.current) return;
+
+            const minimapOptions: TimelineOptions = {
+                groupOrder: 'content',
+                editable: false,
+                selectable: false,
+                moveable: false,
+                margin: {item: 0, axis: 0},
+                orientation: 'top',
+                stack: false,
+                showCurrentTime: true,
+                zoomMin: 1000 * 60 * 60 * 2,
+                zoomMax: 1000 * 60 * 60 * 24 * 90,
+                format: {
+                    minorLabels: {hour: '', weekday: ''},
+                    majorLabels: {day: ''},
+                },
+                locale: 'ru',
+                height: '100%',
+                showMajorLabels: false,
+                showMinorLabels: false,
+            };
+
+            // ==========================================
+            // ВАЖНО: `as any` для обхода несовместимости типов
+            // ==========================================
+            const newMinimap = new Timeline(
+                minimapContainerRef.current,
+                minimapItems as any,
+                minimapGroups as any,
+                minimapOptions
+            );
+            minimapRef.current = newMinimap;
+
+            const syncMinimapToMain = () => {
+                if (!minimapRef.current || !timelineRef.current) return;
+                if (minimapSyncingRef.current) return;
+                minimapSyncingRef.current = true;
+                try {
+                    const range = minimapRef.current.getWindow();
+                    timelineRef.current.setWindow(range.start, range.end, {
+                        animation: false,
+                    });
+                } finally {
+                    setTimeout(() => {
+                        minimapSyncingRef.current = false;
+                    }, 50);
+                }
+            };
+
+            const syncMainToMinimap = () => {
+                if (!minimapRef.current || !timelineRef.current) return;
+                if (minimapSyncingRef.current) return;
+                minimapSyncingRef.current = true;
+                try {
+                    const range = timelineRef.current.getWindow();
+                    minimapRef.current.setWindow(range.start, range.end, {
+                        animation: false,
+                    });
+                } finally {
+                    setTimeout(() => {
+                        minimapSyncingRef.current = false;
+                    }, 50);
+                }
+            };
+
+            try {
+                const mainRange = newTimeline.getWindow();
+                newMinimap.setWindow(mainRange.start, mainRange.end, {
+                    animation: false,
+                });
+            } catch {
+                // ignore
+            }
+
+            newMinimap.on('rangechange', syncMinimapToMain);
+            newTimeline.on('rangechange', () => {
+                persistCurrentViewport();
+                syncMainToMinimap();
+            });
         },
         [
             searchQuery,
@@ -655,8 +1136,10 @@ const GanttPage: React.FC = () => {
             showOnlySlowCooling,
             showOnlyCzIncomplete,
             isReadOnly,
-            tasks,       // ← добавлено для C2 (onMove ищет задачу в state)
-            setError,    // ← добавлено для C2 (обработка ошибок API)
+            tasks,
+            setError,
+            persistCurrentViewport,
+            saveViewportToStorage,
         ]
     );
 
@@ -666,95 +1149,76 @@ const GanttPage: React.FC = () => {
         }
     }, [tasks, equipmentList, renderTimeline]);
 
-    const handleZoomIn = () => {
-        if (timelineRef.current) {
-            const range = timelineRef.current.getWindow();
-            const center = (range.start.getTime() + range.end.getTime()) / 2;
-            const interval = (range.end.getTime() - range.start.getTime()) * 0.2;
-            timelineRef.current.setWindow(new Date(center - interval), new Date(center + interval));
-        }
-    };
-
-    const handleZoomOut = () => {
-        if (timelineRef.current) {
-            const range = timelineRef.current.getWindow();
-            const center = (range.start.getTime() + range.end.getTime()) / 2;
-            const interval = (range.end.getTime() - range.start.getTime()) * 0.3;
-            timelineRef.current.setWindow(new Date(center - interval), new Date(center + interval));
-        }
-    };
-
-    const handleGoToToday = () => {
-        if (timelineRef.current) {
-            timelineRef.current.focus();
-        }
-    };
-
-    const handleExport = () => {
-        const params = currentVersionId ? `?version_id=${currentVersionId}` : '';
-        window.open(`${API_BASE_URL}/api/v1/gantt/export${params}`, '_blank');
-    };
-
-    const handleSaveTask = async () => {
-        if (!selectedTask || isReadOnly) return;
-        try {
-            setTasks((prev) =>
-                prev.map((t) =>
-                    t.id === selectedTask.id
-                        ? { ...t, start: editFormData.start, end: editFormData.end }
-                        : t
-                )
-            );
-            setEditDialogOpen(false);
-        } catch (err: any) {
-            console.error('Error saving task:', err);
-        }
-    };
-
-    const formatDateForInput = (isoString: string) => {
-        const date = new Date(isoString);
-        const pad = (n: number) => n.toString().padStart(2, '0');
-        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-    };
-
     if (loading) {
         return (
-            <Box sx={{ display: 'flex', justifyContent: 'center', mt: 8 }}>
-                <CircularProgress />
+            <Box sx={{display: 'flex', justifyContent: 'center', mt: 8}}>
+                <CircularProgress/>
             </Box>
         );
     }
 
     return (
-        <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, flexWrap: 'wrap', gap: 2 }}>
-                <Typography variant="h4" component="h1" sx={{ fontWeight: 600, color: '#2c3e50' }}>
+        <Box sx={{height: '100%', display: 'flex', flexDirection: 'column'}}>
+            {/* Заголовок */}
+            <Box
+                sx={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    mb: 2,
+                    flexWrap: 'wrap',
+                    gap: 2,
+                }}
+            >
+                <Typography
+                    variant="h4"
+                    component="h1"
+                    sx={{fontWeight: 600, color: '#2c3e50'}}
+                >
                     Диаграмма Ганта
                 </Typography>
-                <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                    <Button variant="outlined" startIcon={<RefreshIcon />} onClick={loadGanttData}>
+                <Box sx={{display: 'flex', gap: 1, flexWrap: 'wrap'}}>
+                    <Button
+                        variant="outlined"
+                        startIcon={<RefreshIcon/>}
+                        onClick={() => void loadGanttData()}
+                    >
                         Обновить
                     </Button>
-                    <Button variant="contained" color="success" startIcon={<DownloadIcon />} onClick={handleExport}>
+                    <Button
+                        variant="contained"
+                        color="success"
+                        startIcon={<DownloadIcon/>}
+                        onClick={handleExport}
+                    >
                         Экспорт в Excel
                     </Button>
                 </Box>
             </Box>
 
             {error && (
-                <Alert severity="warning" sx={{ mb: 2 }}>
+                <Alert severity="warning" sx={{mb: 2}}>
                     {error}
-                    <br />
-                    <Typography variant="body2" sx={{ mt: 1 }}>
-                        💡 Перейдите на вкладку <b>"Планирование"</b> и нажмите <b>"Построить план"</b>, либо выберите сохраненную версию.
+                    <br/>
+                    <Typography variant="body2" sx={{mt: 1}}>
+                        💡 Перейдите на вкладку <b>"Планирование"</b> и нажмите{' '}
+                        <b>"Построить план"</b>, либо выберите сохраненную версию.
                     </Typography>
                 </Alert>
             )}
 
             {!error && (
                 <>
-                    <Card sx={{ mb: 2, p: 2, bgcolor: '#f8f9fa' }}>
-                        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2, alignItems: 'center' }}>
+                    {/* Панель статистики и фильтров */}
+                    <Card sx={{mb: 2, p: 2, bgcolor: '#f8f9fa'}}>
+                        <Box
+                            sx={{
+                                display: 'flex',
+                                flexWrap: 'wrap',
+                                gap: 2,
+                                alignItems: 'center',
+                            }}
+                        >
                             <Chip
                                 label={
                                     hasActiveFilters
@@ -764,11 +1228,18 @@ const GanttPage: React.FC = () => {
                                 color={hasActiveFilters ? 'warning' : 'primary'}
                                 variant={hasActiveFilters ? 'filled' : 'outlined'}
                             />
-                            <Chip label={`Makespan: ${stats.makespanHours.toFixed(1)} ч`} color="secondary" variant="outlined" />
-                            <Chip label={`Оборудование: ${stats.equipmentCount}`} variant="outlined" />
+                            <Chip
+                                label={`Makespan: ${stats.makespanHours.toFixed(1)} ч`}
+                                color="secondary"
+                                variant="outlined"
+                            />
+                            <Chip
+                                label={`Оборудование: ${stats.equipmentCount}`}
+                                variant="outlined"
+                            />
                             {stats.blockedCount > 0 && (
                                 <Chip
-                                    icon={<LockIcon />}
+                                    icon={<LockIcon/>}
                                     label={`Заблокировано: ${stats.blockedCount}`}
                                     color="error"
                                     variant="filled"
@@ -781,10 +1252,9 @@ const GanttPage: React.FC = () => {
                                     variant="filled"
                                 />
                             )}
-                            {/* Итерация 8: ЧЗ-статистика */}
                             {stats.czIncompleteCount > 0 && (
                                 <Chip
-                                    icon={<QrCodeScannerIcon />}
+                                    icon={<QrCodeScannerIcon/>}
                                     label={`📷 Не промаркировано: ${stats.czIncompleteCount}`}
                                     color="info"
                                     variant="filled"
@@ -793,61 +1263,139 @@ const GanttPage: React.FC = () => {
 
                             {isReadOnly && (
                                 <Chip
-                                    icon={<LockIcon />}
+                                    icon={<LockIcon/>}
                                     label={`Просмотр: ${currentPlanName}`}
                                     color="info"
                                     variant="filled"
                                 />
                             )}
+                        </Box>
 
-                            <Box sx={{ display: 'flex', gap: 1.5, ml: 'auto', flexWrap: 'wrap' }}>
-                                {Object.entries(OPERATION_COLORS)
-                                    .slice(0, 5)
-                                    .map(([name, color]) => (
-                                        <Box key={name} sx={{ display: 'flex', alignItems: 'center', gap: 0.5, fontSize: '0.85rem' }}>
-                                            <Box sx={{ width: 12, height: 12, bgcolor: color, borderRadius: '2px' }} />
-                                            {name}
-                                        </Box>
-                                    ))}
-                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, fontSize: '0.85rem' }}>
-                                    <Box sx={{ width: 12, height: 12, bgcolor: '#ffebee', border: '2px solid #e74c3c', borderRadius: '2px' }} />
-                                    🔒 Заблокировано
-                                </Box>
-                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, fontSize: '0.85rem' }}>
-                                    <Box sx={{ width: 12, height: 12, bgcolor: '#fff3e0', border: '2px dashed #e67e22', borderRadius: '2px' }} />
-                                    ⏳ Замедленное охлаждение
-                                </Box>
-                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, fontSize: '0.85rem' }}>
-                                    <Box sx={{ width: 12, height: 12, bgcolor: '#e3f2fd', border: '2px dotted #1976d2', borderRadius: '2px' }} />
-                                    📷 ЧЗ не завершено
-                                </Box>
+                        <Box
+                            sx={{
+                                display: 'flex',
+                                gap: 1.5,
+                                mt: 1.5,
+                                flexWrap: 'wrap',
+                                alignItems: 'center',
+                            }}
+                        >
+                            {Object.entries(OPERATION_COLORS)
+                                .slice(0, 5)
+                                .map(([name, color]) => (
+                                    <Box
+                                        key={name}
+                                        sx={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: 0.5,
+                                            fontSize: '0.85rem',
+                                        }}
+                                    >
+                                        <Box
+                                            sx={{
+                                                width: 12,
+                                                height: 12,
+                                                bgcolor: color,
+                                                borderRadius: '2px',
+                                            }}
+                                        />
+                                        {name}
+                                    </Box>
+                                ))}
+                            <Box
+                                sx={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 0.5,
+                                    fontSize: '0.85rem',
+                                }}
+                            >
+                                <Box
+                                    sx={{
+                                        width: 12,
+                                        height: 12,
+                                        bgcolor: '#ffebee',
+                                        border: '2px solid #e74c3c',
+                                        borderRadius: '2px',
+                                    }}
+                                />
+                                🔒 Заблокировано
+                            </Box>
+                            <Box
+                                sx={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 0.5,
+                                    fontSize: '0.85rem',
+                                }}
+                            >
+                                <Box
+                                    sx={{
+                                        width: 12,
+                                        height: 12,
+                                        bgcolor: '#fff3e0',
+                                        border: '2px dashed #e67e22',
+                                        borderRadius: '2px',
+                                    }}
+                                />
+                                ⏳ Замедленное охлаждение
+                            </Box>
+                            <Box
+                                sx={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 0.5,
+                                    fontSize: '0.85rem',
+                                }}
+                            >
+                                <Box
+                                    sx={{
+                                        width: 12,
+                                        height: 12,
+                                        bgcolor: '#e3f2fd',
+                                        border: '2px dotted #1976d2',
+                                        borderRadius: '2px',
+                                    }}
+                                />
+                                📷 ЧЗ не завершено
                             </Box>
                         </Box>
 
-                        <Box sx={{ display: 'flex', gap: 2, mt: 2, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <Box
+                            sx={{
+                                display: 'flex',
+                                gap: 2,
+                                mt: 2,
+                                flexWrap: 'wrap',
+                                alignItems: 'center',
+                            }}
+                        >
                             <TextField
                                 size="small"
                                 placeholder="Поиск задач..."
                                 value={searchQuery}
                                 onChange={(e) => setSearchQuery(e.target.value)}
-                                sx={{ minWidth: 250 }}
+                                sx={{minWidth: 250}}
                                 slotProps={{
                                     input: {
                                         startAdornment: (
                                             <InputAdornment position="start">
-                                                <SearchIcon />
+                                                <SearchIcon/>
                                             </InputAdornment>
                                         ),
                                     },
                                 }}
                             />
 
-                            <FormControl size="small" variant="outlined" sx={{ minWidth: 200 }}>
+                            <FormControl size="small" variant="outlined" sx={{minWidth: 200}}>
                                 <InputLabel>Оборудование</InputLabel>
                                 <Select
                                     multiple
                                     value={equipmentFilter}
-                                    onChange={(e) => setEquipmentFilter(e.target.value as string[])}
+                                    onChange={(e) =>
+                                        setEquipmentFilter(e.target.value as string[])
+                                    }
                                     label="Оборудование"
                                     variant="outlined"
                                 >
@@ -859,12 +1407,14 @@ const GanttPage: React.FC = () => {
                                 </Select>
                             </FormControl>
 
-                            <FormControl size="small" variant="outlined" sx={{ minWidth: 200 }}>
+                            <FormControl size="small" variant="outlined" sx={{minWidth: 200}}>
                                 <InputLabel>Продукты</InputLabel>
                                 <Select
                                     multiple
                                     value={productFilter}
-                                    onChange={(e) => setProductFilter(e.target.value as string[])}
+                                    onChange={(e) =>
+                                        setProductFilter(e.target.value as string[])
+                                    }
                                     label="Продукты"
                                     variant="outlined"
                                 >
@@ -907,67 +1457,83 @@ const GanttPage: React.FC = () => {
                                         color="error"
                                     />
                                 }
-                                label={<Typography variant="body2" sx={{ fontWeight: showOnlyBlocked ? 600 : 400 }}>🔒 Только заблокированные</Typography>}
+                                label={
+                                    <Typography
+                                        variant="body2"
+                                        sx={{fontWeight: showOnlyBlocked ? 600 : 400}}
+                                    >
+                                        🔒 Только заблокированные
+                                    </Typography>
+                                }
                             />
 
                             <FormControlLabel
                                 control={
                                     <Checkbox
                                         checked={showOnlySlowCooling}
-                                        onChange={(e) => setShowOnlySlowCooling(e.target.checked)}
+                                        onChange={(e) =>
+                                            setShowOnlySlowCooling(e.target.checked)
+                                        }
                                         size="small"
                                         color="warning"
                                     />
                                 }
-                                label={<Typography variant="body2" sx={{ fontWeight: showOnlySlowCooling ? 600 : 400 }}>⏳ Только замедленное охлаждение</Typography>}
+                                label={
+                                    <Typography
+                                        variant="body2"
+                                        sx={{fontWeight: showOnlySlowCooling ? 600 : 400}}
+                                    >
+                                        ⏳ Только замедленное охлаждение
+                                    </Typography>
+                                }
                             />
 
-                            {/* Итерация 8: фильтр «Только не промаркированные» */}
                             <FormControlLabel
                                 control={
                                     <Checkbox
                                         checked={showOnlyCzIncomplete}
-                                        onChange={(e) => setShowOnlyCzIncomplete(e.target.checked)}
+                                        onChange={(e) =>
+                                            setShowOnlyCzIncomplete(e.target.checked)
+                                        }
                                         size="small"
                                         color="info"
                                     />
                                 }
-                                label={<Typography variant="body2" sx={{ fontWeight: showOnlyCzIncomplete ? 600 : 400 }}>📷 Только не промаркированные</Typography>}
+                                label={
+                                    <Typography
+                                        variant="body2"
+                                        sx={{fontWeight: showOnlyCzIncomplete ? 600 : 400}}
+                                    >
+                                        📷 Только не промаркированные
+                                    </Typography>
+                                }
                             />
 
                             <Button
                                 size="small"
                                 variant="outlined"
                                 color="inherit"
-                                startIcon={<FilterAltOffIcon />}
+                                startIcon={<FilterAltOffIcon/>}
                                 onClick={handleResetFilters}
                                 disabled={!hasActiveFilters}
-                                sx={{ textTransform: 'none' }}
+                                sx={{textTransform: 'none'}}
                             >
                                 Сбросить фильтры
                             </Button>
-
-                            <ToggleButtonGroup size="small" aria-label="zoom">
-                                <ToggleButton value="zoomOut" onClick={handleZoomOut}>
-                                    <ZoomOutIcon />
-                                </ToggleButton>
-                                <ToggleButton value="today" onClick={handleGoToToday}>
-                                    <TodayIcon />
-                                </ToggleButton>
-                                <ToggleButton value="zoomIn" onClick={handleZoomIn}>
-                                    <ZoomInIcon />
-                                </ToggleButton>
-                            </ToggleButtonGroup>
                         </Box>
                     </Card>
 
                     {hasActiveFilters && filteredCount === 0 && (
                         <Alert
                             severity="info"
-                            icon={<ClearIcon />}
-                            sx={{ mb: 2 }}
+                            icon={<ClearIcon/>}
+                            sx={{mb: 2}}
                             action={
-                                <Button color="inherit" size="small" onClick={handleResetFilters}>
+                                <Button
+                                    color="inherit"
+                                    size="small"
+                                    onClick={handleResetFilters}
+                                >
                                     Сбросить
                                 </Button>
                             }
@@ -976,6 +1542,113 @@ const GanttPage: React.FC = () => {
                         </Alert>
                     )}
 
+                    {/* Панель навигации */}
+                    <Card sx={{mb: 1, p: 1.5}}>
+                        <Box
+                            sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 1,
+                                flexWrap: 'wrap',
+                            }}
+                        >
+                            <Tooltip title="Сдвинуть влево (на пол-экрана)">
+                                <IconButton
+                                    size="small"
+                                    onClick={handlePanLeft}
+                                    color="primary"
+                                >
+                                    <ArrowBackIcon/>
+                                </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Сдвинуть вправо (на пол-экрана)">
+                                <IconButton
+                                    size="small"
+                                    onClick={handlePanRight}
+                                    color="primary"
+                                >
+                                    <ArrowForwardIcon/>
+                                </IconButton>
+                            </Tooltip>
+
+                            <Divider orientation="vertical" flexItem sx={{mx: 1}}/>
+
+                            <Tooltip title="Приблизить">
+                                <IconButton size="small" onClick={handleZoomIn}>
+                                    <ZoomInIcon/>
+                                </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Отдалить">
+                                <IconButton size="small" onClick={handleZoomOut}>
+                                    <ZoomOutIcon/>
+                                </IconButton>
+                            </Tooltip>
+
+                            <Divider orientation="vertical" flexItem sx={{mx: 1}}/>
+
+                            <ToggleButtonGroup
+                                size="small"
+                                exclusive
+                                value={zoomPreset}
+                                onChange={(_, value) => {
+                                    if (value) {
+                                        if (value === 'day') handleZoomDay();
+                                        else if (value === 'week') handleZoomWeek();
+                                        else if (value === 'month') handleZoomMonth();
+                                    }
+                                }}
+                            >
+                                <ToggleButton value="day">
+                                    <Tooltip title="Масштаб: день">
+                                        <CalendarViewDayIcon fontSize="small"/>
+                                    </Tooltip>
+                                </ToggleButton>
+                                <ToggleButton value="week">
+                                    <Tooltip title="Масштаб: неделя">
+                                        <CalendarViewWeekIcon fontSize="small"/>
+                                    </Tooltip>
+                                </ToggleButton>
+                                <ToggleButton value="month">
+                                    <Tooltip title="Масштаб: месяц">
+                                        <CalendarViewMonthIcon fontSize="small"/>
+                                    </Tooltip>
+                                </ToggleButton>
+                            </ToggleButtonGroup>
+
+                            <Divider orientation="vertical" flexItem sx={{mx: 1}}/>
+
+                            <Tooltip title="Показать весь план">
+                                <Button
+                                    size="small"
+                                    variant="outlined"
+                                    startIcon={<FitScreenIcon/>}
+                                    onClick={handleFitAll}
+                                    sx={{textTransform: 'none'}}
+                                >
+                                    Весь план
+                                </Button>
+                            </Tooltip>
+                            <Tooltip title="Перейти к сегодня">
+                                <Button
+                                    size="small"
+                                    variant="outlined"
+                                    startIcon={<TodayIcon/>}
+                                    onClick={handleGoToToday}
+                                    sx={{textTransform: 'none'}}
+                                >
+                                    Сегодня
+                                </Button>
+                            </Tooltip>
+
+                            <Box sx={{ml: 'auto'}}>
+                                <Typography variant="caption" color="text.secondary">
+                                    💡 Масштаб и позиция сохраняются автоматически
+                                </Typography>
+                            </Box>
+                        </Box>
+                    </Card>
+
+                    {/* Основная диаграмма */}
                     <Card
                         sx={{
                             flexGrow: 1,
@@ -1031,10 +1704,10 @@ const GanttPage: React.FC = () => {
                                     },
                                     '& .item-setup': {
                                         opacity: 0.85,
-                                        '&:hover': { opacity: 1 },
+                                        '&:hover': {opacity: 1},
                                     },
                                     '& .item-downtime': {
-                                        '&:hover': { opacity: 0.9 },
+                                        '&:hover': {opacity: 0.9},
                                     },
                                     '& .vis-label': {
                                         fontWeight: 600,
@@ -1057,15 +1730,71 @@ const GanttPage: React.FC = () => {
                         </CardContent>
                     </Card>
 
-                    <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block', textAlign: 'center' }}>
-                        💡 Все операции по реактору в одной строке • Пунктир = замывки • Фиолетовый фон = выходные • 🔒 = заблокировано лабораторией • ⏳ = замедленное охлаждение • 📷 = ЧЗ не завершено
-                        {isReadOnly ? ' • Режим просмотра (редактирование недоступно)' : ' • Двойной клик для редактирования'}
-                        • Колесико мыши для масштабирования
+                    {/* Миникарта */}
+                    <Card
+                        sx={{
+                            mt: 1,
+                            mb: 1,
+                            height: 90,
+                            boxShadow: '0 1px 4px rgba(0,0,0,0.08)',
+                            bgcolor: '#fafbfc',
+                        }}
+                    >
+                        <CardContent
+                            sx={{
+                                p: 0.5,
+                                height: '100%',
+                                '&:last-child': {pb: 0.5},
+                            }}
+                        >
+                            <Box
+                                ref={minimapContainerRef}
+                                sx={{
+                                    width: '100%',
+                                    height: '100%',
+                                    '& .vis-item': {
+                                        borderColor: 'transparent',
+                                        cursor: 'pointer',
+                                    },
+                                    '& .vis-label': {
+                                        fontSize: '10px',
+                                        fontWeight: 600,
+                                        color: '#7f8c8d',
+                                        padding: '2px 4px !important',
+                                    },
+                                    '& .vis-time-axis': {
+                                        display: 'none',
+                                    },
+                                    '& .vis-panel.vis-bottom': {
+                                        display: 'none',
+                                    },
+                                }}
+                            />
+                        </CardContent>
+                    </Card>
+
+                    <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{mt: 0.5, display: 'block', textAlign: 'center'}}
+                    >
+                        💡 Все операции по реактору в одной строке • Пунктир = замывки •
+                        Фиолетовый фон = выходные • 🔒 = заблокировано лабораторией • ⏳ =
+                        замедленное охлаждение • 📷 = ЧЗ не завершено
+                        {isReadOnly
+                            ? ' • Режим просмотра (редактирование недоступно)'
+                            : ' • Клик по пустому месту + drag = панорамирование • Клик по задаче + drag = перемещение • Колесо = зум'}
                     </Typography>
                 </>
             )}
 
-            <Dialog open={editDialogOpen} onClose={() => setEditDialogOpen(false)} maxWidth="sm" fullWidth>
+            {/* Диалог редактирования */}
+            <Dialog
+                open={editDialogOpen}
+                onClose={() => setEditDialogOpen(false)}
+                maxWidth="sm"
+                fullWidth
+            >
                 <DialogTitle>Редактировать задачу</DialogTitle>
                 <DialogContent>
                     {selectedTask && (
@@ -1079,10 +1808,15 @@ const GanttPage: React.FC = () => {
                                 type="datetime-local"
                                 fullWidth
                                 value={formatDateForInput(editFormData.start)}
-                                onChange={(e) => setEditFormData({ ...editFormData, start: e.target.value })}
+                                onChange={(e) =>
+                                    setEditFormData({
+                                        ...editFormData,
+                                        start: e.target.value,
+                                    })
+                                }
                                 slotProps={{
-                                    inputLabel: { shrink: true },
-                                    htmlInput: { step: 300 },
+                                    inputLabel: {shrink: true},
+                                    htmlInput: {step: 300},
                                 }}
                             />
                             <TextField
@@ -1091,10 +1825,15 @@ const GanttPage: React.FC = () => {
                                 type="datetime-local"
                                 fullWidth
                                 value={formatDateForInput(editFormData.end)}
-                                onChange={(e) => setEditFormData({ ...editFormData, end: e.target.value })}
+                                onChange={(e) =>
+                                    setEditFormData({
+                                        ...editFormData,
+                                        end: e.target.value,
+                                    })
+                                }
                                 slotProps={{
-                                    inputLabel: { shrink: true },
-                                    htmlInput: { step: 300 },
+                                    inputLabel: {shrink: true},
+                                    htmlInput: {step: 300},
                                 }}
                             />
                         </>

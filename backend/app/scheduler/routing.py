@@ -5,13 +5,31 @@
 Итерация 1: корректный расчёт длительности слива.
 Итерация 5: обрезка цепочки после лаборатории (truncate_after_lab).
 Итерация 6: operator_pool для каждого шага.
+
 Итерация 9 (fix #1):
-  - Пулы COOLING_ZONE и BOILER теперь назначаются операциям
+  - Пулы COOLING_ZONE и BOILER назначаются операциям
     с needs_cooling_zone=TRUE и needs_boiler=TRUE.
+
 Итерация 9 (fix #2):
-  - Разделены postponed_wash и postponed_pumping — раньше общая
-    переменная postponed_op перезаписывалась, из-за чего терялся
-    шаг TANK_TRANSFER.
+  - Разделены postponed_wash и postponed_pumping.
+
+Итерация 9 (fix #3):
+  - _find_line_for_product использует equipment_capability.
+
+Итерация 9 (fix #4):
+  - Фильтрация линий по связи реактор → линия.
+
+Итерация 10 (разбиение длинных LINE_FILL):
+  - Задачи LINE_FILL длиннее MAX_FILL_PART_DURATION разбиваются
+    на N равных подзадач.
+
+Итерация 11 (Шаг 6):
+  - Максимальная длительность подзадачи слива зависит от
+    режима смен (shift_mode):
+      - 1x8:  6 часов (360 мин)
+      - 3x8:  6 часов (360 мин)
+      - 2x12: 10 часов (600 мин)
+    Это позволяет задачам помещаться в рабочий интервал смены.
 """
 
 from dataclasses import dataclass, field
@@ -46,8 +64,8 @@ class OperatorPool:
     LINE_OPERATOR = "LINE_OPERATOR"
     MANUAL_OPERATOR = "MANUAL_OPERATOR"
     LAB = "LAB"
-    COOLING_ZONE = "COOLING_ZONE"   # Итерация 9 (fix)
-    BOILER = "BOILER"               # Итерация 9 (fix)
+    COOLING_ZONE = "COOLING_ZONE"
+    BOILER = "BOILER"
 
 
 class DurationFormula:
@@ -93,7 +111,9 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def _find_reactor_for_batch(batch: Dict, equipment_map: Dict[str, Dict]) -> Optional[str]:
+def _find_reactor_for_batch(
+        batch: Dict, equipment_map: Dict[str, Dict]
+) -> Optional[str]:
     """Находит реактор, закрепленный за партией."""
     eq_id = batch.get("assigned_equipment_id")
     return str(eq_id) if eq_id else None
@@ -119,14 +139,43 @@ def _find_line_for_product(
         tank_id: Optional[str],
         equipment_links: List[Dict],
         equipment_map: Dict[str, Dict],
+        gp_product_id: Optional[str] = None,
+        equipment_capability: Optional[List[Dict]] = None,
 ) -> Optional[str]:
     """
-    Находит линию розлива, подключенную к танку или напрямую к реактору.
+    Находит линию розлива для партии.
 
-    Итерация 9: убран неиспользуемый параметр product_code
-    (и products_map) — функция не зависит от продукта.
+    Итерация 9 (fix #3): приоритет — маппинг ГП → линия через
+    equipment_capability.
+    Итерация 9 (fix #4): из нескольких линий выбираем ту, что
+    физически подключена к реактору партии.
     """
-    # Приоритет 1: линия, подключенная к танку
+    if gp_product_id and equipment_capability:
+        candidates = [
+            cap for cap in equipment_capability
+            if str(cap["product_id"]) == str(gp_product_id)
+        ]
+
+        if candidates:
+            if reactor_id and len(candidates) > 1:
+                lines_from_reactor = set()
+                for link in equipment_links:
+                    if str(link["from_equipment_id"]) == reactor_id:
+                        lines_from_reactor.add(str(link["to_equipment_id"]))
+                if tank_id:
+                    for link in equipment_links:
+                        if str(link["from_equipment_id"]) == tank_id:
+                            lines_from_reactor.add(str(link["to_equipment_id"]))
+
+                connected = [
+                    cap for cap in candidates
+                    if str(cap["equipment_id"]) in lines_from_reactor
+                ]
+                if connected:
+                    candidates = connected
+
+            return str(candidates[0]["equipment_id"])
+
     if tank_id:
         for link in equipment_links:
             if str(link["from_equipment_id"]) == tank_id:
@@ -135,7 +184,6 @@ def _find_line_for_product(
                 if target.get("type") in ("FILLING_LINE", "MANUAL_STATION"):
                     return to_id
 
-    # Приоритет 2: линия, подключенная к реактору
     if reactor_id:
         for link in equipment_links:
             if str(link["from_equipment_id"]) == reactor_id:
@@ -162,7 +210,15 @@ def _calc_fill_duration(
         product: Dict,
         gp_product: Optional[Dict] = None,
 ) -> int:
-    """Считает длительность слива партии на линию."""
+    """
+    Считает длительность слива партии на линию.
+
+    Логика (по ТЗ):
+      1. bottles = volume_kg / bottle_volume_l
+      2. duration_minutes = bottles / fill_speed_per_min
+      3. Если ГП известен — используем его данные.
+      4. Если нет — fallback на ПФ.
+    """
     volume_kg = _to_float(batch.get("volume_kg"))
     if volume_kg <= 0:
         return 0
@@ -180,7 +236,6 @@ def _calc_fill_duration(
         duration = volume_kg / pf_fill_speed
         return max(1, int(duration))
 
-    # Fallback: 1 кг = 1 минута
     return max(1, int(volume_kg))
 
 
@@ -191,36 +246,79 @@ def _assign_operator_pool(
     """
     Назначает пул ресурса для операции.
 
-    Итерация 9 (fix): добавлены ветки для COOLING_ZONE и BOILER.
-
     Приоритет (сверху вниз):
       1. Операции на линии (fill_*) → пул линии.
       2. Лабораторные операции → LAB.
       3. Охлаждение → COOLING_ZONE.
       4. Нагрев → BOILER.
       5. Явно заданный в шаблоне operator_pool.
-      6. NULL (нет специфичного ресурса).
+      6. NULL.
     """
-    # 1. Операции на линии
     if line_equipment is not None:
         pool = _get_line_operator_pool(line_equipment)
         if pool:
             return pool
 
-    # 2. Лабораторные операции
     if op.get("needs_lab"):
         return OperatorPool.LAB
 
-    # 3. Охлаждение (Итерация 9, fix)
     if op.get("needs_cooling_zone"):
         return OperatorPool.COOLING_ZONE
 
-    # 4. Нагрев (Итерация 9, fix)
     if op.get("needs_boiler"):
         return OperatorPool.BOILER
 
-    # 5. Явно заданный пул из шаблона
     return op.get("operator_pool")
+
+
+# ==========================================
+# Итерация 11 (Шаг 6): разбиение длинных задач по режиму смен
+# ==========================================
+
+def _split_fill_duration(
+        total_duration: int,
+        shift_mode: str = "2x12",
+) -> List[int]:
+    """
+    Разбивает длительность слива на N частей.
+
+    Итерация 11 (Шаг 6): максимальная длительность части зависит
+    от режима смен:
+      - 1x8:  6 часов = 360 мин (75% смены)
+      - 3x8:  6 часов = 360 мин
+      - 2x12: 10 часов = 600 мин (83% смены)
+    Fallback: 8 часов = 480 мин.
+
+    Обоснование: задача должна помещаться в один рабочий интервал
+    смены с запасом (setups, overlaps, буфер).
+
+    Примеры:
+        _split_fill_duration(1400, "3x8") → [467, 467, 466]
+        _split_fill_duration(1400, "2x12") → [700, 700]
+        _split_fill_duration(560, "3x8")  → [560]
+        _split_fill_duration(200, "2x12") → [200]
+    """
+    if shift_mode == "1x8":
+        max_part = 6 * 60   # 360 мин
+    elif shift_mode == "3x8":
+        max_part = 6 * 60   # 360 мин
+    elif shift_mode == "2x12":
+        max_part = 10 * 60  # 600 мин
+    else:
+        max_part = 8 * 60   # fallback
+
+    if total_duration <= max_part:
+        return [total_duration]
+
+    num_parts = (total_duration + max_part - 1) // max_part
+    base_part = total_duration // num_parts
+    remainder = total_duration - base_part * num_parts
+
+    parts = [base_part] * num_parts
+    for i in range(remainder):
+        parts[i] += 1
+
+    return parts
 
 
 # --- Основная функция ---
@@ -235,15 +333,15 @@ def build_routing(
         products_map: Dict[str, Dict],
         calc_duration,
         gp_product: Optional[Dict] = None,
+        equipment_capability: Optional[List[Dict]] = None,
         truncate_after_lab: bool = False,
+        shift_mode: str = "2x12",       # ← Итерация 11 (Шаг 6)
 ) -> List[RoutingStep]:
     """
     Строит цепочку шагов для партии.
 
-    Итерация 9 (fix #2): postponed_wash и postponed_pumping — две
-    отдельные переменные. Раньше обе отложенные операции писались
-    в одну переменную postponed_op, из-за чего терялся шаг
-    TANK_TRANSFER (если после pumping шёл washing).
+    Итерация 11 (Шаг 6): shift_mode используется для разбиения
+    длинных LINE_FILL на подзадачи подходящей длины.
     """
     if not operations:
         return []
@@ -254,8 +352,23 @@ def build_routing(
         return []
 
     route_type = product.get("route_type", RouteType.DIRECT)
-    tank_id = _find_tank_for_reactor(reactor_id, equipment_links, equipment_map) if route_type == RouteType.VIA_TANK else None
-    line_id = _find_line_for_product(reactor_id, tank_id, equipment_links, equipment_map)
+    tank_id = (
+        _find_tank_for_reactor(reactor_id, equipment_links, equipment_map)
+        if route_type == RouteType.VIA_TANK
+        else None
+    )
+
+    gp_product_id = (
+        str(gp_product["id"]) if gp_product and gp_product.get("id") else None
+    )
+    line_id = _find_line_for_product(
+        reactor_id=reactor_id,
+        tank_id=tank_id,
+        equipment_links=equipment_links,
+        equipment_map=equipment_map,
+        gp_product_id=gp_product_id,
+        equipment_capability=equipment_capability,
+    )
     line_equipment = equipment_map.get(line_id, {}) if line_id else None
 
     # 2. Строим основную часть цепочки
@@ -264,7 +377,6 @@ def build_routing(
     parallel_group_last_op: Dict[str, str] = {}
     lab_seen = False
 
-    # Итерация 9 (fix #2): раздельные переменные
     postponed_wash: Optional[Dict] = None
     postponed_pumping: Optional[Dict] = None
 
@@ -274,11 +386,9 @@ def build_routing(
         is_washing = op.get("duration_formula") == DurationFormula.WASHING
         needs_lab = op.get("needs_lab", False)
 
-        # Обрезка после лаборатории
         if truncate_after_lab and lab_seen:
             break
 
-        # Откладываем перекачку и замывку "на потом"
         if is_washing:
             postponed_wash = op
             continue
@@ -287,9 +397,10 @@ def build_routing(
             postponed_pumping = op
             continue
 
-        # Создаем обычный шаг
         duration = calc_duration(op, batch, reactor, product)
-        depends_on, is_parallel_with = _calculate_dependencies(op, prev_op_id, parallel_group_last_op)
+        depends_on, is_parallel_with = _calculate_dependencies(
+            op, prev_op_id, parallel_group_last_op
+        )
 
         steps.append(RoutingStep(
             op_id=op_id,
@@ -327,13 +438,21 @@ def build_routing(
         prev_op_id = str(postponed_pumping["id"])
         last_op_before_fill = prev_op_id
 
+    # ==========================================
     # 4. Добавляем слив на линию
+    #    Итерация 11 (Шаг 6): разбиение с учётом shift_mode
+    # ==========================================
     if line_id:
         fill_duration = _calc_fill_duration(batch, product, gp_product)
         fill_op_id = f"fill_{batch['id']}"
 
-        primary_eq = tank_id if tank_id and route_type == RouteType.VIA_TANK else reactor_id
-        fill_op = {
+        primary_eq = (
+            tank_id
+            if tank_id and route_type == RouteType.VIA_TANK
+            else reactor_id
+        )
+
+        fill_op_template = {
             "id": fill_op_id,
             "name": "Слив на линию розлива",
             "duration_formula": DurationFormula.LINE_FILLING,
@@ -342,17 +461,60 @@ def build_routing(
             "needs_boiler": False,
         }
 
-        steps.append(RoutingStep(
-            op_id=fill_op_id,
-            op=fill_op,
-            role=TaskRole.LINE_FILL,
-            primary_equipment_id=primary_eq,
-            secondary_equipment_id=line_id,
-            duration=fill_duration,
-            depends_on_op_ids=[last_op_before_fill] if last_op_before_fill else [],
-            operator_pool=_assign_operator_pool(fill_op, line_equipment),
-        ))
-        prev_op_id = fill_op_id
+        # Итерация 11 (Шаг 6): разбиение с учётом shift_mode
+        part_durations = _split_fill_duration(
+            fill_duration,
+            shift_mode=shift_mode,
+        )
+
+        if len(part_durations) == 1:
+            steps.append(RoutingStep(
+                op_id=fill_op_id,
+                op=fill_op_template,
+                role=TaskRole.LINE_FILL,
+                primary_equipment_id=primary_eq,
+                secondary_equipment_id=line_id,
+                duration=fill_duration,
+                depends_on_op_ids=(
+                    [last_op_before_fill] if last_op_before_fill else []
+                ),
+                operator_pool=_assign_operator_pool(
+                    fill_op_template, line_equipment
+                ),
+            ))
+            prev_op_id = fill_op_id
+        else:
+            num_parts = len(part_durations)
+            prev_part_id = last_op_before_fill
+
+            for i, part_dur in enumerate(part_durations):
+                part_id = f"{fill_op_id}_part{i + 1}"
+                part_op = {
+                    **fill_op_template,
+                    "id": part_id,
+                    "name": (
+                        f"Слив на линию розлива "
+                        f"(часть {i + 1}/{num_parts})"
+                    ),
+                }
+
+                steps.append(RoutingStep(
+                    op_id=part_id,
+                    op=part_op,
+                    role=TaskRole.LINE_FILL,
+                    primary_equipment_id=primary_eq,
+                    secondary_equipment_id=line_id,
+                    duration=part_dur,
+                    depends_on_op_ids=(
+                        [prev_part_id] if prev_part_id else []
+                    ),
+                    operator_pool=_assign_operator_pool(
+                        part_op, line_equipment
+                    ),
+                ))
+                prev_part_id = part_id
+
+            prev_op_id = prev_part_id
 
     # 5. Добавляем замывку
     if postponed_wash is not None:
@@ -371,7 +533,7 @@ def build_routing(
     return _finalize_steps(steps)
 
 
-def _calculate_dependencies(op, prev_op_id, parallel_group_last_op) -> (List[str], List[str]):
+def _calculate_dependencies(op, prev_op_id, parallel_group_last_op):
     """Вычисляет зависимости для операции."""
     depends_on, is_parallel_with = [], []
     op_parallel_group = op.get("parallel_group_id")
@@ -405,6 +567,12 @@ def get_routing_summary(steps: List[RoutingStep]) -> Dict[str, Any]:
         "primary_equipments": [s.primary_equipment_id for s in steps],
         "secondary_equipments": [s.secondary_equipment_id for s in steps],
         "total_duration": sum(s.duration for s in steps),
-        "parallel_groups": len({s.op.get("parallel_group_id") for s in steps if s.op.get("parallel_group_id")}),
-        "operator_pools": sorted(list({s.operator_pool for s in steps if s.operator_pool})),
+        "parallel_groups": len({
+            s.op.get("parallel_group_id")
+            for s in steps
+            if s.op.get("parallel_group_id")
+        }),
+        "operator_pools": sorted(list({
+            s.operator_pool for s in steps if s.operator_pool
+        })),
     }

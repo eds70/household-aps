@@ -1,11 +1,20 @@
 # backend/app/api/v1/auth.py
 from fastapi import APIRouter, HTTPException, Depends, status
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
-from uuid import UUID
-from app.auth.models import LoginRequest, TokenResponse, UserResponse, ChangePasswordRequest
-from app.auth.security import verify_password, create_access_token, get_password_hash
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.auth.dependencies import get_current_user, get_db_session
+from app.auth.models import (
+    LoginRequest,
+    TokenResponse,
+    UserResponse,
+    ChangePasswordRequest,
+)
+from app.auth.security import (
+    verify_password_async,
+    get_password_hash_async,
+    create_access_token,
+)
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Авторизация"])
 
@@ -13,7 +22,7 @@ router = APIRouter(prefix="/api/v1/auth", tags=["Авторизация"])
 @router.post("/login", response_model=TokenResponse)
 async def login(
         request: LoginRequest,
-        db: AsyncSession = Depends(get_db_session)
+        db: AsyncSession = Depends(get_db_session),
 ):
     """
     Авторизация пользователя по email и паролю.
@@ -25,7 +34,7 @@ async def login(
             FROM app_user
             WHERE email = :email
         """),
-        {"email": request.email}
+        {"email": request.email},
     )
     user = result.fetchone()
 
@@ -42,7 +51,16 @@ async def login(
             detail="Пользователь заблокирован",
         )
 
-    if not user.password_hash or not verify_password(request.password, user.password_hash):
+    if not user.password_hash:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Неверный email или пароль",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # ✅ Async-версия bcrypt — не блокирует event loop
+    is_valid = await verify_password_async(request.password, user.password_hash)
+    if not is_valid:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Неверный email или пароль",
@@ -65,7 +83,7 @@ async def login(
             SET last_login_at = NOW()
             WHERE id = :user_id
         """),
-        {"user_id": user.id}
+        {"user_id": user.id},
     )
     await db.commit()
 
@@ -81,7 +99,7 @@ async def login(
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_info(
         current_user: dict = Depends(get_current_user),
-        db: AsyncSession = Depends(get_db_session)
+        db: AsyncSession = Depends(get_db_session),
 ):
     """
     Получение информации о текущем пользователе.
@@ -92,7 +110,7 @@ async def get_current_user_info(
             FROM app_user
             WHERE id = :user_id
         """),
-        {"user_id": current_user["user_id"]}
+        {"user_id": current_user["user_id"]},
     )
     user = result.fetchone()
 
@@ -117,31 +135,38 @@ async def get_current_user_info(
 async def change_password(
         request: ChangePasswordRequest,
         current_user: dict = Depends(get_current_user),
-        db: AsyncSession = Depends(get_db_session)
+        db: AsyncSession = Depends(get_db_session),
 ):
     """
     Смена пароля текущего пользователя.
     """
     result = await db.execute(
         text("SELECT password_hash FROM app_user WHERE id = :user_id"),
-        {"user_id": current_user["user_id"]}
+        {"user_id": current_user["user_id"]},
     )
     row = result.fetchone()
 
-    if not row or not verify_password(request.old_password, row.password_hash):
+    if not row or not row.password_hash:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Неверный текущий пароль",
         )
 
-    new_hash = get_password_hash(request.new_password)
+    is_valid = await verify_password_async(request.old_password, row.password_hash)
+    if not is_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Неверный текущий пароль",
+        )
+
+    new_hash = await get_password_hash_async(request.new_password)
     await db.execute(
         text("""
             UPDATE app_user
             SET password_hash = :new_hash
             WHERE id = :user_id
         """),
-        {"new_hash": new_hash, "user_id": current_user["user_id"]}
+        {"new_hash": new_hash, "user_id": current_user["user_id"]},
     )
     await db.commit()
 

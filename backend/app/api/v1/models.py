@@ -3,12 +3,26 @@
 Pydantic-модели для API планирования и Ганта.
 
 Итерация 2:
-- Добавлены модели для Advisor (AdvisorTip, AdvisorResponse)
-- Добавлены модели для Feasibility (FeasibilityResponse)
+- Добавлены модели для Advisor (AdvisorTip, AdvisorResponse).
+- Добавлены модели для Feasibility (FeasibilityResponse).
 
 Итерация 5 (hotfix #3):
 - Добавлены поля is_lab_blocked, lab_status, lab_block_reason
   в GanttTask для отображения блокировок лабораторией на Ганте.
+
+Итерация 7:
+- Добавлено поле cooling_mode в GanttTask.
+
+Итерация 10:
+- horizon_hours по умолчанию уменьшен с 2160 (90 дней)
+  до 720 (30 дней).
+  Обоснование: реальный план укладывается в 30 дней, а меньшее
+  число переменных ускоряет propagation в OR-Tools и позволяет
+  solver'у найти решение, полностью соблюдающее календарные
+  ограничения (работа в выходные запрещена).
+- timeout_seconds увеличен с 120 до 600.
+  Solver получает больше времени на поиск OPTIMAL или корректного
+  FEASIBLE с полным propagation.
 """
 
 from datetime import datetime
@@ -19,8 +33,21 @@ from pydantic import BaseModel, Field
 
 
 class ScheduleBuildRequest(BaseModel):
-    horizon_hours: int = Field(default=2160)
-    timeout_seconds: int = Field(default=120)
+    """
+    Параметры запроса на построение расписания.
+
+    Итерация 10: horizon_hours уменьшен с 2160 до 720 (30 дней).
+    Реальный план укладывается в 30 дней; меньшее число переменных
+    ускоряет propagation.
+    """
+    horizon_hours: int = Field(
+        default=720,
+        description="Горизонт планирования в часах (по умолчанию 30 дней)",
+    )
+    timeout_seconds: int = Field(
+        default=600,
+        description="Таймаут solver'а в секундах",
+    )
 
 
 class ScheduleBuildResponse(BaseModel):
@@ -53,6 +80,7 @@ class GanttTask(BaseModel):
     lab_block_reason: Optional[str] = None
     # Итерация 7: режим охлаждения
     cooling_mode: Optional[str] = None   # "fast" | "slow" | None
+
 
 class GanttResponse(BaseModel):
     tasks: List[GanttTask]

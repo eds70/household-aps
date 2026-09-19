@@ -591,3 +591,39 @@ export interface CzActionResponse {
     message: string;
     resolved: boolean;
 }
+
+// ==========================================
+// НАСТРОЙКИ (Итерация 11)
+// ==========================================
+
+export type SettingValueType = 'int' | 'float' | 'bool' | 'str' | 'json' | 'select';
+
+export interface SettingOption {
+    value: string;
+    label: string;
+}
+
+export interface SettingSpec {
+    key: string;
+    category: string;
+    category_label: string;
+    label: string;
+    value_type: SettingValueType;
+    default: any;
+    description: string;
+    min_value: number | null;
+    max_value: number | null;
+    options: SettingOption[] | null;
+    display_order: number;
+    is_system: boolean;
+}
+
+export interface SettingsCategory {
+    key: string;
+    label: string;
+}
+
+export interface SettingsSchema {
+    categories: SettingsCategory[];
+    settings: SettingSpec[];
+}

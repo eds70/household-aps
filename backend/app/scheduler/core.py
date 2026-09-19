@@ -7,21 +7,35 @@
 Итерация 6: operator_pool + resource_pools в плагины.
 Итерация 7: дискретизация охлаждения (fast/slow) для деградации.
 Итерация 7 (fix #1): связывание b_slow с пересечением cooling-интервалов.
-Итерация 7 (fix #2): overlap_ij вычисляется через fast_end, а не через
-                     chosen_end. Иначе циклическая зависимость:
-                     chosen_end ← b_slow ← overlap ← chosen_end.
-Итерация 7 (fix #3): fast_end и slow_end жёстко связаны с start + duration
-                     явным Add(...). Иначе при отсутствии минимизации
-                     (или при поиске FEASIBLE вместо OPTIMAL)
-                     solver может выбрать произвольные end, из-за чего
-                     overlap всегда = 1, и все cooling-задачи становятся slow.
+Итерация 7 (fix #2): overlap_ij через fast_end.
+Итерация 7 (fix #3): fast_end и slow_end жёстко связаны с start + duration.
+
+Итерация 9 (fix #3): передача equipment_capability в build_routing.
+Итерация 9 (fix #7): _resolve_t0 — naive → МСК → UTC.
+Итерация 9 (fix #9): явные is_before и is_after.
+Итерация 9 (fix #10): пропуск длинных задач (> 12 часов).
+
+Итерация 10:
+  - operation_name в _extract_solution НЕ перезаписывается для LINE_FILL.
+  - horizon_hours по умолчанию: 720 (30 дней).
+  - timeout_seconds по умолчанию: 600.
+  - Диагностика подзадач с '(часть'.
+  - fix #12: уникальные имена BoolVar для календарных ограничений.
+  - fix #13: календарные ограничения убраны из CP-SAT; постобработка.
+
+Итерация 11 (Шаг 6):
+  - Читает shift_settings из data_loader (shift_mode, allow_weekend_work).
+  - Читает shifts (таблица shift) для постпроцессора.
+  - Передаёт shift_mode в build_routing (для разбиения длинных задач).
+  - Передаёт shifts и allow_weekend_work в apply_calendar_postprocess.
 """
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Any, Tuple, Optional
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from ortools.sat.python import cp_model
 
@@ -30,23 +44,42 @@ from .data_loader import DataLoader
 from .duration.strategies import get_strategy, DurationContext
 from .feature_flags import FeatureFlags
 from .logging_config import setup_scheduler_logging, log_with_context
-from .routing import build_routing, RoutingStep, TaskRole, RouteType, get_routing_summary
+from .routing import (
+    build_routing,
+    RoutingStep,
+    TaskRole,
+    RouteType,
+    get_routing_summary,
+)
 from .saver import ScheduleSaver
 
 logger = setup_scheduler_logging(level=logging.INFO)
 
+
 class ProductionScheduler:
-    def __init__(self, horizon_hours: int = 2160, org_id: UUID = None):
+    def __init__(
+            self,
+            horizon_hours: int = 720,
+            timeout_seconds: int = 600,
+            org_id: UUID = None,
+    ):
+        """
+        Итерация 10: horizon_hours по умолчанию 720 (30 дней),
+        timeout_seconds по умолчанию 600.
+        """
         self.horizon_minutes = horizon_hours * 60
+        self.timeout_seconds = timeout_seconds
         self.org_id = org_id
         self.data_loader = DataLoader(org_id=org_id)
         self.tasks: Dict[Tuple[str, str], Dict] = {}
         self.t0: Optional[datetime] = None
         self.flags: Optional[FeatureFlags] = None
         self.skipped_batches: List[Dict[str, Any]] = []
-        # Итерация 7
         self.cooling_degradation_factor: float = 1.3
 
+    # ==========================================
+    # Расчёт длительностей
+    # ==========================================
     def _calculate_duration(
             self,
             operation: Dict,
@@ -62,38 +95,62 @@ class ProductionScheduler:
         except ValueError:
             return operation.get("base_duration_mins", 0)
 
+    # ==========================================
+    # Работа с таймзонами
+    # ==========================================
     def _datetime_to_minutes(self, dt: datetime) -> int:
         if dt.tzinfo is not None:
-            dt = dt.replace(tzinfo=None)
-        t0_naive = self.t0.replace(tzinfo=None)
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+        if self.t0 is None:
+            return 0
+
+        if self.t0.tzinfo is not None:
+            t0_naive = self.t0.astimezone(timezone.utc).replace(tzinfo=None)
+        else:
+            t0_naive = self.t0
+
         delta = dt - t0_naive
         return max(0, int(delta.total_seconds() / 60))
 
     def _resolve_t0(self, org_settings: Dict[str, Any]) -> datetime:
+        """
+        Возвращает t0 — начало планирования (naive-UTC).
+        Наивное planning_start_date интерпретируется как МСК.
+        """
         raw = org_settings.get("planning_start_date")
         if raw is not None:
             try:
                 if isinstance(raw, str):
                     cleaned = raw.strip().strip('"').strip("'")
-                    return datetime.fromisoformat(cleaned)
-                return datetime.fromisoformat(str(raw).strip().strip('"'))
+                    dt = datetime.fromisoformat(cleaned)
+                else:
+                    dt = datetime.fromisoformat(str(raw).strip().strip('"'))
+
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=ZoneInfo("Europe/Moscow"))
+
+                dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+                return dt
+
             except (ValueError, TypeError) as e:
                 log_with_context(
                     logger, logging.WARNING,
                     f"Не удалось распарсить planning_start_date='{raw}': {e}. "
-                    f"Использую fallback 2026-09-01 08:00:00",
+                    f"Использую fallback 2026-09-01 05:00:00 UTC",
                     stage="init", org_id=str(self.org_id),
                 )
-        return datetime(2026, 9, 1, 8, 0, 0)
+
+        return datetime(2026, 9, 1, 5, 0, 0)
 
     def _is_batch_blocked(self, batch: Dict) -> bool:
-        """Проверяет, заблокирована ли партия лабораторией."""
         if not self.flags or not self.flags.enable_lab_blocking:
             return False
         return bool(batch.get("is_lab_blocked", False))
 
-    def _resolve_cooling_degradation_factor(self, org_settings: Dict[str, Any]) -> float:
-        """Читает cooling_degradation_factor из настроек."""
+    def _resolve_cooling_degradation_factor(
+            self, org_settings: Dict[str, Any]
+    ) -> float:
         raw = org_settings.get("cooling_degradation_factor")
         if raw is None:
             return 1.3
@@ -104,33 +161,14 @@ class ProductionScheduler:
         except (ValueError, TypeError):
             return 1.3
 
+    # ==========================================
+    # Модель деградации охлаждения
+    # ==========================================
     def _apply_cooling_degradation_model(
             self,
             model: cp_model.CpModel,
             cooling_tasks: List[Dict],
     ) -> None:
-        """
-        Итерация 7 (fix #2): корректная модель деградации охлаждения.
-
-        Логика по ТЗ:
-          - 1 реактор охлаждается  → fast (base duration).
-          - 2+ реактора охлаждаются → каждый slow (base × factor).
-
-        КРИТИЧНО: overlap_ij определяется через `fast_end` (фиксированную
-        длительность), а НЕ через `chosen_end`. Иначе возникает
-        циклическая зависимость:
-            chosen_end зависит от b_slow,
-            b_slow зависит от overlap,
-            overlap зависит от chosen_end.
-        Solver находит фиктивное решение, где все задачи slow,
-        даже если они последовательны.
-
-        Модель:
-          Для каждой cooling-задачи i:
-            b_slow_i = 1  ⟺  ∃ j ≠ i: cooling_j пересекается с cooling_i
-            b_fast_i = 1  ⟺  не существует такого j
-            b_fast_i + b_slow_i == 1  (уже задано при создании задачи)
-        """
         if not cooling_tasks:
             return
 
@@ -141,16 +179,7 @@ class ProductionScheduler:
             stage="build", org_id=str(self.org_id),
         )
 
-        # ==========================================
-        # Вычисляем "fast end" для каждой задачи.
-        #
-        # Если у задачи сохранён fast_end (мы добавили его в self.tasks),
-        # используем его. Если нет — создаём переменную
-        # fast_end = start + duration (fallback для тестов).
-        # ==========================================
-
         for i, ti in enumerate(cooling_tasks):
-            # Получаем "fast end" как fixed end для сравнения
             ti_fast_end = ti.get("fast_end")
 
             if ti_fast_end is None:
@@ -178,60 +207,37 @@ class ProductionScheduler:
                     )
                     model.Add(tj_fast_end_fixed == tj["start"] + duration_j)
 
-                # overlap_ij = (tj.start < ti.fast_end) AND (ti.start < tj.fast_end)
-                # Используем fast_end для ОБЕИХ задач — это фиксированные
-                # значения, не зависящие от b_fast / b_slow.
                 overlap_ij = model.NewBoolVar(f"ov_cool_{i}_{j}")
 
-                # tj.start < ti.fast_end
                 b1 = model.NewBoolVar(f"b1_{i}_{j}")
                 model.Add(tj_fast_start < ti_fast_end).OnlyEnforceIf(b1)
                 model.Add(tj_fast_start >= ti_fast_end).OnlyEnforceIf(b1.Not())
 
-                # ti.start < tj.fast_end
                 b2 = model.NewBoolVar(f"b2_{i}_{j}")
                 model.Add(ti["start"] < tj_fast_end_fixed).OnlyEnforceIf(b2)
                 model.Add(ti["start"] >= tj_fast_end_fixed).OnlyEnforceIf(b2.Not())
 
-                # overlap_ij = b1 AND b2
                 model.AddBoolAnd([b1, b2]).OnlyEnforceIf(overlap_ij)
                 model.AddBoolOr([b1.Not(), b2.Not()]).OnlyEnforceIf(overlap_ij.Not())
 
                 overlaps.append(overlap_ij)
 
             if not overlaps:
-                # Единственная cooling-задача — всегда fast
                 model.Add(ti["b_fast"] == 1)
                 continue
 
-            # b_slow_i >= overlap_ij для каждого j
             for ov in overlaps:
                 model.Add(ti["b_slow"] >= ov)
 
-            # b_slow_i <= sum(overlaps):
-            # если все overlaps = 0, то b_slow_i = 0
             model.Add(ti["b_slow"] <= sum(overlaps))
 
+    # ==========================================
+    # Основной метод
+    # ==========================================
     async def build_schedule(
             self,
             pinned_tasks: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        """
-        Строит расписание.
-
-        Итерация 9 (A3): добавлен параметр pinned_tasks — список задач,
-        которые должны быть ЖЁСТКО зафиксированы на своих planned_start
-        и planned_end (если задан). Используется при перепланировании.
-
-        Каждый элемент pinned_tasks — dict:
-          {
-            "batch_id": str,
-            "op_id": str | None,
-            "task_role": str | None,
-            "planned_start": datetime | str,
-            "planned_end": datetime | str | None,
-          }
-        """
         log_with_context(
             logger, logging.INFO,
             f"Начало построения плана "
@@ -250,6 +256,15 @@ class ProductionScheduler:
         org_settings = data.get("org_settings", {})
         gp_products = data.get("gp_products", {})
         resource_pools = data.get("resource_pools", [])
+        equipment_capability = data.get("equipment_capability", [])
+
+        # ==========================================
+        # Итерация 11 (Шаг 6): смены и настройки смен
+        # ==========================================
+        shift_settings = data.get("shift_settings", {})
+        shift_mode = shift_settings.get("shift_mode", "2x12")
+        allow_weekend_work = shift_settings.get("allow_weekend_work", False)
+        shifts = data.get("shifts", [])
 
         self.flags = FeatureFlags(org_settings)
         log_with_context(
@@ -261,12 +276,13 @@ class ProductionScheduler:
         self.t0 = self._resolve_t0(org_settings)
         log_with_context(
             logger, logging.INFO,
-            f"t0 = {self.t0.isoformat()}",
+            f"t0 = {self.t0.isoformat()} (naive-UTC)",
             stage="init", org_id=str(self.org_id),
         )
 
-        # Итерация 7: коэффициент деградации
-        self.cooling_degradation_factor = self._resolve_cooling_degradation_factor(org_settings)
+        self.cooling_degradation_factor = self._resolve_cooling_degradation_factor(
+            org_settings
+        )
         log_with_context(
             logger, logging.INFO,
             f"Cooling degradation: enable={self.flags.enable_cooling_degradation}, "
@@ -278,7 +294,13 @@ class ProductionScheduler:
             logger, logging.INFO,
             f"Загружено: партий={len(batches)}, оборудования={len(equipment_map)}, "
             f"связей={len(equipment_links)}, ГП={len(gp_products)}, "
-            f"событий календаря={len(calendar_events)}",
+            f"событий календаря={len(calendar_events)}, "
+            f"capability={len(equipment_capability)}, "
+            f"horizon={self.horizon_minutes // 60}ч, "
+            f"timeout={self.timeout_seconds}с, "
+            f"shift_mode={shift_mode}, "
+            f"allow_weekend_work={allow_weekend_work}, "
+            f"shifts={len(shifts)}",
             stage="load", org_id=str(self.org_id),
         )
 
@@ -294,11 +316,28 @@ class ProductionScheduler:
             start_min = self._datetime_to_minutes(event["starts_at"])
             end_min = self._datetime_to_minutes(event["ends_at"])
             calendar_minutes.append({
-                "equipment_id": str(event.get("equipment_id", "")) if event.get("equipment_id") else None,
+                "equipment_id": (
+                    str(event.get("equipment_id", ""))
+                    if event.get("equipment_id")
+                    else None
+                ),
                 "event_type": event["event_type"],
                 "start": start_min,
                 "end": end_min,
             })
+
+        log_with_context(
+            logger, logging.INFO,
+            f"Календарных событий (в минутах от t0): {len(calendar_minutes)}",
+            stage="load", org_id=str(self.org_id),
+        )
+
+        for cal in calendar_minutes:
+            print(
+                f"[CAL] event={cal['event_type']} "
+                f"eq={cal['equipment_id']} "
+                f"start_min={cal['start']} end_min={cal['end']}"
+            )
 
         model = cp_model.CpModel()
 
@@ -323,7 +362,10 @@ class ProductionScheduler:
                     "batch_id": batch_id,
                     "product_id": product_id,
                     "equipment_id": equipment_id,
-                    "reason": batch.get("lab_block_reason") or "Заблокировано лабораторией",
+                    "reason": (
+                            batch.get("lab_block_reason")
+                            or "Заблокировано лабораторией"
+                    ),
                     "lab_status": batch.get("lab_status", "BLOCKED"),
                 }
                 self.skipped_batches.append(skip_info)
@@ -336,7 +378,9 @@ class ProductionScheduler:
                 continue
 
             gp_product_id = batch.get("gp_product_id")
-            gp_product = gp_products.get(str(gp_product_id)) if gp_product_id else None
+            gp_product = (
+                gp_products.get(str(gp_product_id)) if gp_product_id else None
+            )
 
             product = products_map.get(product_id, {})
             reactor = equipment_map.get(equipment_id, {})
@@ -348,6 +392,7 @@ class ProductionScheduler:
             else:
                 equipment_links_for_routing = equipment_links
 
+            # Итерация 11 (Шаг 6): передаём shift_mode
             steps = build_routing(
                 batch=batch,
                 product=product,
@@ -358,6 +403,8 @@ class ProductionScheduler:
                 products_map=products_map,
                 calc_duration=self._calculate_duration,
                 gp_product=gp_product,
+                equipment_capability=equipment_capability,
+                shift_mode=shift_mode,       # ← НОВОЕ
             )
 
             routing_steps[batch_id] = steps
@@ -396,9 +443,6 @@ class ProductionScheduler:
         # ==========================================
         # СОЗДАНИЕ ПЕРЕМЕННЫХ
         # ==========================================
-        # Итерация 7: для cooling-операций создаём fast/slow интервалы,
-        # если feature-флаг enable_cooling_degradation включён.
-
         cooling_count = 0
         for batch_id, steps in routing_steps.items():
             for step in steps:
@@ -408,11 +452,15 @@ class ProductionScheduler:
                         self.flags.enable_cooling_degradation and needs_cooling
                 )
 
-                start_var = model.NewIntVar(0, self.horizon_minutes, f"start_{batch_id}_{step.op_id}")
+                start_var = model.NewIntVar(
+                    0, self.horizon_minutes,
+                    f"start_{batch_id}_{step.op_id}"
+                )
 
                 if use_degradation:
-                    # === Итерация 7: fast/slow ===
-                    slow_duration = int(step.duration * self.cooling_degradation_factor)
+                    slow_duration = int(
+                        step.duration * self.cooling_degradation_factor
+                    )
                     if slow_duration < step.duration:
                         slow_duration = step.duration
 
@@ -420,8 +468,14 @@ class ProductionScheduler:
                     b_slow = model.NewBoolVar(f"b_slow_{batch_id}_{step.op_id}")
                     model.Add(b_fast + b_slow == 1)
 
-                    fast_end = model.NewIntVar(0, self.horizon_minutes, f"fast_end_{batch_id}_{step.op_id}")
-                    slow_end = model.NewIntVar(0, self.horizon_minutes, f"slow_end_{batch_id}_{step.op_id}")
+                    fast_end = model.NewIntVar(
+                        0, self.horizon_minutes,
+                        f"fast_end_{batch_id}_{step.op_id}"
+                    )
+                    slow_end = model.NewIntVar(
+                        0, self.horizon_minutes,
+                        f"slow_end_{batch_id}_{step.op_id}"
+                    )
 
                     fast_interval = model.NewOptionalIntervalVar(
                         start_var, step.duration, fast_end,
@@ -432,22 +486,16 @@ class ProductionScheduler:
                         b_slow, f"slow_interval_{batch_id}_{step.op_id}",
                     )
 
-                    # Итерация 7 (fix #3): ЯВНАЯ связь end = start + duration.
-                    # NewOptionalIntervalVar формально задаёт эту связь, но без
-                    # явного Add(...) solver может выбрать произвольное fast_end
-                    # при отсутствии минимизации (например, при поиске FEASIBLE
-                    # вместо OPTIMAL, или в unit-тестах).
                     model.Add(fast_end == start_var + step.duration)
                     model.Add(slow_end == start_var + slow_duration)
 
-                    # chosen_end — «реальная» длительность
-                    chosen_end = model.NewIntVar(0, self.horizon_minutes, f"chosen_end_{batch_id}_{step.op_id}")
+                    chosen_end = model.NewIntVar(
+                        0, self.horizon_minutes,
+                        f"chosen_end_{batch_id}_{step.op_id}"
+                    )
                     model.Add(chosen_end == fast_end).OnlyEnforceIf(b_fast)
                     model.Add(chosen_end == slow_end).OnlyEnforceIf(b_slow)
 
-                    # interval — общий интервал для NoOverlap по реактору.
-                    # Используем chosen_end как конец, чтобы NoOverlap
-                    # учитывал реальную (возможно, увеличенную) длительность.
                     interval = model.NewIntervalVar(
                         start_var, step.duration, chosen_end,
                         f"interval_{batch_id}_{step.op_id}",
@@ -459,7 +507,7 @@ class ProductionScheduler:
                         "end": chosen_end,
                         "fast_interval": fast_interval,
                         "slow_interval": slow_interval,
-                        "fast_end": fast_end,           # ← Итерация 7 (fix #2)
+                        "fast_end": fast_end,
                         "b_fast": b_fast,
                         "b_slow": b_slow,
                         "chosen_end": chosen_end,
@@ -483,10 +531,13 @@ class ProductionScheduler:
                     }
                     cooling_count += 1
                 else:
-                    # === Обычная логика ===
-                    end_var = model.NewIntVar(0, self.horizon_minutes, f"end_{batch_id}_{step.op_id}")
+                    end_var = model.NewIntVar(
+                        0, self.horizon_minutes,
+                        f"end_{batch_id}_{step.op_id}"
+                    )
                     interval = model.NewIntervalVar(
-                        start_var, step.duration, end_var, f"interval_{batch_id}_{step.op_id}"
+                        start_var, step.duration, end_var,
+                        f"interval_{batch_id}_{step.op_id}"
                     )
 
                     self.tasks[key] = {
@@ -514,36 +565,23 @@ class ProductionScheduler:
         if cooling_count > 0:
             log_with_context(
                 logger, logging.INFO,
-                f"Итерация 7: создано {cooling_count} задач с деградацией охлаждения",
+                f"Итерация 7: создано {cooling_count} задач "
+                f"с деградацией охлаждения",
                 stage="build", org_id=str(self.org_id),
             )
 
-        # ==========================================
-        # A3 (Итерация 9): ПРИМЕНЕНИЕ PINNED CONSTRAINTS
-        # ==========================================
-        # Жёстко фиксируем pinned-задачи на их planned_start.
-        # Делается ПОСЛЕ создания всех self.tasks, ДО применения
-        # остальных ограничений и минимизации makespan.
         if pinned_tasks:
             self._apply_pinned_constraints(model, pinned_tasks)
 
-        # ==========================================
-        # ИТЕРАЦИЯ 7 (FIX): МОДЕЛЬ ДЕГРАДАЦИИ ОХЛАЖДЕНИЯ
-        # ==========================================
-
-        # ==========================================
-        # ИТЕРАЦИЯ 7 (FIX): МОДЕЛЬ ДЕГРАДАЦИИ ОХЛАЖДЕНИЯ
-        # ==========================================
-        # Собираем все cooling-задачи и связываем b_slow с фактическим
-        # пересечением fast-интервалов. Это делается ДО применения
-        # плагинов, т.к. плагины добавляют только общее ограничение capacity.
         if self.flags.enable_cooling_degradation and cooling_count > 0:
             cooling_tasks = [
                 t for t in self.tasks.values() if t.get("is_cooling_degraded")
             ]
             self._apply_cooling_degradation_model(model, cooling_tasks)
 
-        # Зависимости (используем task["end"], который равен chosen_end для cooling)
+        # ==========================================
+        # ЗАВИСИМОСТИ
+        # ==========================================
         deps_count = 0
         for batch_id, steps in routing_steps.items():
             for step in steps:
@@ -551,7 +589,10 @@ class ProductionScheduler:
                 for dep_op_id in step.depends_on_op_ids:
                     dep_key = (batch_id, dep_op_id)
                     if dep_key in self.tasks:
-                        model.Add(self.tasks[key]["start"] >= self.tasks[dep_key]["end"])
+                        model.Add(
+                            self.tasks[key]["start"]
+                            >= self.tasks[dep_key]["end"]
+                        )
                         deps_count += 1
 
         log_with_context(
@@ -560,17 +601,22 @@ class ProductionScheduler:
             stage="build", org_id=str(self.org_id),
         )
 
-        # NoOverlap — исключаем cooling_zone (обрабатывается плагином)
+        # ==========================================
+        # NOOVERLAP
+        # ==========================================
         intervals_by_equipment: Dict[str, List] = {}
         for key, task in self.tasks.items():
             primary = task["primary_equipment_id"]
             secondary = task["secondary_equipment_id"]
             if primary:
-                intervals_by_equipment.setdefault(primary, []).append(task["interval"])
+                intervals_by_equipment.setdefault(primary, []).append(
+                    task["interval"]
+                )
             if secondary:
-                intervals_by_equipment.setdefault(secondary, []).append(task["interval"])
+                intervals_by_equipment.setdefault(secondary, []).append(
+                    task["interval"]
+                )
 
-        # Определяем ID cooling_zone оборудования (если есть)
         cooling_zone_ids = set()
         for eq_id, eq in equipment_map.items():
             if eq.get("type") == "COOLING_ZONE":
@@ -579,7 +625,6 @@ class ProductionScheduler:
         nooverlap_count = 0
         for eq_id, intervals in intervals_by_equipment.items():
             if eq_id in cooling_zone_ids:
-                # Пропускаем — за это отвечает CoolingDegradationConstraint
                 continue
             if len(intervals) > 1:
                 model.AddNoOverlap(intervals)
@@ -591,7 +636,9 @@ class ProductionScheduler:
             stage="build", org_id=str(self.org_id),
         )
 
-        # Setup-ограничения (используют task["start"] и task["end"])
+        # ==========================================
+        # SETUP
+        # ==========================================
         setup_count = 0
         last_by_reactor: Dict[str, List[Dict]] = {}
         first_by_reactor: Dict[str, List[Dict]] = {}
@@ -602,7 +649,6 @@ class ProductionScheduler:
             reactor_id = task["primary_equipment_id"]
             if not reactor_id:
                 continue
-
             if task["is_last_in_batch"]:
                 last_by_reactor.setdefault(reactor_id, []).append(task)
             if task["is_first_in_batch"]:
@@ -615,22 +661,34 @@ class ProductionScheduler:
                     if last_task["batch_id"] == first_task["batch_id"]:
                         continue
 
-                    last_prod = self._get_product_code_for_batch(last_task["batch_id"], routing_steps)
-                    first_prod = self._get_product_code_for_batch(first_task["batch_id"], routing_steps)
+                    last_prod = self._get_product_code_for_batch(
+                        last_task["batch_id"], routing_steps
+                    )
+                    first_prod = self._get_product_code_for_batch(
+                        first_task["batch_id"], routing_steps
+                    )
 
                     default_setup = 30 if last_prod == first_prod else 90
-                    setup_ij = setup_matrix.get((last_prod, first_prod), default_setup)
-                    setup_ji = setup_matrix.get((first_prod, last_prod), default_setup)
+                    setup_ij = setup_matrix.get(
+                        (last_prod, first_prod), default_setup
+                    )
+                    setup_ji = setup_matrix.get(
+                        (first_prod, last_prod), default_setup
+                    )
 
                     i_before_j = model.NewBoolVar(
-                        f"setup_{reactor_id[:8]}_{last_task['batch_id'][:8]}_before_{first_task['batch_id'][:8]}"
+                        f"setup_{reactor_id[:8]}_"
+                        f"{last_task['batch_id'][:8]}_before_"
+                        f"{first_task['batch_id'][:8]}"
                     )
                     model.Add(
                         first_task["start"] >= last_task["end"] + setup_ij
                     ).OnlyEnforceIf(i_before_j)
 
                     j_before_i = model.NewBoolVar(
-                        f"setup_{reactor_id[:8]}_{first_task['batch_id'][:8]}_before_{last_task['batch_id'][:8]}"
+                        f"setup_{reactor_id[:8]}_"
+                        f"{first_task['batch_id'][:8]}_before_"
+                        f"{last_task['batch_id'][:8]}"
                     )
                     model.Add(
                         last_task["start"] >= first_task["end"] + setup_ji
@@ -645,35 +703,19 @@ class ProductionScheduler:
             stage="build", org_id=str(self.org_id),
         )
 
-        # Календарь (использует task["start"] и task["end"])
-        calendar_count = 0
-        for cal_event in calendar_minutes:
-            eq_id = cal_event["equipment_id"]
-            start_min = cal_event["start"]
-            end_min = cal_event["end"]
-
-            affected = []
-            for key, task in self.tasks.items():
-                if eq_id is None:
-                    affected.append(task)
-                elif task["primary_equipment_id"] == eq_id or task["secondary_equipment_id"] == eq_id:
-                    affected.append(task)
-
-            for task in affected:
-                ends_before = model.NewBoolVar(
-                    f"cal_{task['batch_id'][:8]}_{task['op_id'][:8]}_before_{start_min}"
-                )
-                model.Add(task["end"] <= start_min).OnlyEnforceIf(ends_before)
-                model.Add(task["start"] >= end_min).OnlyEnforceIf(ends_before.Not())
-                calendar_count += 1
-
+        # ==========================================
+        # КАЛЕНДАРНЫЕ ОГРАНИЧЕНИЯ — ОТКЛЮЧЕНЫ (Итерация 10, fix #13)
+        # ==========================================
         log_with_context(
             logger, logging.INFO,
-            f"Календарных ограничений: {calendar_count}",
+            "Календарные ограничения отключены "
+            "(постобработка вместо CP-SAT)",
             stage="build", org_id=str(self.org_id),
         )
 
-        # Плагины
+        # ==========================================
+        # ПЛАГИНЫ
+        # ==========================================
         plugin_tasks = {}
         for key, task in self.tasks.items():
             plugin_tasks[key] = {
@@ -701,20 +743,25 @@ class ProductionScheduler:
             stage="build", org_id=str(self.org_id),
         )
 
-        # Целевая функция (использует task["end"] = chosen_end для cooling)
+        # ==========================================
+        # ЦЕЛЕВАЯ ФУНКЦИЯ
+        # ==========================================
         makespan = model.NewIntVar(0, self.horizon_minutes, "makespan")
         for task in self.tasks.values():
             model.Add(makespan >= task["end"])
         model.Minimize(makespan)
 
-        # Solver
+        # ==========================================
+        # SOLVER
+        # ==========================================
         log_with_context(
             logger, logging.INFO,
-            "Запуск OR-Tools CP-SAT solver (timeout=120s)...",
+            f"Запуск OR-Tools CP-SAT solver "
+            f"(timeout={self.timeout_seconds}s, workers=4)...",
             stage="solve", org_id=str(self.org_id),
         )
         solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = 120.0
+        solver.parameters.max_time_in_seconds = float(self.timeout_seconds)
         solver.parameters.num_search_workers = 4
         status = solver.Solve(model)
 
@@ -726,10 +773,36 @@ class ProductionScheduler:
                 f"objective={solver.ObjectiveValue():.0f} мин",
                 stage="solve", org_id=str(self.org_id),
             )
+
             result = self._extract_solution(
                 solver, equipment_map, products_map, batches, routing_steps
             )
             result["skipped_batches"] = self.skipped_batches
+
+            # ==========================================
+            # Итерация 11 (Шаг 6): постобработка календаря
+            # ==========================================
+            from .calendar_postprocess import apply_calendar_postprocess
+            postprocess_stats = apply_calendar_postprocess(
+                tasks=result["tasks"],
+                calendar_events=calendar_events,
+                shifts=shifts,                        # ← НОВОЕ
+                t0=self.t0,
+                horizon_minutes=self.horizon_minutes,
+                allow_weekend_work=allow_weekend_work,  # ← НОВОЕ
+            )
+            result["calendar_postprocess"] = postprocess_stats
+
+            log_with_context(
+                logger, logging.INFO,
+                f"Постобработка календаря: сдвинуто "
+                f"{postprocess_stats['shifted_tasks']} "
+                f"из {postprocess_stats['total_tasks']}, "
+                f"skipped={postprocess_stats.get('skipped', False)}, "
+                f"reason={postprocess_stats.get('reason', 'n/a')}",
+                stage="postprocess", org_id=str(self.org_id),
+            )
+
             return result
         else:
             log_with_context(
@@ -743,34 +816,20 @@ class ProductionScheduler:
                 "skipped_batches": self.skipped_batches,
             }
 
+    # ==========================================
+    # A3: pinned constraints
+    # ==========================================
     def _apply_pinned_constraints(
             self,
             model: cp_model.CpModel,
             pinned_tasks: List[Dict[str, Any]],
     ) -> None:
-        """
-        Итерация 9 (A3): жёстко фиксирует pinned-задачи
-        на их planned_start (и planned_end, если задан).
-
-        Как ищет задачу в модели:
-          1. По (batch_id, op_id) — если op_id задан.
-          2. Иначе по (batch_id, task_role) — первое совпадение.
-
-        Побочный эффект:
-          Задачи, зависящие от pinned (через depends_on_op_ids),
-          тоже сдвинутся — это правильно.
-
-        Если pinned-задача не найдена (партия заблокирована
-        лабораторией или отсутствует), она пропускается
-        с WARNING в лог.
-        """
         if not pinned_tasks:
             return
 
         applied_count = 0
         skipped_count = 0
 
-        # Индексы для быстрого поиска задач
         by_batch_op: Dict[Tuple[str, str], Dict] = {}
         by_batch_role: Dict[Tuple[str, str], Dict] = {}
 
@@ -792,7 +851,6 @@ class ProductionScheduler:
             planned_start = pinned.get("planned_start")
             planned_end = pinned.get("planned_end")
 
-            # Ищем задачу
             task = None
             if batch_id and op_id:
                 task = by_batch_op.get((batch_id, op_id))
@@ -801,30 +859,19 @@ class ProductionScheduler:
 
             if task is None:
                 skipped_count += 1
-                log_with_context(
-                    logger, logging.WARNING,
-                    f"A3: pinned-задача не найдена в модели: "
-                    f"batch={batch_id[:8] if batch_id else '?'}, "
-                    f"op_id={op_id[:8] if op_id else '?'}, "
-                    f"role={task_role}",
-                    stage="pinned", org_id=str(self.org_id),
-                )
                 continue
 
             if planned_start is None:
                 skipped_count += 1
                 continue
 
-            # Приводим start к минутам от t0
             start_minutes = self._coerce_to_minutes(planned_start)
             if start_minutes is None:
                 skipped_count += 1
                 continue
 
-            # Фиксируем start
             model.Add(task["start"] == start_minutes)
 
-            # Фиксируем end, если задан
             if planned_end is not None:
                 end_minutes = self._coerce_to_minutes(planned_end)
                 if end_minutes is not None:
@@ -840,10 +887,6 @@ class ProductionScheduler:
         )
 
     def _coerce_to_minutes(self, value: Any) -> Optional[int]:
-        """
-        Приводит значение (datetime | str) к минутам от self.t0.
-        Возвращает None, если преобразование невозможно.
-        """
         if isinstance(value, datetime):
             return self._datetime_to_minutes(value)
         if isinstance(value, str):
@@ -853,7 +896,6 @@ class ProductionScheduler:
             except (ValueError, TypeError):
                 return None
         return None
-
 
     def _get_product_code_for_batch(
             self,
@@ -865,6 +907,9 @@ class ProductionScheduler:
             return steps[0].op.get("product_id", "")
         return ""
 
+    # ==========================================
+    # Извлечение решения
+    # ==========================================
     def _extract_solution(
             self,
             solver,
@@ -876,6 +921,7 @@ class ProductionScheduler:
         batch_by_id = {str(b["id"]): b for b in batches}
 
         schedule = []
+        parts_count = 0
         for key, task in self.tasks.items():
             batch_id, op_id = key
             start = solver.Value(task["start"])
@@ -892,7 +938,6 @@ class ProductionScheduler:
             product_id = str(batch_info.get("product_id", ""))
             product_info = products_map.get(product_id, {})
 
-            # Итерация 7: для cooling — определить режим
             cooling_mode = None
             if task.get("is_cooling_degraded"):
                 b_fast_var = task.get("b_fast")
@@ -900,28 +945,44 @@ class ProductionScheduler:
                     b_fast_val = solver.Value(b_fast_var)
                     cooling_mode = "fast" if b_fast_val == 1 else "slow"
 
+            operation_name = task["op"].get("name", "Операция")
+            if "(часть" in operation_name:
+                parts_count += 1
+
             schedule.append({
                 "batch_id": batch_id,
-                "batch_name": f"Партия {batch_info.get('product_name', 'Unknown')}",
+                "batch_name": (
+                    f"Партия {batch_info.get('product_name', 'Unknown')}"
+                ),
                 "op_id": op_id,
                 "role": task["role"],
                 "equipment_id": task["primary_equipment_id"],
                 "equipment_name": primary_info.get("name", "Unknown"),
                 "linked_equipment_id": task["secondary_equipment_id"],
-                "linked_equipment_name": secondary_info.get("name") if secondary_info else None,
+                "linked_equipment_name": (
+                    secondary_info.get("name") if secondary_info else None
+                ),
                 "product_id": product_id,
                 "product_name": product_info.get("name", "Unknown"),
                 "product_code": product_info.get("code", "Unknown"),
                 "start": start_dt,
                 "end": end_dt,
                 "duration": end - start,
-                "operation_name": task["op"].get("name", "Операция"),
+                "operation_name": operation_name,
                 "operator_pool": task.get("operator_pool"),
                 "cooling_mode": cooling_mode,
+                # Итерация 11: needed for postprocess (topological sort)
+                "depends_on_op_ids": task.get("depends_on_op_ids", []),
             })
 
         schedule.sort(key=lambda x: x["start"])
-        makespan_mins = max((t["end"] - self.t0).total_seconds() / 60 for t in schedule) if schedule else 0
+        makespan_mins = (
+            max((t["end"] - self.t0).total_seconds() / 60 for t in schedule)
+            if schedule else 0
+        )
+
+        print(f"[EXTRACT] Всего задач: {len(schedule)}, "
+              f"из них подзадач с '(часть': {parts_count}")
 
         return {
             "status": "success",
@@ -935,7 +996,8 @@ async def main():
     from app.core.config import settings
 
     scheduler = ProductionScheduler(
-        horizon_hours=2160,
+        horizon_hours=720,
+        timeout_seconds=600,
         org_id=settings.DEFAULT_ORG_ID,
     )
     result = await scheduler.build_schedule()
@@ -951,7 +1013,7 @@ async def main():
         logger, logging.INFO,
         f"План построен: задач={result['total_tasks']}, "
         f"makespan={result['makespan_minutes']:.0f} мин "
-        f"({result['makespan_minutes']/60:.1f} ч), "
+        f"({result['makespan_minutes'] / 60:.1f} ч), "
         f"пропущено={len(result.get('skipped_batches', []))}",
         stage="finish", org_id=str(settings.DEFAULT_ORG_ID),
     )

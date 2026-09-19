@@ -216,7 +216,8 @@ body {
   outline-offset: 2px;
 }
 
-/* 4. Отключаем "палец" на timeline — pan отключён */
+/* 4. Отключаем "палец" на timeline — pan отключён (Итерация 9) */
+/* Итерация 11 (fix): переопределено ниже — pan снова включён */
 .vis-panel.vis-center {
   cursor: default;
 }
@@ -237,5 +238,57 @@ body {
   cursor: default !important;
 }
 .gantt-readonly .vis-item.vis-drag-center {
+  cursor: default !important;
+}
+
+/* ==========================================
+   Итерация 11 (fix): pan + zoom + drag одновременно
+   ==========================================
+   Компромисс (Механизм 3):
+     - Pan по пустому месту (клик + drag).
+     - Zoom колёсиком мыши.
+     - Drag только для реальных задач (не setup/downtime).
+     - Разные курсоры для разных зон.
+
+   Переопределяет правило (4) выше — pan снова включён.
+   ========================================== */
+
+/* 8. Pan: курсор "grab" на пустом месте диаграммы.
+   Применяется к панелям vis-timeline (центр, левая колонка с группами,
+   правая область). При зажатой ЛКМ курсор меняется на "grabbing". */
+.vis-panel.vis-center,
+.vis-panel.vis-left,
+.vis-panel.vis-right {
+  cursor: grab;
+}
+
+.vis-panel.vis-center:active,
+.vis-panel.vis-left:active,
+.vis-panel.vis-right:active {
+  cursor: grabbing;
+}
+
+/* 9. Задачи: grab-курсор (только для реальных задач, не setup/downtime).
+   При зажатой ЛКМ курсор меняется на "grabbing". */
+.vis-item.vis-range:not(.item-downtime):not(.item-setup) {
+  cursor: grab;
+}
+
+.vis-item.vis-range:not(.item-downtime):not(.item-setup):active {
+  cursor: grabbing;
+}
+
+/* 10. Readonly: pan остаётся (пользователь может смотреть диаграмму),
+   drag задач — отключён (editable.updateTime возвращает false). */
+.gantt-readonly .vis-panel.vis-center,
+.gantt-readonly .vis-panel.vis-left,
+.gantt-readonly .vis-panel.vis-right {
+  cursor: grab;
+}
+.gantt-readonly .vis-item.vis-range {
+  cursor: default !important;
+}
+.gantt-readonly .vis-item.vis-drag-center,
+.gantt-readonly .vis-item.vis-dragging {
   cursor: default !important;
 }

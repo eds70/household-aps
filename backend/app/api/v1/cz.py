@@ -13,6 +13,8 @@ API интеграции с Честным Знаком (Итерация 8).
 
 Аутентификация скана — через заголовок X-CZ-Api-Key.
 Остальные эндпоинты — через JWT.
+
+Итерация 11 (Шаг 5): чтение настроек через settings_reader (app_settings).
 """
 
 import logging
@@ -36,6 +38,13 @@ from app.scheduler.cz import (
 )
 from app.scheduler.feature_flags import FeatureFlags
 from app.scheduler.logging_config import setup_scheduler_logging, log_with_context
+from app.scheduler.settings_reader import (
+    read_feature_flags,
+    read_settings_dict,
+    read_float,
+    read_str,
+    read_bool,
+)
 from .cz_models import (
     CzActionResponse,
     CzAttachRequest,
@@ -56,23 +65,12 @@ logger = setup_scheduler_logging(level=logging.INFO)
 # ==========================================
 
 async def _check_cz_enabled(db: AsyncSession, org_id: UUID) -> FeatureFlags:
-    """Проверяет feature-флаг enable_cz_integration."""
-    result = await db.execute(
-        text("""
-            SELECT setting_key, setting_value FROM organization_settings
-            WHERE organization_id = :org_id
-              AND setting_key IN (
-                'enable_cz_integration',
-                'cz_completion_threshold',
-                'cz_api_key',
-                'enable_cz_auto_close'
-              )
-        """),
-        {"org_id": org_id},
-    )
-    settings_dict = {row.setting_key: row.setting_value for row in result.fetchall()}
+    """
+    Проверяет feature-флаг enable_cz_integration.
 
-    flags = FeatureFlags(settings_dict)
+    Итерация 11 (Шаг 5): читает из app_settings через settings_reader.
+    """
+    flags = await read_feature_flags(db, org_id)
     if not flags.enable_cz_integration:
         raise HTTPException(
             status_code=400,
@@ -81,49 +79,31 @@ async def _check_cz_enabled(db: AsyncSession, org_id: UUID) -> FeatureFlags:
     return flags
 
 
-def _read_float(raw, default: float) -> float:
-    """Читает float из JSONB-значения."""
-    if raw is None:
-        return default
-    try:
-        if isinstance(raw, str):
-            return float(raw.strip().strip('"').strip("'"))
-        return float(raw)
-    except (ValueError, TypeError):
-        return default
-
-
-def _read_str(raw, default: str) -> str:
-    """Читает строку из JSONB-значения."""
-    if raw is None:
-        return default
-    if isinstance(raw, str):
-        return raw.strip().strip('"').strip("'")
-    return str(raw)
-
-
 async def _get_cz_settings(db: AsyncSession, org_id: UUID) -> dict:
-    """Возвращает словарь настроек ЧЗ."""
-    result = await db.execute(
-        text("""
-            SELECT setting_key, setting_value FROM organization_settings
-            WHERE organization_id = :org_id
-              AND setting_key IN (
-                'enable_cz_integration',
-                'cz_completion_threshold',
-                'cz_api_key',
-                'enable_cz_auto_close'
-              )
-        """),
-        {"org_id": org_id},
+    """
+    Возвращает словарь настроек ЧЗ.
+
+    Итерация 11 (Шаг 5): читает из app_settings через settings_reader.
+    """
+    settings = await read_settings_dict(
+        db, org_id,
+        keys=[
+            "enable_cz_integration",
+            "cz_completion_threshold",
+            "cz_api_key",
+            "enable_cz_auto_close",
+        ],
     )
-    rows = {row.setting_key: row.setting_value for row in result.fetchall()}
+
+    flags = FeatureFlags({
+        "enable_cz_integration": settings.get("enable_cz_integration"),
+    })
+
     return {
-        "enable_cz_integration": FeatureFlags(rows).enable_cz_integration,
-        "threshold": _read_float(rows.get("cz_completion_threshold"), 0.95),
-        "api_key": _read_str(rows.get("cz_api_key"), ""),
-        "auto_close": _read_str(rows.get("enable_cz_auto_close"), "false").lower()
-                      in ("true", "1", "yes", "on"),
+        "enable_cz_integration": flags.enable_cz_integration,
+        "threshold": read_float(settings.get("cz_completion_threshold"), 0.95),
+        "api_key": read_str(settings.get("cz_api_key"), ""),
+        "auto_close": read_bool(settings.get("enable_cz_auto_close"), False),
     }
 
 
@@ -139,7 +119,7 @@ async def _check_api_key(
     if not expected:
         raise HTTPException(
             status_code=500,
-            detail="cz_api_key не настроен в organization_settings",
+            detail="cz_api_key не настроен в app_settings",
         )
 
     if x_cz_api_key != expected:

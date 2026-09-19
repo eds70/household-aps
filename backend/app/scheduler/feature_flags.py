@@ -2,7 +2,7 @@
 """
 Feature-флаги планировщика.
 
-Читает флаги из organization_settings (JSONB).
+Читает флаги из app_settings (JSONB).
 Позволяет включать/выключать функциональность поэтапно
 без изменения кода и пересборки.
 
@@ -10,6 +10,7 @@ Feature-флаги планировщика.
 Итерация 6: enable_operator_pools, enable_manual_station.
 Итерация 7: enable_cooling_degradation.
 Итерация 8: enable_cz_integration.
+Итерация 11 (Шаг 5): переход на app_settings.
 """
 
 from typing import Dict, Any, Optional
@@ -17,10 +18,10 @@ from typing import Dict, Any, Optional
 
 class FeatureFlags:
     """
-    Обёртка над organization_settings для удобного доступа к флагам.
+    Обёртка над app_settings для удобного доступа к флагам.
 
     Использование:
-        flags = FeatureFlags(org_settings)
+        flags = FeatureFlags(app_settings)
         if flags.enable_tank_routing:
             ...
     """
@@ -33,16 +34,12 @@ class FeatureFlags:
         "enable_material_constraints": False,
         "enable_advisor": True,
         "enable_lab_blocking": False,
-        # Итерация 6
         "enable_operator_pools": False,
         "enable_manual_station": False,
-        # Итерация 7
         "enable_cooling_degradation": False,
-        # Итерация 8
         "enable_cz_integration": False,
     }
 
-    # Ключи, которые в БД хранятся как bool
     BOOL_KEYS = {
         "enable_tank_routing",
         "enable_shift_planning",
@@ -53,15 +50,15 @@ class FeatureFlags:
         "enable_operator_pools",
         "enable_manual_station",
         "enable_cooling_degradation",
-        "enable_cz_integration",       # Итерация 8
+        "enable_cz_integration",
     }
 
-    def __init__(self, org_settings: Optional[Dict[str, Any]] = None):
+    def __init__(self, app_settings: Optional[Dict[str, Any]] = None):
         """
         Args:
-            org_settings: словарь {setting_key: setting_value} из organization_settings.
+            app_settings: словарь {setting_key: setting_value} из app_settings.
         """
-        self._settings = org_settings or {}
+        self._settings = app_settings or {}
         self._flags: Dict[str, Any] = {}
         self._parse()
 
@@ -90,11 +87,7 @@ class FeatureFlags:
         return self._flags.get(key, default)
 
     def get_float(self, key: str, default: float = 0.0) -> float:
-        """
-        Получить числовое значение настройки.
-
-        Используется для cooling_degradation_factor и других числовых настроек.
-        """
+        """Получить числовое значение настройки."""
         raw = self._settings.get(key, default)
         try:
             if isinstance(raw, str):

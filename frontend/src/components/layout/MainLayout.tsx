@@ -56,6 +56,7 @@ const MENU_ITEMS = [
     { path: '/shift', label: 'Мастер смены', icon: <AssignmentIcon /> },
     { path: '/personnel', label: 'Персонал', icon: <PersonIcon /> },
     { path: '/cz', label: 'Честный Знак', icon: <QrCodeScannerIcon /> },   // Итерация 8
+    { path: '/settings', label: 'Настройки', icon: <SettingsIcon /> }
 ];
 
 const ROLE_LABELS: Record<string, string> = {

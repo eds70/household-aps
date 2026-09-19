@@ -5,6 +5,7 @@ API для Advisor — подсказки планировщика и оценк
 Итерация 2.
 Итерация 7: cooling_degradation_factor + приоритет БД над in-memory.
 Итерация 8: cz_status, cz_marked_qty, planned_qty + cz_completion_threshold.
+Итерация 11 (Шаг 5): чтение настроек через settings_reader (app_settings).
 """
 
 from datetime import datetime
@@ -20,6 +21,10 @@ from app.scheduler.advisor import analyze as advisor_analyze
 from app.scheduler.data_loader import DataLoader
 from app.scheduler.feasibility import check_feasibility
 from app.scheduler.feature_flags import FeatureFlags
+from app.scheduler.settings_reader import (
+    read_settings_dict,
+    read_float,
+)
 from .models import (
     AdvisorResponse,
     AdvisorTipModel,
@@ -28,19 +33,6 @@ from .models import (
 )
 
 router = APIRouter(prefix="/api/v1/schedule", tags=["Advisor"])
-
-
-def _read_float_setting(org_settings: dict, key: str, default: float) -> float:
-    """Читает float из org_settings (JSONB-строка или число)."""
-    raw = org_settings.get(key)
-    if raw is None:
-        return default
-    try:
-        if isinstance(raw, str):
-            return float(raw.strip().strip('"').strip("'"))
-        return float(raw)
-    except (ValueError, TypeError):
-        return default
 
 
 async def _load_schedule_from_db(
@@ -138,18 +130,34 @@ async def get_advice(
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """Возвращает подсказки Advisor'а."""
+    """
+    Возвращает подсказки Advisor'а.
+
+    Итерация 11 (Шаг 5): настройки читаются из app_settings.
+    """
     loader = DataLoader(org_id=org_id)
     data = await loader.load_all()
 
     flags = FeatureFlags(data.get("org_settings", {}))
 
-    max_fill = _read_float_setting(data["org_settings"], "max_fill_percent", 0.70)
-    cooling_factor = _read_float_setting(
-        data["org_settings"], "cooling_degradation_factor", 1.3
+    # ==========================================
+    # Итерация 11 (Шаг 5): читаем настройки из app_settings.
+    # ==========================================
+    settings = await read_settings_dict(
+        db, org_id,
+        keys=[
+            "max_fill_percent",
+            "cooling_degradation_factor",
+            "cz_completion_threshold",
+        ],
     )
-    cz_threshold = _read_float_setting(
-        data["org_settings"], "cz_completion_threshold", 0.95
+
+    max_fill = read_float(settings.get("max_fill_percent"), 0.70)
+    cooling_factor = read_float(
+        settings.get("cooling_degradation_factor"), 1.3
+    )
+    cz_threshold = read_float(
+        settings.get("cz_completion_threshold"), 0.95
     )
 
     # ==========================================

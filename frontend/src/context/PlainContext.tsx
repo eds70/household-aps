@@ -1,7 +1,8 @@
 // frontend/src/context/PlainContext.tsx
-import React, { createContext, useState, useEffect, useContext } from 'react';
+import React, {createContext, useCallback, useContext, useEffect, useState} from 'react';
 import axios from 'axios';
-import { API_BASE_URL } from '../config';
+import {API_BASE_URL} from '../config';
+import {useAuth} from './AuthContext';
 
 export interface PlanVersion {
     id: string;
@@ -29,30 +30,42 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const [currentPlanName, setCurrentPlanName] = useState<string>("Режим редактирования");
     const [versions, setVersions] = useState<PlanVersion[]>([]);
 
-    const loadVersions = async () => {
+    // ✅ Итерация 11 (fix): используем useAuth, чтобы не грузить версии
+    // до аутентификации пользователя.
+    const {isAuthenticated, isLoading} = useAuth();
+
+    // ✅ Итерация 11 (fix): useCallback для стабильной ссылки.
+    const loadVersions = useCallback(async () => {
         try {
             const response = await axios.get(`${API_BASE_URL}/api/v1/schedule/versions`);
-            // ✅ Гарантируем, что versions всегда массив, даже если API вернет неожиданный формат
             setVersions(Array.isArray(response.data) ? response.data : []);
         } catch (err: any) {
-            // ✅ Тихо игнорируем 401 Unauthorized.
-            // Axios-интерсептор в api.ts уже перехватит эту ошибку и перенаправит на /login.
             if (err.response?.status !== 401) {
                 console.error("Ошибка загрузки версий планов:", err);
             }
         }
-    };
-
-    useEffect(() => {
-        loadVersions();
     }, []);
 
-    const setPlan = (versionId: string | null, name: string) => {
+    // ✅ Итерация 11 (fix): загружаем версии ТОЛЬКО когда пользователь
+    // аутентифицирован и загрузка auth завершена.
+    useEffect(() => {
+        if (!isLoading && isAuthenticated) {
+            loadVersions();
+        }
+    }, [isLoading, isAuthenticated, loadVersions]);
+
+    // ✅ useCallback для setPlan.
+    const setPlan = useCallback((versionId: string | null, name: string) => {
         setCurrentVersionId(versionId);
         setCurrentPlanName(name || "Режим редактирования");
-    };
+    }, []);
 
-    const createPlan = async (name: string, versionType: string, comment?: string): Promise<PlanVersion> => {
+    // ✅ useCallback для createPlan.
+    const createPlan = useCallback(async (
+        name: string,
+        versionType: string,
+        comment?: string,
+    ): Promise<PlanVersion> => {
         const response = await axios.post(`${API_BASE_URL}/api/v1/schedule/versions`, {
             name,
             version_type: versionType,
@@ -61,18 +74,21 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const newVersion: PlanVersion = response.data;
         setVersions((prev) => [newVersion, ...prev]);
         return newVersion;
-    };
+    }, []);
 
-    const deletePlan = async (versionId: string): Promise<void> => {
+    // ✅ useCallback для deletePlan.
+    const deletePlan = useCallback(async (versionId: string): Promise<void> => {
         await axios.delete(`${API_BASE_URL}/api/v1/schedule/versions/${versionId}`);
         setVersions((prev) => prev.filter((v) => v.id !== versionId));
 
-        // Если удалили текущий выбранный план — сбрасываем в режим редактирования
-        if (currentVersionId === versionId) {
-            setCurrentVersionId(null);
-            setCurrentPlanName("Режим редактирования");
-        }
-    };
+        setCurrentVersionId((prevId) => {
+            if (prevId === versionId) {
+                setCurrentPlanName("Режим редактирования");
+                return null;
+            }
+            return prevId;
+        });
+    }, []);
 
     return (
         <PlanContext.Provider value={{

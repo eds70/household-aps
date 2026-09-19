@@ -7,13 +7,21 @@
   для расчёта потребности в сырье и подсказок Advisor.
 
 Итерация 5:
-- Читает batch.is_lab_blocked, batch.lab_status для исключения
-  заблокированных партий из планирования.
+- Читает batch.is_lab_blocked, batch.lab_status.
 
 Итерация 6:
-- Читает resource_pool с полным списком типов (REACTOR_OPERATOR,
-  LINE_OPERATOR, MANUAL_OPERATOR, COOLING_ZONE, BOILER, LAB).
-- Возвращает список пулов в resource_pools.
+- Читает resource_pool с полным списком типов.
+
+Итерация 9 (fix):
+- Читает equipment_capability — матрицу совместимости ГП → линия.
+
+Итерация 11 (Шаг 6):
+- Читает `shift` (смены) — для постпроцессора календаря.
+- Читает `shift_settings` из `app_settings`.
+
+Итерация 11 (Шаг 5):
+- `_load_org_settings` → `_load_app_settings`.
+- Единый источник правды — таблица app_settings.
 """
 
 from typing import List, Dict, Any
@@ -37,6 +45,9 @@ class DataLoader:
     async def load_all(self) -> Dict[str, Any]:
         async with self.async_session() as session:
             return {
+                # ==========================================
+                # Основные справочники
+                # ==========================================
                 "batches": await self._load_batches(session),
                 "equipment": await self._load_equipment(session),
                 "products": await self._load_products(session),
@@ -44,15 +55,36 @@ class DataLoader:
                 "setup_matrix": await self._load_setup_matrix(session),
                 "calendar_events": await self._load_calendar(session),
                 "resource_pools": await self._load_resource_pools(session),
-                "org_settings": await self._load_org_settings(session),
+
+                # Итерация 11 (Шаг 5): app_settings вместо organization_settings.
+                # Ключ словаря оставлен как "org_settings" для обратной совместимости
+                # с core.py, advisor.py и другими модулями.
+                "org_settings": await self._load_app_settings(session),
+
                 "equipment_links": await self._load_equipment_links(session),
                 "gp_products": await self._load_gp_products(session),
-                # Итерация 2
+
+                # Итерация 9 (fix): матрица совместимости ГП → линия
+                "equipment_capability": await self._load_equipment_capability(session),
+
+                # ==========================================
+                # Итерация 11 (Шаг 6): смены и настройки смен
+                # ==========================================
+                "shifts": await self._load_shifts(session),
+                "shift_settings": await self._load_shift_settings(session),
+
+                # ==========================================
+                # Материалы (Итерация 2)
+                # ==========================================
                 "materials": await self._load_materials(session),
                 "material_stocks": await self._load_material_stocks(session),
                 "material_supplies": await self._load_material_supplies(session),
                 "recipes": await self._load_recipes(session),
             }
+
+    # ==========================================
+    # БАЗОВЫЕ СПРАВОЧНИКИ
+    # ==========================================
 
     async def _load_batches(self, session) -> List[Dict]:
         """Загружает партии (Итерация 5: + lab_status, is_lab_blocked)."""
@@ -155,24 +187,8 @@ class DataLoader:
         )
         return [dict(row._mapping) for row in result.fetchall()]
 
-    # ==========================================
-    # ИТЕРАЦИЯ 6: ПУЛЫ РЕСУРСОВ
-    # ==========================================
-
     async def _load_resource_pools(self, session) -> List[Dict]:
-        """
-        Загружает пулы ресурсов с полной информацией.
-
-        Возвращает список словарей:
-          [
-            {"id": ..., "name": ..., "type": "REACTOR_OPERATOR", "capacity": 3},
-            {"id": ..., "name": ..., "type": "LINE_OPERATOR", "capacity": 2},
-            {"id": ..., "name": ..., "type": "MANUAL_OPERATOR", "capacity": 1},
-            {"id": ..., "name": ..., "type": "COOLING_ZONE", "capacity": 2},
-            {"id": ..., "name": ..., "type": "BOILER", "capacity": 1},
-            {"id": ..., "name": ..., "type": "LAB", "capacity": 1},
-          ]
-        """
+        """Загружает пулы ресурсов с полной информацией."""
         result = await session.execute(
             text("""
                 SELECT id, name, type, capacity, comment
@@ -184,16 +200,35 @@ class DataLoader:
         )
         return [dict(row._mapping) for row in result.fetchall()]
 
-    async def _load_org_settings(self, session) -> Dict[str, Any]:
+    # ==========================================
+    # ИТЕРАЦИЯ 11 (ШАГ 5): APP_SETTINGS
+    # ==========================================
+    # Заменяет _load_org_settings (organization_settings).
+    # Единый источник правды для feature-флагов и параметров планирования.
+    # ==========================================
+
+    async def _load_app_settings(self, session) -> Dict[str, Any]:
+        """
+        Загружает ВСЕ настройки из app_settings (Итерация 11, Шаг 5).
+
+        Возвращает словарь {setting_key: setting_value}.
+        Значения — как из JSONB, требуют приведения типа.
+
+        Раньше читалось из organization_settings. Теперь app_settings —
+        единственный источник правды.
+        """
         result = await session.execute(
             text("""
                 SELECT setting_key, setting_value
-                FROM organization_settings
+                FROM app_settings
                 WHERE organization_id = :org_id
             """),
             {"org_id": self.org_id},
         )
-        return {row.setting_key: row.setting_value for row in result.fetchall()}
+        return {
+            row.setting_key: row.setting_value
+            for row in result.fetchall()
+        }
 
     async def _load_equipment_links(self, session) -> List[Dict]:
         result = await session.execute(
@@ -205,6 +240,138 @@ class DataLoader:
             {"org_id": self.org_id},
         )
         return [dict(row._mapping) for row in result.fetchall()]
+
+    async def _load_equipment_capability(self, session) -> List[Dict]:
+        """
+        Загружает матрицу совместимости product → equipment.
+
+        Из таблицы equipment_capability. Для линий розлива здесь
+        хранится явный маппинг ГП → линия.
+        """
+        result = await session.execute(
+            text("""
+                SELECT equipment_id, product_id, max_fill_percent
+                FROM equipment_capability
+                WHERE organization_id = :org_id
+                ORDER BY equipment_id, product_id
+            """),
+            {"org_id": self.org_id},
+        )
+        return [dict(row._mapping) for row in result.fetchall()]
+
+    # ==========================================
+    # ИТЕРАЦИЯ 11 (ШАГ 6): СМЕНЫ И НАСТРОЙКИ СМЕН
+    # ==========================================
+
+    async def _load_shifts(self, session) -> List[Dict]:
+        """
+        Загружает все смены организации (рабочие и нерабочие).
+
+        Используется:
+          - в постпроцессоре календаря для построения рабочих окон;
+          - в UI мастера смены для отображения заданий.
+        """
+        result = await session.execute(
+            text("""
+                SELECT id, name, starts_at, ends_at, is_working, comment
+                FROM shift
+                WHERE organization_id = :org_id
+                ORDER BY starts_at
+            """),
+            {"org_id": self.org_id},
+        )
+        return [dict(row._mapping) for row in result.fetchall()]
+
+    async def _load_shift_settings(self, session) -> Dict[str, Any]:
+        """
+        Загружает настройки режима смен из app_settings.
+
+        Итерация 11 (Шаг 6):
+          - shift_mode: "1x8" | "3x8" | "2x12"
+          - shift_intervals: JSON-массив интервалов
+          - shift_duration_hours: длительность смены
+          - allow_weekend_work: bool — разрешена ли работа в выходные
+        """
+        result = await session.execute(
+            text("""
+                SELECT setting_key, setting_value
+                FROM app_settings
+                WHERE organization_id = :org_id
+                  AND setting_key IN (
+                    'shift_mode',
+                    'shift_intervals',
+                    'shift_duration_hours',
+                    'allow_weekend_work'
+                  )
+            """),
+            {"org_id": self.org_id},
+        )
+        rows = {row.setting_key: row.setting_value for row in result.fetchall()}
+
+        # ==========================================
+        # Парсинг shift_mode
+        # ==========================================
+        shift_mode = "2x12"
+        if rows.get("shift_mode") is not None:
+            raw = rows["shift_mode"]
+            if isinstance(raw, str):
+                shift_mode = raw.strip().strip('"').strip("'")
+            else:
+                shift_mode = str(raw)
+
+        # ==========================================
+        # Парсинг shift_intervals (JSON)
+        # ==========================================
+        shift_intervals: List[Dict[str, str]] = [
+            {"start": "08:00", "end": "20:00"},
+            {"start": "20:00", "end": "08:00"},
+        ]
+        if rows.get("shift_intervals") is not None:
+            raw = rows["shift_intervals"]
+            try:
+                if isinstance(raw, str):
+                    import json
+                    shift_intervals = json.loads(raw)
+                elif isinstance(raw, list):
+                    shift_intervals = raw
+            except (ValueError, TypeError):
+                pass
+
+        # ==========================================
+        # Парсинг shift_duration_hours
+        # ==========================================
+        shift_duration_hours = 12
+        if rows.get("shift_duration_hours") is not None:
+            raw = rows["shift_duration_hours"]
+            try:
+                if isinstance(raw, str):
+                    shift_duration_hours = int(raw.strip().strip('"').strip("'"))
+                elif isinstance(raw, (int, float)):
+                    shift_duration_hours = int(raw)
+            except (ValueError, TypeError):
+                pass
+
+        # ==========================================
+        # Парсинг allow_weekend_work (bool)
+        # ==========================================
+        allow_weekend_work = False
+        if rows.get("allow_weekend_work") is not None:
+            raw = rows["allow_weekend_work"]
+            if isinstance(raw, bool):
+                allow_weekend_work = raw
+            elif isinstance(raw, str):
+                allow_weekend_work = raw.strip().lower() in (
+                    "true", "1", "yes", "on",
+                )
+            elif isinstance(raw, (int, float)):
+                allow_weekend_work = bool(raw)
+
+        return {
+            "shift_mode": shift_mode,
+            "shift_intervals": shift_intervals,
+            "shift_duration_hours": shift_duration_hours,
+            "allow_weekend_work": allow_weekend_work,
+        }
 
     # ==========================================
     # МАТЕРИАЛЫ (Итерация 2)
@@ -244,10 +411,7 @@ class DataLoader:
         return [dict(row._mapping) for row in result.fetchall()]
 
     async def _load_recipes(self, session) -> Dict[str, Dict]:
-        """
-        Рецептуры {pf_product_id: {base_volume_kg, items: [...]}}.
-        Ключ — product_id (ПФ), потому что рецептура относится к ПФ.
-        """
+        """Рецептуры {pf_product_id: {base_volume_kg, items: [...]}}."""
         result = await session.execute(
             text("""
                 SELECT r.id, r.product_id, r.base_volume_kg,
@@ -265,12 +429,16 @@ class DataLoader:
             pf_id = str(row.product_id)
             if pf_id not in recipes:
                 recipes[pf_id] = {
-                    "base_volume_kg": float(row.base_volume_kg) if row.base_volume_kg else 100.0,
+                    "base_volume_kg": (
+                        float(row.base_volume_kg) if row.base_volume_kg else 100.0
+                    ),
                     "items": [],
                 }
             if row.material_id is not None:
                 recipes[pf_id]["items"].append({
                     "material_id": str(row.material_id),
-                    "qty_per_base": float(row.qty_per_base) if row.qty_per_base else 0.0,
+                    "qty_per_base": (
+                        float(row.qty_per_base) if row.qty_per_base else 0.0
+                    ),
                 })
         return recipes
