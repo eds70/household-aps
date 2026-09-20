@@ -637,4 +637,86 @@ export const settingsApi = {
     },
 };
 
+// ==========================================
+// What-If API (Итерация 12)
+// ==========================================
+export const whatifApi = {
+    /** Список сценариев (с фильтром по статусу) */
+    listScenarios: async (
+        status?: import('../types').WhatIfStatus,
+        limit: number = 100,
+    ): Promise<import('../types').WhatIfScenarioListItem[]> => {
+        const params: any = { limit };
+        if (status) params.status = status;
+        const response = await api.get('/api/v1/whatif/scenarios', { params });
+        return response.data;
+    },
+
+    /** Один сценарий по ID */
+    getScenario: async (
+        id: string,
+    ): Promise<import('../types').WhatIfScenario> => {
+        const response = await api.get(`/api/v1/whatif/scenarios/${id}`);
+        return response.data;
+    },
+
+    /** Создать сценарий */
+    createScenario: async (
+        data: import('../types').WhatIfScenarioCreate,
+    ): Promise<import('../types').WhatIfScenario> => {
+        const response = await api.post('/api/v1/whatif/scenarios', data);
+        return response.data;
+    },
+
+    /** Обновить сценарий (только DRAFT) */
+    updateScenario: async (
+        id: string,
+        data: import('../types').WhatIfScenarioUpdate,
+    ): Promise<import('../types').WhatIfScenario> => {
+        const response = await api.put(
+            `/api/v1/whatif/scenarios/${id}`,
+            data,
+        );
+        return response.data;
+    },
+
+    /** Удалить сценарий (DRAFT/FAILED) */
+    deleteScenario: async (id: string): Promise<{ message: string }> => {
+        const response = await api.delete(
+            `/api/v1/whatif/scenarios/${id}`,
+        );
+        return response.data;
+    },
+
+    /**
+     * Запустить сценарий.
+     *
+     * Итерация 12 (async): endpoint возвращает 202 Accepted сразу,
+     * расчёт идёт в фоне. Frontend поллит статус через getScenario().
+     * Время расчёта: 60–120 сек.
+     */
+    runScenario: async (
+        id: string,
+        data?: import('../types').WhatIfRunRequest,
+    ): Promise<import('../types').WhatIfRunResponse> => {
+        const response = await api.post(
+            `/api/v1/whatif/scenarios/${id}/run`,
+            data || {},
+            // Долгий таймаут на случай, если backend всё же синхронный.
+            { timeout: 300_000 },
+        );
+        return response.data;
+    },
+
+    /** Сравнить сценарий с базовым планом */
+    compareScenario: async (
+        id: string,
+    ): Promise<import('../types').WhatIfCompareResponse> => {
+        const response = await api.get(
+            `/api/v1/whatif/scenarios/${id}/compare`,
+        );
+        return response.data;
+    },
+};
+
 export default api;

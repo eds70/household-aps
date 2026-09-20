@@ -16,7 +16,7 @@ import pytest
 
 
 # ==========================================
-# ТЕСТЫ: SAавER ДЕАКТИВИРУЕТ СТАРЫЕ ВЕРСИИ
+# ТЕСТЫ: SAVER ДЕАКТИВИРУЕТ СТАРЫЕ ВЕРСИИ
 # ==========================================
 
 def test_saver_deactivates_old_versions():
@@ -24,12 +24,17 @@ def test_saver_deactivates_old_versions():
     Проверяет, что в saver.py есть UPDATE schedule_version
     SET is_active = FALSE перед созданием новой версии.
 
+    Итерация 12: логика перенесена в `_do_save` (метод диспетчеризации
+    сессии). Проверяем `_do_save`, а не `save_schedule`.
+
     saver.py не использует FastAPI-декораторы, поэтому inspect.getsource
     метода работает.
     """
     from app.scheduler import saver as saver_module
 
-    source = inspect.getsource(saver_module.ScheduleSaver.save_schedule)
+    # Проверяем `_do_save` — там сосредоточена логика сохранения.
+    source = inspect.getsource(saver_module.ScheduleSaver._do_save)
+
     assert "UPDATE schedule_version" in source, (
         "saver.py должен деактивировать старые версии"
     )
@@ -39,7 +44,6 @@ def test_saver_deactivates_old_versions():
     assert "deactivated_versions" in source, (
         "saver.py должен возвращать счётчик деактивированных версий"
     )
-
 
 # ==========================================
 # ТЕСТЫ: SHIFT.PY ФИЛЬТРУЕТ ПО VERSION_ID

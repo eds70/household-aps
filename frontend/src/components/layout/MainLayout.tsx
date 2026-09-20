@@ -55,8 +55,9 @@ const MENU_ITEMS = [
     { path: '/gantt', label: 'Диаграмма Ганта', icon: <TimelineIcon /> },
     { path: '/shift', label: 'Мастер смены', icon: <AssignmentIcon /> },
     { path: '/personnel', label: 'Персонал', icon: <PersonIcon /> },
-    { path: '/cz', label: 'Честный Знак', icon: <QrCodeScannerIcon /> },   // Итерация 8
-    { path: '/settings', label: 'Настройки', icon: <SettingsIcon /> }
+    { path: '/cz', label: 'Честный Знак', icon: <QrCodeScannerIcon /> },
+    { path: '/whatif', label: 'What-if', icon: <ScienceIcon /> },      // Итерация 12
+    { path: '/settings', label: 'Настройки', icon: <SettingsIcon /> },
 ];
 
 const ROLE_LABELS: Record<string, string> = {

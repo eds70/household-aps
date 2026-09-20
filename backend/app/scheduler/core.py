@@ -28,6 +28,13 @@
   - Читает shifts (таблица shift) для постпроцессора.
   - Передаёт shift_mode в build_routing (для разбиения длинных задач).
   - Передаёт shifts и allow_weekend_work в apply_calendar_postprocess.
+
+Итерация 12:
+  - Multi-objective оптимизация (взвешенная сумма нормализованных
+    компонентов: makespan, setup, underload, cooling_slow, tardiness).
+  - Веса из app_settings (category=optimization).
+  - Если все веса кроме makespan = 0 → работает как раньше.
+  - Аккумуляторы собираются во время построения модели.
 """
 
 import asyncio
@@ -38,12 +45,21 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from ortools.sat.python import cp_model
+from sqlalchemy.ext.asyncio import AsyncSession   # Итерация 12 (fix)
 
 from .constraints.plugins import CONSTRAINT_PLUGINS
 from .data_loader import DataLoader
 from .duration.strategies import get_strategy, DurationContext
 from .feature_flags import FeatureFlags
 from .logging_config import setup_scheduler_logging, log_with_context
+from .optimization import (
+    OptimizationWeights,
+    build_multi_objective,
+    build_setup_accumulator,
+    build_underload_accumulator,
+    build_cooling_slow_accumulator,
+    build_tardiness_accumulator,
+)
 from .routing import (
     build_routing,
     RoutingStep,
@@ -62,20 +78,28 @@ class ProductionScheduler:
             horizon_hours: int = 720,
             timeout_seconds: int = 600,
             org_id: UUID = None,
+            session: Optional[AsyncSession] = None,   # Итерация 12 (fix)
     ):
         """
         Итерация 10: horizon_hours по умолчанию 720 (30 дней),
         timeout_seconds по умолчанию 600.
+
+        Итерация 12 (fix): опциональная session.
+        Если передана — DataLoader использует её (для what-if),
+        чтобы видеть незакоммиченные изменения из транзакции №1.
         """
         self.horizon_minutes = horizon_hours * 60
         self.timeout_seconds = timeout_seconds
         self.org_id = org_id
-        self.data_loader = DataLoader(org_id=org_id)
+        self.data_loader = DataLoader(org_id=org_id, session=session)
         self.tasks: Dict[Tuple[str, str], Dict] = {}
         self.t0: Optional[datetime] = None
         self.flags: Optional[FeatureFlags] = None
         self.skipped_batches: List[Dict[str, Any]] = []
         self.cooling_degradation_factor: float = 1.3
+
+        # Итерация 12: веса multi-objective (заполняются при build_schedule).
+        self.weights: Optional[OptimizationWeights] = None
 
     # ==========================================
     # Расчёт длительностей
@@ -283,10 +307,26 @@ class ProductionScheduler:
         self.cooling_degradation_factor = self._resolve_cooling_degradation_factor(
             org_settings
         )
+
+        # ==========================================
+        # Итерация 12: загрузка весов multi-objective
+        # ==========================================
+        self.weights = OptimizationWeights.from_settings(org_settings)
+        try:
+            self.weights.validate()
+        except ValueError as e:
+            log_with_context(
+                logger, logging.WARNING,
+                f"Некорректные веса multi-objective: {e}. "
+                f"Fallback на single-objective makespan.",
+                stage="init", org_id=str(self.org_id),
+            )
+            self.weights = OptimizationWeights()  # только makespan = 1.0
+
         log_with_context(
             logger, logging.INFO,
-            f"Cooling degradation: enable={self.flags.enable_cooling_degradation}, "
-            f"factor={self.cooling_degradation_factor}",
+            f"Multi-objective веса: {self.weights} "
+            f"(single_objective={self.weights.is_single_objective()})",
             stage="init", org_id=str(self.org_id),
         )
 
@@ -331,13 +371,6 @@ class ProductionScheduler:
             f"Календарных событий (в минутах от t0): {len(calendar_minutes)}",
             stage="load", org_id=str(self.org_id),
         )
-
-        for cal in calendar_minutes:
-            print(
-                f"[CAL] event={cal['event_type']} "
-                f"eq={cal['equipment_id']} "
-                f"start_min={cal['start']} end_min={cal['end']}"
-            )
 
         model = cp_model.CpModel()
 
@@ -404,7 +437,7 @@ class ProductionScheduler:
                 calc_duration=self._calculate_duration,
                 gp_product=gp_product,
                 equipment_capability=equipment_capability,
-                shift_mode=shift_mode,       # ← НОВОЕ
+                shift_mode=shift_mode,
             )
 
             routing_steps[batch_id] = steps
@@ -637,9 +670,10 @@ class ProductionScheduler:
         )
 
         # ==========================================
-        # SETUP
+        # SETUP (Итерация 12: + сбор setup_pairs для целевой функции)
         # ==========================================
         setup_count = 0
+        setup_pairs: List[Tuple] = []  # (i_before_j_var, setup_mins, pair_name)
         last_by_reactor: Dict[str, List[Dict]] = {}
         first_by_reactor: Dict[str, List[Dict]] = {}
 
@@ -697,9 +731,19 @@ class ProductionScheduler:
                     model.Add(i_before_j + j_before_i == 1)
                     setup_count += 1
 
+                    # Итерация 12: собираем setup_pairs для целевой функции.
+                    # Используем i_before_j с длительностью setup_ij.
+                    # (Если i_before_j = 1, то вклад = setup_ij, иначе 0.)
+                    pair_name = (
+                        f"{last_task['batch_id'][:8]}_"
+                        f"{first_task['batch_id'][:8]}"
+                    )
+                    setup_pairs.append((i_before_j, setup_ij, pair_name))
+
         log_with_context(
             logger, logging.INFO,
-            f"Setup-ограничений: {setup_count}",
+            f"Setup-ограничений: {setup_count}, "
+            f"setup_pairs для целевой: {len(setup_pairs)}",
             stage="build", org_id=str(self.org_id),
         )
 
@@ -744,12 +788,143 @@ class ProductionScheduler:
         )
 
         # ==========================================
-        # ЦЕЛЕВАЯ ФУНКЦИЯ
+        # ИТЕРАЦИЯ 12: ЦЕЛЕВАЯ ФУНКЦИЯ (MULTI-OBJECTIVE)
         # ==========================================
+        # Makespan (базовый компонент)
         makespan = model.NewIntVar(0, self.horizon_minutes, "makespan")
         for task in self.tasks.values():
             model.Add(makespan >= task["end"])
-        model.Minimize(makespan)
+
+        # --------------------------------------------------
+        # Сбор batch_end_vars для tardiness
+        # --------------------------------------------------
+        # Для каждой партии: batch_end = max(end всех её задач).
+        batch_end_vars: Dict[str, cp_model.IntVar] = {}
+        for batch_id, steps in routing_steps.items():
+            batch_end = model.NewIntVar(
+                0, self.horizon_minutes,
+                f"batch_end_{batch_id[:8]}"
+            )
+            has_tasks = False
+            for step in steps:
+                key = (batch_id, step.op_id)
+                if key in self.tasks:
+                    model.Add(batch_end >= self.tasks[key]["end"])
+                    has_tasks = True
+            if has_tasks:
+                batch_end_vars[batch_id] = batch_end
+
+        # --------------------------------------------------
+        # Аккумуляторы (условно — только если вес > 0)
+        # --------------------------------------------------
+        weights_int = self.weights.to_int()
+
+        # Setup accumulator
+        setup_sum_var: Optional[cp_model.IntVar] = None
+        if weights_int["setup"] > 0:
+            setup_sum_var = build_setup_accumulator(
+                model=model,
+                setup_pairs=setup_pairs,
+                horizon_minutes=self.horizon_minutes,
+            )
+            log_with_context(
+                logger, logging.INFO,
+                f"Итерация 12: setup_sum_var создан, "
+                f"{len(setup_pairs)} пар",
+                stage="optimization", org_id=str(self.org_id),
+            )
+
+        # Underload accumulator
+        underload_sum_var: Optional[cp_model.IntVar] = None
+        total_max_fill_kg = 0
+        if weights_int["underload"] > 0:
+            # Читаем max_fill_percent из настроек
+            max_fill_raw = org_settings.get("max_fill_percent", 0.70)
+            try:
+                if isinstance(max_fill_raw, str):
+                    max_fill_percent = float(
+                        max_fill_raw.strip().strip('"').strip("'")
+                    )
+                else:
+                    max_fill_percent = float(max_fill_raw)
+            except (ValueError, TypeError):
+                max_fill_percent = 0.70
+
+            # Исключаем заблокированные партии
+            active_batches = [
+                b for b in batches if not self._is_batch_blocked(b)
+            ]
+            underload_sum_var, total_max_fill_kg = build_underload_accumulator(
+                model=model,
+                batches=active_batches,
+                equipment_map=equipment_map,
+                max_fill_percent=max_fill_percent,
+            )
+            log_with_context(
+                logger, logging.INFO,
+                f"Итерация 12: underload_sum_var создан, "
+                f"total_max_fill_kg={total_max_fill_kg}",
+                stage="optimization", org_id=str(self.org_id),
+            )
+
+        # Cooling slow accumulator
+        cooling_slow_count_var: Optional[cp_model.IntVar] = None
+        total_cooling_count = 0
+        if weights_int["cooling_slow"] > 0:
+            cooling_tasks_for_acc = [
+                t for t in self.tasks.values() if t.get("is_cooling_degraded")
+            ]
+            cooling_slow_count_var, total_cooling_count = (
+                build_cooling_slow_accumulator(
+                    model=model,
+                    cooling_tasks=cooling_tasks_for_acc,
+                )
+            )
+            log_with_context(
+                logger, logging.INFO,
+                f"Итерация 12: cooling_slow_count_var создан, "
+                f"total_cooling_count={total_cooling_count}",
+                stage="optimization", org_id=str(self.org_id),
+            )
+
+        # Tardiness accumulator
+        tardiness_sum_var: Optional[cp_model.IntVar] = None
+        num_batches_for_tardiness = 0
+        if weights_int["tardiness"] > 0:
+            active_batches = [
+                b for b in batches if not self._is_batch_blocked(b)
+            ]
+            num_batches_for_tardiness = len(batch_end_vars)
+            tardiness_sum_var, _ = build_tardiness_accumulator(
+                model=model,
+                batches=active_batches,
+                batch_end_vars=batch_end_vars,
+                horizon_minutes=self.horizon_minutes,
+                t0=self.t0,
+            )
+            log_with_context(
+                logger, logging.INFO,
+                f"Итерация 12: tardiness_sum_var создан, "
+                f"num_batches={num_batches_for_tardiness}",
+                stage="optimization", org_id=str(self.org_id),
+            )
+
+        # --------------------------------------------------
+        # Собираем целевую функцию
+        # --------------------------------------------------
+        build_multi_objective(
+            model=model,
+            weights=self.weights,
+            makespan_var=makespan,
+            horizon_minutes=self.horizon_minutes,
+            setup_sum_var=setup_sum_var,
+            underload_sum_var=underload_sum_var,
+            cooling_slow_count_var=cooling_slow_count_var,
+            tardiness_sum_var=tardiness_sum_var,
+            total_max_fill_kg=total_max_fill_kg,
+            total_cooling_count=total_cooling_count,
+            num_batches=num_batches_for_tardiness,
+        )
 
         # ==========================================
         # SOLVER
@@ -770,7 +945,7 @@ class ProductionScheduler:
                 logger, logging.INFO,
                 f"Решение найдено: status={solver.StatusName(status)}, "
                 f"wall_time={solver.WallTime():.2f}s, "
-                f"objective={solver.ObjectiveValue():.0f} мин",
+                f"objective={solver.ObjectiveValue():.0f}",
                 stage="solve", org_id=str(self.org_id),
             )
 
@@ -786,10 +961,10 @@ class ProductionScheduler:
             postprocess_stats = apply_calendar_postprocess(
                 tasks=result["tasks"],
                 calendar_events=calendar_events,
-                shifts=shifts,                        # ← НОВОЕ
+                shifts=shifts,
                 t0=self.t0,
                 horizon_minutes=self.horizon_minutes,
-                allow_weekend_work=allow_weekend_work,  # ← НОВОЕ
+                allow_weekend_work=allow_weekend_work,
             )
             result["calendar_postprocess"] = postprocess_stats
 

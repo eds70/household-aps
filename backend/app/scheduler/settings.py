@@ -3,6 +3,7 @@
 Единый реестр всех настроек планировщика.
 
 Итерация 11: централизация настроек в модуле app_settings.
+Итерация 12: категория optimization — веса multi-objective.
 
 Все настройки описаны в SETTINGS_REGISTRY. UI и API читают
 метаданные оттуда — это обеспечивает единый источник правды.
@@ -157,6 +158,10 @@ SETTINGS_REGISTRY: List[SettingSpec] = [
         description="Конец последнего рабочего интервала",
         display_order=50,
     ),
+
+    # ==========================================
+    # КАЛЕНДАРЬ
+    # ==========================================
     SettingSpec(
         key="allow_weekend_work",
         category="calendar",
@@ -165,6 +170,28 @@ SETTINGS_REGISTRY: List[SettingSpec] = [
         default=False,
         description="Разрешить работу в субботу и воскресенье",
         display_order=5,
+    ),
+    SettingSpec(
+        key="max_task_hours_for_calendar",
+        category="calendar",
+        label="Макс. длительность задачи (ч)",
+        value_type="float",
+        default=12.0,
+        description="Задачи длиннее — пропускаются в календарных ограничениях",
+        min_value=1.0,
+        max_value=48.0,
+        display_order=10,
+    ),
+    SettingSpec(
+        key="max_fill_part_hours",
+        category="calendar",
+        label="Макс. длительность части слива (ч)",
+        value_type="float",
+        default=8.0,
+        description="Длинные LINE_FILL разбиваются на части по этой длительности",
+        min_value=2.0,
+        max_value=12.0,
+        display_order=20,
     ),
 
     # ==========================================
@@ -200,32 +227,6 @@ SETTINGS_REGISTRY: List[SettingSpec] = [
         min_value=1,
         max_value=10,
         display_order=30,
-    ),
-
-    # ==========================================
-    # КАЛЕНДАРЬ
-    # ==========================================
-    SettingSpec(
-        key="max_task_hours_for_calendar",
-        category="calendar",
-        label="Макс. длительность задачи (ч)",
-        value_type="float",
-        default=12.0,
-        description="Задачи длиннее — пропускаются в календарных ограничениях",
-        min_value=1.0,
-        max_value=48.0,
-        display_order=10,
-    ),
-    SettingSpec(
-        key="max_fill_part_hours",
-        category="calendar",
-        label="Макс. длительность части слива (ч)",
-        value_type="float",
-        default=8.0,
-        description="Длинные LINE_FILL разбиваются на части по этой длительности",
-        min_value=2.0,
-        max_value=12.0,
-        display_order=20,
     ),
 
     # ==========================================
@@ -357,6 +358,69 @@ SETTINGS_REGISTRY: List[SettingSpec] = [
         description="Анализ плана и подсказки",
         display_order=40,
     ),
+
+    # ==========================================
+    # ОПТИМИЗАЦИЯ (Итерация 12)
+    # ==========================================
+    # Multi-objective: взвешенная сумма нормализованных компонентов.
+    # Все веса в [0, 1]. Хотя бы один должен быть > 0.
+    # По умолчанию: только makespan = 1.0 (обратная совместимость).
+    # ==========================================
+    SettingSpec(
+        key="weight_makespan",
+        category="optimization",
+        label="Вес: Makespan",
+        value_type="float",
+        default=1.0,
+        description="Приоритет минимизации общего времени плана (0 — отключено)",
+        min_value=0.0,
+        max_value=1.0,
+        display_order=10,
+    ),
+    SettingSpec(
+        key="weight_setup",
+        category="optimization",
+        label="Вес: Переналадки",
+        value_type="float",
+        default=0.0,
+        description="Приоритет минимизации времени переналадок (setup)",
+        min_value=0.0,
+        max_value=1.0,
+        display_order=20,
+    ),
+    SettingSpec(
+        key="weight_underload",
+        category="optimization",
+        label="Вес: Недогрузка реакторов",
+        value_type="float",
+        default=0.0,
+        description="Приоритет равномерной загрузки реакторов",
+        min_value=0.0,
+        max_value=1.0,
+        display_order=30,
+    ),
+    SettingSpec(
+        key="weight_cooling_slow",
+        category="optimization",
+        label="Вес: Замедленное охлаждение",
+        value_type="float",
+        default=0.0,
+        description="Приоритет избегания замедленного охлаждения",
+        min_value=0.0,
+        max_value=1.0,
+        display_order=40,
+    ),
+    SettingSpec(
+        key="weight_tardiness",
+        category="optimization",
+        label="Вес: Просрочка заказов",
+        value_type="float",
+        default=0.0,
+        description="Приоритет соблюдения due_date",
+        min_value=0.0,
+        max_value=1.0,
+        display_order=50,
+    ),
 ]
 
 
@@ -378,6 +442,7 @@ CATEGORY_LABELS: Dict[str, str] = {
     "cz": "Честный Знак",
     "resources": "Персонал",
     "features": "Feature-флаги",
+    "optimization": "Оптимизация",       # Итерация 12
 }
 
 CATEGORY_ORDER: List[str] = [
@@ -390,6 +455,7 @@ CATEGORY_ORDER: List[str] = [
     "cz",
     "resources",
     "features",
+    "optimization",                       # Итерация 12
 ]
 
 

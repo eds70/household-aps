@@ -296,6 +296,11 @@ async def change_shift_mode(
                    f"завершилось ошибкой: {e}",
         )
 
+    # Итерация 12 (fix): явный commit после regenerate_shifts.
+    # Раньше commit был внутри regenerate_shifts, но мы убрали его
+    # (иначе он ломает транзакцию WhatIfRunner).
+    await db.commit()
+
     return {
         "status": "success",
         "shift_mode": mode,

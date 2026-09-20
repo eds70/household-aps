@@ -18,8 +18,9 @@ import GanttPage from './pages/GanttPage';
 import ShiftPage from './pages/ShiftPage';
 import PersonnelPage from './pages/PersonnelPage';
 import CzPage from './pages/CzPage';
+import SettingsPage from './pages/SettingsPage';
+import WhatIfPage from './pages/WhatIfPage'; // Итерация 12
 import {Box, CircularProgress} from '@mui/material';
-import SettingsPage from "./pages/SettingsPage.tsx";
 
 const theme = createTheme({
     palette: {
@@ -96,6 +97,7 @@ const AppRoutes: React.FC = () => {
                 <Route path="shift" element={<ShiftPage />} />
                 <Route path="personnel" element={<PersonnelPage />} />
                 <Route path="cz" element={<CzPage />} />
+                <Route path="whatif" element={<WhatIfPage />} />   {/* Итерация 12 */}
                 <Route path="settings" element={<SettingsPage />} />
             </Route>
 

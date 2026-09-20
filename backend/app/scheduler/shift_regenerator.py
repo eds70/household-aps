@@ -130,8 +130,8 @@ async def regenerate_shifts(
         text("""
             DELETE FROM shift
             WHERE organization_id = :org_id
-              AND (starts_at AT TIME ZONE 'UTC')::date >= :date_from
-              AND (starts_at AT TIME ZONE 'UTC')::date <= :date_to
+              AND (starts_at AT TIME ZONE 'Europe/Moscow')::date >= :date_from
+              AND (starts_at AT TIME ZONE 'Europe/Moscow')::date <= :date_to        
         """),
         {
             "org_id": org_id,
@@ -248,9 +248,18 @@ async def regenerate_shifts(
         )
 
     # ==========================================
-    # 5. Commit
+    # 5. Flush (без commit) — Итерация 12 (fix)
     # ==========================================
-    await session.commit()
+    # Раньше делали commit() — но это ломает транзакцию WhatIfRunner,
+    # который применяет изменения в транзакции №1 и затем откатывает её.
+    #
+    # Используем flush() — данные видны внутри текущей сессии (для scheduler),
+    # но не коммитятся в БД до явного commit() вызывающей стороны.
+    #
+    # Коммит делают вызывающие:
+    #   - API POST /settings/shift-mode (в settings.py) — после вызова.
+    #   - WhatIfRunner (в run_scenario) — НЕ коммитит для транзакции №1.
+    await session.flush()
 
     days_count = (date_to - date_from).days + 1
 

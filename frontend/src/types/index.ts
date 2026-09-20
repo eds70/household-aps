@@ -627,3 +627,128 @@ export interface SettingsSchema {
     categories: SettingsCategory[];
     settings: SettingSpec[];
 }
+
+// ==========================================
+// WHAT-IF SCENARIOS (Итерация 12)
+// ==========================================
+
+export type WhatIfStatus = 'DRAFT' | 'RUNNING' | 'DONE' | 'FAILED';
+
+export interface WhatIfScenario {
+    id: string;
+    organization_id: string;
+    name: string;
+    comment?: string | null;
+    base_version_id: string;
+    result_version_id?: string | null;
+    changes: Record<string, any>;
+    status: WhatIfStatus;
+    created_at: string;
+    updated_at?: string | null;
+    created_by?: string | null;
+}
+
+export interface WhatIfScenarioListItem {
+    id: string;
+    name: string;
+    comment?: string | null;
+    base_version_id: string;
+    result_version_id?: string | null;
+    status: WhatIfStatus;
+    created_at: string;
+}
+
+export interface WhatIfScenarioCreate {
+    name: string;
+    base_version_id: string;
+    comment?: string | null;
+    changes: Record<string, any>;
+}
+
+export interface WhatIfScenarioUpdate {
+    name?: string;
+    comment?: string | null;
+    changes?: Record<string, any>;
+}
+
+export interface WhatIfRunRequest {
+    horizon_hours?: number | null;
+    timeout_seconds?: number | null;
+}
+
+export interface WhatIfMetrics {
+    makespan_minutes: number;
+    makespan_hours: number;
+    total_tasks: number;
+    blocked_tasks: number;
+    cooling_slow_tasks: number;
+    cz_incomplete_tasks: number;
+}
+
+export interface WhatIfCompareResponse {
+    scenario_id: string;
+    scenario_name: string;
+    scenario_status: WhatIfStatus;
+    base_version_id: string;
+    result_version_id?: string | null;
+
+    base_metrics: WhatIfMetrics;
+    result_metrics?: WhatIfMetrics | null;
+
+    makespan_delta_minutes?: number | null;
+    makespan_delta_percent?: number | null;
+    total_tasks_delta?: number | null;
+    blocked_tasks_delta?: number | null;
+    cooling_slow_tasks_delta?: number | null;
+    cz_incomplete_tasks_delta?: number | null;
+
+    error_message?: string | null;
+    run_at?: string | null;
+}
+
+export interface WhatIfRunResponse {
+    scenario_id: string;
+    status: WhatIfStatus;
+    message: string;
+    result_version_id?: string | null;
+    wall_time_seconds?: number | null;
+    compare?: WhatIfCompareResponse | null;
+}
+
+// --- Шаблоны изменений (для UI) ---
+
+export type WhatIfOrderAction =
+    | 'add_order'
+    | 'cancel_order'
+    | 'change_qty'
+    | 'change_due_date';
+
+export type WhatIfCalendarAction = 'add' | 'remove';
+
+export interface WhatIfOrderChange {
+    action: WhatIfOrderAction;
+    product_code?: string;
+    target_qty?: number;
+    due_date?: string;
+    priority?: number;
+    order_id?: string;
+    new_qty?: number;
+    new_due_date?: string;
+}
+
+export interface WhatIfCalendarChange {
+    action: WhatIfCalendarAction;
+    event_id?: string;
+    event_type?: string;
+    equipment_code?: string;
+    starts_at?: string;
+    ends_at?: string;
+    comment?: string;
+}
+
+export interface WhatIfChanges {
+    orders?: WhatIfOrderChange[];
+    shift_mode?: '1x8' | '3x8' | '2x12';
+    resource_capacity?: Record<string, number>;
+    calendar_events?: WhatIfCalendarChange[];
+}

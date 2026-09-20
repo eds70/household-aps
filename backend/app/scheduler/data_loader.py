@@ -2,92 +2,118 @@
 """
 Загрузчик данных для планировщика.
 
-Итерация 2:
-- Читает material, material_stock, material_supply, recipe, recipe_item
-  для расчёта потребности в сырье и подсказок Advisor.
-
-Итерация 5:
-- Читает batch.is_lab_blocked, batch.lab_status.
-
-Итерация 6:
-- Читает resource_pool с полным списком типов.
-
-Итерация 9 (fix):
-- Читает equipment_capability — матрицу совместимости ГП → линия.
-
-Итерация 11 (Шаг 6):
-- Читает `shift` (смены) — для постпроцессора календаря.
-- Читает `shift_settings` из `app_settings`.
-
-Итерация 11 (Шаг 5):
-- `_load_org_settings` → `_load_app_settings`.
-- Единый источник правды — таблица app_settings.
+Итерация 2: material, material_stock, material_supply, recipe, recipe_item.
+Итерация 5: batch.is_lab_blocked, batch.lab_status.
+Итерация 6: resource_pool с полным списком типов.
+Итерация 9 (fix): equipment_capability.
+Итерация 11 (Шаг 6): shift, shift_settings.
+Итерация 11 (Шаг 5): _load_org_settings → _load_app_settings.
+Итерация 12: order_due_date в batch (для tardiness).
+Итерация 12 (fix): опциональная session — для what-if сценариев
+  (чтобы DataLoader видел незакоммиченные изменения).
 """
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from uuid import UUID
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.ext.asyncio import (
+    create_async_engine,
+    AsyncSession,
+)
 from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
 
 
 class DataLoader:
-    def __init__(self, org_id: UUID):
+    def __init__(
+            self,
+            org_id: UUID,
+            session: Optional[AsyncSession] = None,
+    ):
+        """
+        Итерация 12 (fix): опциональная session.
+
+        Args:
+            org_id: UUID организации.
+            session: если передана — используем её (для what-if).
+                     Если None — создаём свою (обратная совместимость).
+        """
         self.org_id = org_id
-        self.engine = create_async_engine(settings.DATABASE_URL, echo=False)
-        self.async_session = sessionmaker(
-            self.engine, class_=AsyncSession, expire_on_commit=False
-        )
+
+        if session is not None:
+            # Итерация 12 (fix): используем переданную сессию.
+            # Это позволяет what-if сценариям видеть незакоммиченные
+            # изменения из транзакции №1.
+            self.session = session
+            self.engine = None
+            self._session_maker = None
+            self._owns_session = False
+        else:
+            # Обратная совместимость: создаём свою сессию.
+            self.engine = create_async_engine(
+                settings.DATABASE_URL, echo=False
+            )
+            self._session_maker = sessionmaker(
+                self.engine,
+                class_=AsyncSession,
+                expire_on_commit=False,
+            )
+            self.session = None
+            self._owns_session = True
 
     async def load_all(self) -> Dict[str, Any]:
-        async with self.async_session() as session:
-            return {
-                # ==========================================
-                # Основные справочники
-                # ==========================================
-                "batches": await self._load_batches(session),
-                "equipment": await self._load_equipment(session),
-                "products": await self._load_products(session),
-                "operation_templates": await self._load_operations(session),
-                "setup_matrix": await self._load_setup_matrix(session),
-                "calendar_events": await self._load_calendar(session),
-                "resource_pools": await self._load_resource_pools(session),
+        """
+        Загружает все данные.
 
-                # Итерация 11 (Шаг 5): app_settings вместо organization_settings.
-                # Ключ словаря оставлен как "org_settings" для обратной совместимости
-                # с core.py, advisor.py и другими модулями.
-                "org_settings": await self._load_app_settings(session),
+        Итерация 12 (fix): если session передана извне — используем её.
+        Иначе — открываем свою.
+        """
+        if self._owns_session:
+            async with self._session_maker() as session:
+                return await self._load_all_with_session(session)
+        else:
+            return await self._load_all_with_session(self.session)
 
-                "equipment_links": await self._load_equipment_links(session),
-                "gp_products": await self._load_gp_products(session),
-
-                # Итерация 9 (fix): матрица совместимости ГП → линия
-                "equipment_capability": await self._load_equipment_capability(session),
-
-                # ==========================================
-                # Итерация 11 (Шаг 6): смены и настройки смен
-                # ==========================================
-                "shifts": await self._load_shifts(session),
-                "shift_settings": await self._load_shift_settings(session),
-
-                # ==========================================
-                # Материалы (Итерация 2)
-                # ==========================================
-                "materials": await self._load_materials(session),
-                "material_stocks": await self._load_material_stocks(session),
-                "material_supplies": await self._load_material_supplies(session),
-                "recipes": await self._load_recipes(session),
-            }
+    async def _load_all_with_session(
+            self, session: AsyncSession
+    ) -> Dict[str, Any]:
+        """Внутренняя логика загрузки с переданной сессией."""
+        return {
+            # ==========================================
+            # Основные справочники
+            # ==========================================
+            "batches": await self._load_batches(session),
+            "equipment": await self._load_equipment(session),
+            "products": await self._load_products(session),
+            "operation_templates": await self._load_operations(session),
+            "setup_matrix": await self._load_setup_matrix(session),
+            "calendar_events": await self._load_calendar(session),
+            "resource_pools": await self._load_resource_pools(session),
+            "org_settings": await self._load_app_settings(session),
+            "equipment_links": await self._load_equipment_links(session),
+            "gp_products": await self._load_gp_products(session),
+            "equipment_capability": await self._load_equipment_capability(session),
+            "shifts": await self._load_shifts(session),
+            "shift_settings": await self._load_shift_settings(session),
+            "materials": await self._load_materials(session),
+            "material_stocks": await self._load_material_stocks(session),
+            "material_supplies": await self._load_material_supplies(session),
+            "recipes": await self._load_recipes(session),
+        }
 
     # ==========================================
     # БАЗОВЫЕ СПРАВОЧНИКИ
     # ==========================================
 
     async def _load_batches(self, session) -> List[Dict]:
-        """Загружает партии (Итерация 5: + lab_status, is_lab_blocked)."""
+        """
+        Загружает партии.
+
+        Итерация 5: + lab_status, is_lab_blocked.
+        Итерация 12: + order_due_date.
+        """
         result = await session.execute(
             text("""
                 SELECT b.id, b.product_id, b.volume_kg, b.assigned_equipment_id,
@@ -95,6 +121,7 @@ class DataLoader:
                 e.name as equipment_name, e.type as equipment_type,
                 e.volume_kg as equipment_volume, e.speed_coeff, e.mixer_type,
                 po.product_id AS gp_product_id,
+                po.due_date AS order_due_date,
                 COALESCE(b.is_lab_blocked, FALSE) AS is_lab_blocked,
                 COALESCE(b.lab_status, 'NOT_REQUIRED') AS lab_status,
                 b.lab_block_reason
@@ -141,11 +168,6 @@ class DataLoader:
         return {str(row.id): dict(row._mapping) for row in result.fetchall()}
 
     async def _load_operations(self, session) -> Dict[str, List[Dict]]:
-        """
-        Загружает техкарты.
-
-        Итерация 6: добавлено поле operator_pool.
-        """
         result = await session.execute(
             text("""
                 SELECT id, product_id, stage_order, name, base_duration_mins,
@@ -188,7 +210,6 @@ class DataLoader:
         return [dict(row._mapping) for row in result.fetchall()]
 
     async def _load_resource_pools(self, session) -> List[Dict]:
-        """Загружает пулы ресурсов с полной информацией."""
         result = await session.execute(
             text("""
                 SELECT id, name, type, capacity, comment
@@ -200,23 +221,7 @@ class DataLoader:
         )
         return [dict(row._mapping) for row in result.fetchall()]
 
-    # ==========================================
-    # ИТЕРАЦИЯ 11 (ШАГ 5): APP_SETTINGS
-    # ==========================================
-    # Заменяет _load_org_settings (organization_settings).
-    # Единый источник правды для feature-флагов и параметров планирования.
-    # ==========================================
-
     async def _load_app_settings(self, session) -> Dict[str, Any]:
-        """
-        Загружает ВСЕ настройки из app_settings (Итерация 11, Шаг 5).
-
-        Возвращает словарь {setting_key: setting_value}.
-        Значения — как из JSONB, требуют приведения типа.
-
-        Раньше читалось из organization_settings. Теперь app_settings —
-        единственный источник правды.
-        """
         result = await session.execute(
             text("""
                 SELECT setting_key, setting_value
@@ -242,12 +247,6 @@ class DataLoader:
         return [dict(row._mapping) for row in result.fetchall()]
 
     async def _load_equipment_capability(self, session) -> List[Dict]:
-        """
-        Загружает матрицу совместимости product → equipment.
-
-        Из таблицы equipment_capability. Для линий розлива здесь
-        хранится явный маппинг ГП → линия.
-        """
         result = await session.execute(
             text("""
                 SELECT equipment_id, product_id, max_fill_percent
@@ -259,18 +258,7 @@ class DataLoader:
         )
         return [dict(row._mapping) for row in result.fetchall()]
 
-    # ==========================================
-    # ИТЕРАЦИЯ 11 (ШАГ 6): СМЕНЫ И НАСТРОЙКИ СМЕН
-    # ==========================================
-
     async def _load_shifts(self, session) -> List[Dict]:
-        """
-        Загружает все смены организации (рабочие и нерабочие).
-
-        Используется:
-          - в постпроцессоре календаря для построения рабочих окон;
-          - в UI мастера смены для отображения заданий.
-        """
         result = await session.execute(
             text("""
                 SELECT id, name, starts_at, ends_at, is_working, comment
@@ -283,15 +271,7 @@ class DataLoader:
         return [dict(row._mapping) for row in result.fetchall()]
 
     async def _load_shift_settings(self, session) -> Dict[str, Any]:
-        """
-        Загружает настройки режима смен из app_settings.
-
-        Итерация 11 (Шаг 6):
-          - shift_mode: "1x8" | "3x8" | "2x12"
-          - shift_intervals: JSON-массив интервалов
-          - shift_duration_hours: длительность смены
-          - allow_weekend_work: bool — разрешена ли работа в выходные
-        """
+        """Загружает настройки режима смен из app_settings."""
         result = await session.execute(
             text("""
                 SELECT setting_key, setting_value
@@ -308,9 +288,6 @@ class DataLoader:
         )
         rows = {row.setting_key: row.setting_value for row in result.fetchall()}
 
-        # ==========================================
-        # Парсинг shift_mode
-        # ==========================================
         shift_mode = "2x12"
         if rows.get("shift_mode") is not None:
             raw = rows["shift_mode"]
@@ -319,9 +296,6 @@ class DataLoader:
             else:
                 shift_mode = str(raw)
 
-        # ==========================================
-        # Парсинг shift_intervals (JSON)
-        # ==========================================
         shift_intervals: List[Dict[str, str]] = [
             {"start": "08:00", "end": "20:00"},
             {"start": "20:00", "end": "08:00"},
@@ -337,9 +311,6 @@ class DataLoader:
             except (ValueError, TypeError):
                 pass
 
-        # ==========================================
-        # Парсинг shift_duration_hours
-        # ==========================================
         shift_duration_hours = 12
         if rows.get("shift_duration_hours") is not None:
             raw = rows["shift_duration_hours"]
@@ -351,9 +322,6 @@ class DataLoader:
             except (ValueError, TypeError):
                 pass
 
-        # ==========================================
-        # Парсинг allow_weekend_work (bool)
-        # ==========================================
         allow_weekend_work = False
         if rows.get("allow_weekend_work") is not None:
             raw = rows["allow_weekend_work"]
@@ -374,11 +342,10 @@ class DataLoader:
         }
 
     # ==========================================
-    # МАТЕРИАЛЫ (Итерация 2)
+    # МАТЕРИАЛЫ
     # ==========================================
 
     async def _load_materials(self, session) -> Dict[str, Dict]:
-        """Справочник материалов {material_id: {...}}."""
         result = await session.execute(
             text("""
                 SELECT id, code, name, unit, category
@@ -389,7 +356,6 @@ class DataLoader:
         return {str(row.id): dict(row._mapping) for row in result.fetchall()}
 
     async def _load_material_stocks(self, session) -> Dict[str, Dict]:
-        """Остатки {material_id: {qty, reserved_qty}}."""
         result = await session.execute(
             text("""
                 SELECT material_id, qty, reserved_qty
@@ -400,7 +366,6 @@ class DataLoader:
         return {str(row.material_id): dict(row._mapping) for row in result.fetchall()}
 
     async def _load_material_supplies(self, session) -> List[Dict]:
-        """График поставок."""
         result = await session.execute(
             text("""
                 SELECT id, material_id, expected_at, qty, status
@@ -411,7 +376,6 @@ class DataLoader:
         return [dict(row._mapping) for row in result.fetchall()]
 
     async def _load_recipes(self, session) -> Dict[str, Dict]:
-        """Рецептуры {pf_product_id: {base_volume_kg, items: [...]}}."""
         result = await session.execute(
             text("""
                 SELECT r.id, r.product_id, r.base_volume_kg,
