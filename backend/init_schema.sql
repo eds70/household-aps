@@ -29,6 +29,8 @@
 -- ==========================================
 -- 1. МУЛЬТИ-ТЕНАНТНОСТЬ И АВТОРИЗАЦИЯ
 -- ==========================================
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+
 CREATE TABLE organization (
                               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                               name VARCHAR(200) NOT NULL,
@@ -39,6 +41,13 @@ CREATE TABLE organization (
                               comment TEXT
 );
 COMMENT ON TABLE organization IS 'Организации (тенанты). Все бизнес-данные привязаны к организации.';
+
+-- Организация по умолчанию. Нужна до INSERT'ов app_settings/organization_settings
+-- из-за FK-ограничений (seed_demo_data.sql делает ON CONFLICT DO NOTHING).
+INSERT INTO organization (id, name, slug, settings)
+VALUES ('00000000-0000-0000-0000-000000000001', 'Бытовая Химия ООО', 'household-demo',
+        '{"work_start": "08:00", "work_end": "20:00"}')
+    ON CONFLICT (id) DO NOTHING;
 
 CREATE TABLE app_user (
                           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -109,10 +118,11 @@ CREATE TABLE equipment_capability (
                                       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                                       organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
                                       equipment_id UUID NOT NULL REFERENCES equipment(id) ON DELETE CASCADE,
-                                      product_id UUID NOT NULL REFERENCES product(id) ON DELETE CASCADE,
+                                      product_id UUID NOT NULL,
                                       max_fill_percent NUMERIC(3,2) DEFAULT 0.80,
                                       UNIQUE (organization_id, equipment_id, product_id)
 );
+-- FK на product добавляется отдельным ALTER, т.к. product создаётся ниже в этом же скрипте.
 COMMENT ON TABLE equipment_capability IS 'Матрица совместимости оборудования и продукции.';
 
 CREATE TABLE resource_pool (
@@ -151,9 +161,11 @@ CREATE TABLE material_stock (
                                 material_id UUID NOT NULL REFERENCES material(id) ON DELETE CASCADE,
                                 qty NUMERIC(12,3) NOT NULL DEFAULT 0,
                                 reserved_qty NUMERIC(12,3) DEFAULT 0,
-                                updated_at TIMESTAMPTZ DEFAULT NOW()
+                                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                                CONSTRAINT material_stock_org_mat_unique
+                                    UNIQUE (organization_id, material_id)
 );
-COMMENT ON TABLE material_stock IS 'Текущие остатки материалов.';
+COMMENT ON TABLE material_stock IS 'Текущие остатки материалов. UNIQUE (organization_id, material_id).';
 
 CREATE TABLE material_supply (
                                  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -185,6 +197,10 @@ CREATE TABLE product (
 );
 COMMENT ON TABLE product IS 'Продукция: полуфабрикаты (ПФ) и готовая продукция (ГП).';
 COMMENT ON COLUMN product.route_type IS 'Способ слива ПФ: DIRECT (напрямую на линию) или VIA_TANK (через накопительную емкость)';
+
+ALTER TABLE equipment_capability
+    ADD CONSTRAINT equipment_capability_product_fk
+    FOREIGN KEY (product_id) REFERENCES product(id) ON DELETE CASCADE;
 
 CREATE TABLE recipe (
                         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -602,6 +618,154 @@ COMMENT ON COLUMN app_settings.is_system IS
 
 CREATE INDEX idx_app_settings_category ON app_settings(organization_id, category);
 CREATE INDEX idx_app_settings_updated ON app_settings(organization_id, updated_at DESC);
+
+-- ==========================================
+-- 14b. ЖУРНАЛ ИЗМЕНЕНИЙ ОСТАТКОВ (Итерация 13.2)
+-- ==========================================
+CREATE TABLE material_stock_log (
+                                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                                    organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+                                    material_id UUID NOT NULL REFERENCES material(id) ON DELETE CASCADE,
+                                    action VARCHAR(20) NOT NULL,
+                                    old_qty NUMERIC(12,3),
+                                    new_qty NUMERIC(12,3),
+                                    old_reserved_qty NUMERIC(12,3),
+                                    new_reserved_qty NUMERIC(12,3),
+                                    delta_qty NUMERIC(12,3),
+                                    delta_reserved_qty NUMERIC(12,3),
+                                    changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                                    changed_by UUID REFERENCES app_user(id) ON DELETE SET NULL,
+                                    source VARCHAR(30) DEFAULT 'SYSTEM',
+                                    reason TEXT,
+                                    comment TEXT
+);
+COMMENT ON TABLE material_stock_log IS 'Журнал изменений остатков материалов.';
+
+CREATE INDEX idx_material_stock_log_material
+    ON material_stock_log(organization_id, material_id, changed_at DESC);
+CREATE INDEX idx_material_stock_log_changed_at
+    ON material_stock_log(organization_id, changed_at DESC);
+CREATE INDEX idx_material_stock_log_source
+    ON material_stock_log(organization_id, source, changed_at DESC);
+
+-- ==========================================
+-- 2. ФУНКЦИЯ-ТРИГГЕР
+-- ==========================================
+CREATE OR REPLACE FUNCTION log_material_stock_change()
+RETURNS TRIGGER AS $$
+DECLARE
+v_user_id UUID;
+    v_source  VARCHAR(30);
+    v_reason  TEXT;
+BEGIN
+    -- Читаем session variable app.current_user_id (устанавливается через
+    -- set_config('app.current_user_id', ..., true) в API-слое).
+BEGIN
+        v_user_id := NULLIF(current_setting('app.current_user_id', TRUE), '')::uuid;
+EXCEPTION WHEN OTHERS THEN
+        v_user_id := NULL;
+END;
+
+BEGIN
+        v_source := NULLIF(current_setting('app.change_source', TRUE), '');
+EXCEPTION WHEN OTHERS THEN
+        v_source := NULL;
+END;
+
+BEGIN
+        v_reason := NULLIF(current_setting('app.change_reason', TRUE), '');
+EXCEPTION WHEN OTHERS THEN
+        v_reason := NULL;
+END;
+
+    IF v_source IS NULL THEN
+        v_source := 'SYSTEM';
+END IF;
+
+    -- ---------------- INSERT ----------------
+    IF TG_OP = 'INSERT' THEN
+        INSERT INTO material_stock_log (
+            organization_id, material_id, action,
+            old_qty, new_qty, old_reserved_qty, new_reserved_qty,
+            delta_qty, delta_reserved_qty,
+            changed_by, source, reason, comment
+        ) VALUES (
+            NEW.organization_id, NEW.material_id, 'INSERT',
+            NULL, NEW.qty,
+            NULL, NEW.reserved_qty,
+            COALESCE(NEW.qty, 0),
+            COALESCE(NEW.reserved_qty, 0),
+            v_user_id, v_source, v_reason,
+            'Создание записи остатков'
+        );
+RETURN NEW;
+END IF;
+
+    -- ---------------- UPDATE ----------------
+    IF TG_OP = 'UPDATE' THEN
+        -- Логируем только если значения реально изменились
+        IF (OLD.qty IS DISTINCT FROM NEW.qty)
+           OR (OLD.reserved_qty IS DISTINCT FROM NEW.reserved_qty) THEN
+            INSERT INTO material_stock_log (
+                organization_id, material_id, action,
+                old_qty, new_qty, old_reserved_qty, new_reserved_qty,
+                delta_qty, delta_reserved_qty,
+                changed_by, source, reason
+            ) VALUES (
+                NEW.organization_id, NEW.material_id, 'UPDATE',
+                OLD.qty, NEW.qty,
+                OLD.reserved_qty, NEW.reserved_qty,
+                COALESCE(NEW.qty, 0) - COALESCE(OLD.qty, 0),
+                COALESCE(NEW.reserved_qty, 0) - COALESCE(OLD.reserved_qty, 0),
+                v_user_id, v_source, v_reason
+            );
+END IF;
+RETURN NEW;
+END IF;
+
+    -- ---------------- DELETE ----------------
+    IF TG_OP = 'DELETE' THEN
+        -- Не логируем DELETE, если материал уже удалён (каскадный delete
+        -- от `DELETE FROM material`). Иначе FK violation.
+        IF NOT EXISTS (
+            SELECT 1 FROM material WHERE id = OLD.material_id
+        ) THEN
+            RETURN OLD;
+END IF;
+
+INSERT INTO material_stock_log (
+    organization_id, material_id, action,
+    old_qty, new_qty, old_reserved_qty, new_reserved_qty,
+    delta_qty, delta_reserved_qty,
+    changed_by, source, reason, comment
+) VALUES (
+             OLD.organization_id, OLD.material_id, 'DELETE',
+             OLD.qty, NULL,
+             OLD.reserved_qty, NULL,
+             -COALESCE(OLD.qty, 0),
+             -COALESCE(OLD.reserved_qty, 0),
+             v_user_id, v_source, v_reason,
+             'Удаление записи остатков'
+         );
+RETURN OLD;
+END IF;
+
+RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ==========================================
+-- 3. ТРИГГЕР
+-- ==========================================
+DROP TRIGGER IF EXISTS trg_material_stock_log ON material_stock;
+CREATE TRIGGER trg_material_stock_log
+    AFTER INSERT OR UPDATE OR DELETE ON material_stock
+    FOR EACH ROW EXECUTE FUNCTION log_material_stock_change();
+
+-- TANK_2 (Итерация 13.4, fix C2)
+-- Будет создан через seed_demo_data.sql
+
 -- ==========================================
 -- 15. ДЕМО-ДАННЫЕ: НАСТРОЙКИ ОРГАНИЗАЦИИ
 -- ==========================================

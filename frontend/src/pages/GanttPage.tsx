@@ -1,5 +1,6 @@
 // frontend/src/pages/GanttPage.tsx
 import React, {useCallback, useEffect, useRef, useState} from 'react';
+import {useNavigate} from 'react-router-dom';
 import {
     Alert,
     Box,
@@ -37,6 +38,7 @@ import {
     Download as DownloadIcon,
     FilterAltOff as FilterAltOffIcon,
     FitScreen as FitScreenIcon,
+    History as HistoryIcon,
     Lock as LockIcon,
     QrCodeScanner as QrCodeScannerIcon,
     Refresh as RefreshIcon,
@@ -132,6 +134,9 @@ interface ViewportState {
 }
 
 const GanttPage: React.FC = () => {
+    // Итерация 13.3: навигация для перехода в «Аудит»
+    const navigate = useNavigate();
+
     const containerRef = useRef<HTMLDivElement>(null);
     const minimapContainerRef = useRef<HTMLDivElement>(null);
     const timelineRef = useRef<Timeline | null>(null);
@@ -285,6 +290,13 @@ const GanttPage: React.FC = () => {
         setShowOnlyBlocked(false);
         setShowOnlySlowCooling(false);
         setShowOnlyCzIncomplete(false);
+    };
+
+    // Итерация 13.3: переход в Аудит
+    const handleOpenAudit = () => {
+        // Открываем аудит с фильтром по перепланированиям и остаткам
+        // (самые частые причины изменения плана)
+        navigate('/audit?sources=RESCHEDULE,LAB,CZ');
     };
 
 // ==========================================
@@ -1178,6 +1190,16 @@ const GanttPage: React.FC = () => {
                     Диаграмма Ганта
                 </Typography>
                 <Box sx={{display: 'flex', gap: 1, flexWrap: 'wrap'}}>
+                    {/* Итерация 13.3: кнопка «История изменений» */}
+                    <Tooltip title="Открыть журнал аудита (перепланирования, лаборатория, ЧЗ)">
+                        <Button
+                            variant="outlined"
+                            startIcon={<HistoryIcon/>}
+                            onClick={handleOpenAudit}
+                        >
+                            История изменений
+                        </Button>
+                    </Tooltip>
                     <Button
                         variant="outlined"
                         startIcon={<RefreshIcon/>}

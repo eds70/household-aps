@@ -1,6 +1,6 @@
 # backend/app/api/v1/lab.py
 """
-API лаборатории (Итерация 5).
+API лаборатории (Итерация 5 + fix C3).
 
 Эндпоинты:
   GET  /api/v1/lab/pending                — партии, ожидающие анализа / заблокированные
@@ -12,13 +12,21 @@ API лаборатории (Итерация 5).
   POST /api/v1/lab/batch/{batch_id}/request   — запросить анализ
 
 Итерация 11 (Шаг 5): чтение флага enable_lab_blocking через settings_reader.
+Итерация 13.4 (fix C3): авто-перепланирование после block/unblock/approve
+    через BackgroundTasks.
 """
 
 import logging
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Query,
+)
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,14 +38,14 @@ from app.auth.dependencies import (
 from app.scheduler.logging_config import setup_scheduler_logging, log_with_context
 from app.scheduler.settings_reader import read_feature_flags
 from .lab_models import (
-    BlockBatchRequest,
-    UnblockBatchRequest,
     ApproveBatchRequest,
-    RequestAnalysisRequest,
-    LabAnalysisLogResponse,
     BatchLabStatusResponse,
-    LabPendingBatchResponse,
+    BlockBatchRequest,
     LabActionResponse,
+    LabAnalysisLogResponse,
+    LabPendingBatchResponse,
+    RequestAnalysisRequest,
+    UnblockBatchRequest,
 )
 
 router = APIRouter(prefix="/api/v1/lab", tags=["Лаборатория"])
@@ -45,7 +53,7 @@ logger = setup_scheduler_logging(level=logging.INFO)
 
 
 # ==========================================
-# ПРОВЕРКА ПРАВ И FEATURE-ФЛАГА
+# КОНСТАНТЫ
 # ==========================================
 
 ALLOWED_ROLES = {"LAB", "MASTER", "ADMIN"}
@@ -57,6 +65,10 @@ VALID_LAB_STATUSES = {
     "BLOCKED",
 }
 
+
+# ==========================================
+# ПРОВЕРКИ
+# ==========================================
 
 async def _check_lab_blocking_enabled(db: AsyncSession, org_id: UUID) -> None:
     """
@@ -83,7 +95,7 @@ def _check_role(current_user: dict) -> None:
 
 
 # ==========================================
-# ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ: проверка FK
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ==========================================
 
 async def _validate_scheduled_task_id(
@@ -117,10 +129,6 @@ async def _validate_scheduled_task_id(
 
     return scheduled_task_id
 
-
-# ==========================================
-# ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ: запись в журнал
-# ==========================================
 
 async def _write_lab_log(
         db: AsyncSession,
@@ -164,7 +172,74 @@ async def _write_lab_log(
 
 
 # ==========================================
-# СПИСОК ПАРТИЙ, ОЖИДАЮЩИХ АНАЛИЗА
+# ИТЕРАЦИЯ 13.4 (fix C3): авто-перепланирование
+# ==========================================
+
+async def _get_active_version_id(
+        db: AsyncSession,
+        org_id: UUID,
+) -> Optional[UUID]:
+    """Возвращает ID последней активной версии плана или None."""
+    result = await db.execute(
+        text("""
+            SELECT id FROM schedule_version
+            WHERE organization_id = :org_id AND is_active = TRUE
+            ORDER BY created_at DESC
+            LIMIT 1
+        """),
+        {"org_id": org_id},
+    )
+    row = result.fetchone()
+    return row.id if row else None
+
+
+async def _auto_reschedule_after_lab(
+        org_id: UUID,
+        from_version_id: UUID,
+        reason: str,
+        comment: str,
+) -> None:
+    """
+    Фоновая задача: запускает перепланирование с учётом изменения
+    статуса лаборатории.
+
+    Вызывается из эндпоинтов block/unblock/approve.
+
+    Если перепланирование не удалось (например, нет активной версии) —
+    просто логируем и не падаем. Мастер всегда может запустить
+    вручную через /schedule.
+    """
+    from app.scheduler.rescheduler import Rescheduler
+
+    try:
+        rescheduler = Rescheduler(org_id=org_id)
+        result = await rescheduler.reschedule(
+            from_version_id=from_version_id,
+            reason="MANUAL",
+            changes={"source": "lab_auto_reschedule", "trigger": reason},
+            comment=comment,
+        )
+
+        log_with_context(
+            logger, logging.INFO,
+            f"[C3] Авто-перепланирование после {reason}: "
+            f"status={result.status}, "
+            f"from={str(from_version_id)[:8]}, "
+            f"to={str(result.to_version_id)[:8] if result.to_version_id else 'N/A'}, "
+            f"tasks={result.moved_tasks}",
+            stage="lab_auto_reschedule", org_id=str(org_id),
+        )
+    except Exception as e:
+        log_with_context(
+            logger, logging.ERROR,
+            f"[C3] Ошибка авто-перепланирования после {reason}: "
+            f"{type(e).__name__}: {e}",
+            stage="lab_auto_reschedule", org_id=str(org_id),
+        )
+
+
+# ==========================================
+# GET /pending — партии, ожидающие анализа / заблокированные
 # ==========================================
 
 @router.get("/pending", response_model=List[LabPendingBatchResponse])
@@ -256,7 +331,7 @@ async def list_pending_batches(
 
 
 # ==========================================
-# СТАТУС ПАРТИИ ПО ЛАБОРАТОРИИ
+# GET /batch/{id} — статус партии по лаборатории
 # ==========================================
 
 @router.get("/batch/{batch_id}", response_model=BatchLabStatusResponse)
@@ -312,7 +387,7 @@ async def get_batch_lab_status(
 
 
 # ==========================================
-# ЖУРНАЛ ПРОВЕРОК ПАРТИИ
+# GET /batch/{id}/log — журнал проверок
 # ==========================================
 
 @router.get("/batch/{batch_id}/log", response_model=List[LabAnalysisLogResponse])
@@ -360,7 +435,7 @@ async def get_batch_lab_log(
 
 
 # ==========================================
-# ЗАПРОСИТЬ АНАЛИЗ
+# POST /batch/{id}/request — запросить анализ
 # ==========================================
 
 @router.post("/batch/{batch_id}/request", response_model=LabActionResponse)
@@ -424,13 +499,14 @@ async def request_analysis(
 
 
 # ==========================================
-# ЗАБЛОКИРОВАТЬ ПАРТИЮ
+# POST /batch/{id}/block — заблокировать партию
 # ==========================================
 
 @router.post("/batch/{batch_id}/block", response_model=LabActionResponse)
 async def block_batch(
         batch_id: UUID,
         payload: BlockBatchRequest,
+        background_tasks: BackgroundTasks,
         current_user: dict = Depends(get_current_user),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
@@ -497,6 +573,28 @@ async def block_batch(
         stage="lab_block", org_id=str(org_id),
     )
 
+    # ==========================================
+    # C3: авто-перепланирование
+    # ==========================================
+    active_version_id = await _get_active_version_id(db, org_id)
+    if active_version_id is not None:
+        background_tasks.add_task(
+            _auto_reschedule_after_lab,
+            org_id=org_id,
+            from_version_id=active_version_id,
+            reason="block",
+            comment=(
+                f"Авто-перепланирование после блокировки партии "
+                f"{str(batch_id)[:8]}: {payload.reason}"
+            ),
+        )
+        log_with_context(
+            logger, logging.INFO,
+            f"[C3] Запущено фоновое перепланирование после блокировки "
+            f"партии {str(batch_id)[:8]}",
+            stage="lab_block", org_id=str(org_id),
+        )
+
     return LabActionResponse(
         batch_id=batch_id,
         action="BLOCKED",
@@ -508,13 +606,14 @@ async def block_batch(
 
 
 # ==========================================
-# РАЗБЛОКИРОВАТЬ ПАРТИЮ (ОБЩЕЕ)
+# POST /batch/{id}/unblock — разблокировать (общее)
 # ==========================================
 
 @router.post("/batch/{batch_id}/unblock", response_model=LabActionResponse)
 async def unblock_batch(
         batch_id: UUID,
         payload: UnblockBatchRequest,
+        background_tasks: BackgroundTasks,
         current_user: dict = Depends(get_current_user),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
@@ -573,6 +672,28 @@ async def unblock_batch(
         stage="lab_unblock", org_id=str(org_id),
     )
 
+    # ==========================================
+    # C3: авто-перепланирование
+    # ==========================================
+    active_version_id = await _get_active_version_id(db, org_id)
+    if active_version_id is not None:
+        background_tasks.add_task(
+            _auto_reschedule_after_lab,
+            org_id=org_id,
+            from_version_id=active_version_id,
+            reason="unblock",
+            comment=(
+                f"Авто-перепланирование после разблокировки партии "
+                f"{str(batch_id)[:8]}"
+            ),
+        )
+        log_with_context(
+            logger, logging.INFO,
+            f"[C3] Запущено фоновое перепланирование после разблокировки "
+            f"партии {str(batch_id)[:8]}",
+            stage="lab_unblock", org_id=str(org_id),
+        )
+
     return LabActionResponse(
         batch_id=batch_id,
         action="UNBLOCKED",
@@ -584,13 +705,14 @@ async def unblock_batch(
 
 
 # ==========================================
-# ОДОБРИТЬ ПАРТИЮ ПОСЛЕ АНАЛИЗА
+# POST /batch/{id}/approve — одобрить после анализа
 # ==========================================
 
 @router.post("/batch/{batch_id}/approve", response_model=LabActionResponse)
 async def approve_batch(
         batch_id: UUID,
         payload: ApproveBatchRequest,
+        background_tasks: BackgroundTasks,
         current_user: dict = Depends(get_current_user),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
@@ -678,6 +800,30 @@ async def approve_batch(
         f"Партия {str(batch_id)[:8]}: анализ {payload.result}",
         stage="lab_approve", org_id=str(org_id),
     )
+
+    # ==========================================
+    # C3: авто-перепланирование
+    # ==========================================
+    # Для FAILED тоже перепланируем — партия заблокирована и должна
+    # быть исключена из плана. Для PASSED — возвращаем в план.
+    active_version_id = await _get_active_version_id(db, org_id)
+    if active_version_id is not None:
+        background_tasks.add_task(
+            _auto_reschedule_after_lab,
+            org_id=org_id,
+            from_version_id=active_version_id,
+            reason=f"approve_{payload.result.lower()}",
+            comment=(
+                f"Авто-перепланирование после анализа партии "
+                f"{str(batch_id)[:8]} ({payload.result})"
+            ),
+        )
+        log_with_context(
+            logger, logging.INFO,
+            f"[C3] Запущено фоновое перепланирование после "
+            f"{payload.result} партии {str(batch_id)[:8]}",
+            stage="lab_approve", org_id=str(org_id),
+        )
 
     return LabActionResponse(
         batch_id=batch_id,

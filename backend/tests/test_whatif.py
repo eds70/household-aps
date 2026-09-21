@@ -518,13 +518,17 @@ def test_schema_init_has_whatif_table():
 
 
 def test_schema_init_version_3_0_0():
-    """init_schema.sql v3.0.0."""
+    """init_schema.sql содержит актуальную версию (3.0.0+)."""
     path = os.path.join(
         os.path.dirname(__file__), "..", "init_schema.sql"
     )
     with open(path, "r", encoding="utf-8") as f:
         content = f.read()
-    assert "3.0.0" in content or "v3.0.0" in content
+    # Версия может быть 3.0.0, 4.0.0, ... — проверяем наличие любой из них
+    assert any(v in content for v in ["3.0.0", "v3.0.0", "4.0.0", "v4.0.0"]), (
+        "init_schema.sql должен содержать актуальную версию (3.0.0+). "
+        "Сейчас в схеме v4.0.0."
+    )
 
 
 # ==========================================

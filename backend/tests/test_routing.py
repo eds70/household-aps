@@ -318,8 +318,44 @@ def test_routing_summary():
     assert summary["parallel_groups"] >= 2
 
 
-def test_wash_depends_on_fill():
-    """WASH зависит от LINE_FILL (по ТЗ замыв после слива)."""
+def test_wash_depends_on_fill_for_direct():
+    """
+    DIRECT-маршрут: WASH зависит от LINE_FILL.
+
+    По ТЗ (Раздел 3, п. 2) реактор освобождается ПОСЛЕ слива на линию.
+    Значит, замыв идёт после слива.
+    """
+    batch = {"id": "b1", "product_id": "PF_DISH", "volume_kg": 7000,
+             "assigned_equipment_id": "REACTOR_2"}
+    steps = build_routing(
+        batch=batch,
+        product=_make_products_map()["PF_DISH"],
+        reactor=_make_equipment_map()["REACTOR_2"],
+        operations=_make_operations_for_pf("PF_DISH"),
+        equipment_map=_make_equipment_map(),
+        equipment_links=_make_links(),
+        products_map=_make_products_map(),
+        calc_duration=_calc_duration,
+        gp_product=_make_gp_product("GP_DISH_1L"),
+    )
+    wash = steps[-1]
+    fill_steps = [s for s in steps if s.role == TaskRole.LINE_FILL]
+    last_fill = fill_steps[-1]
+
+    assert wash.role == TaskRole.WASH
+    assert last_fill.op_id in wash.depends_on_op_ids, (
+        "DIRECT: WASH должен зависеть от LINE_FILL (реактор освобождается после слива)"
+    )
+
+
+def test_wash_depends_on_tank_transfer_for_via_tank():
+    """
+    VIA_TANK-маршрут: WASH зависит от TANK_TRANSFER, а НЕ от LINE_FILL.
+
+    Итерация 13.4 (fix C1): по ТЗ реактор освобождается после перекачки
+    в накопительную ёмкость. Значит, замыв может идти параллельно сливу
+    на линию — это ускоряет makespan.
+    """
     batch = {"id": "b1", "product_id": "PF_CREAM", "volume_kg": 3500,
              "assigned_equipment_id": "REACTOR_1"}
     steps = build_routing(
@@ -333,14 +369,26 @@ def test_wash_depends_on_fill():
         calc_duration=_calc_duration,
         gp_product=_make_gp_product("GP_CREAM_1L"),
     )
+
     wash = steps[-1]
-    # WASH зависит от последней части LINE_FILL
+    transfer_steps = [s for s in steps if s.role == TaskRole.TANK_TRANSFER]
     fill_steps = [s for s in steps if s.role == TaskRole.LINE_FILL]
-    last_fill = fill_steps[-1]
+
     assert wash.role == TaskRole.WASH
-    assert last_fill.op_id in wash.depends_on_op_ids
+    assert len(transfer_steps) == 1, "Ожидается ровно один TANK_TRANSFER"
+    assert len(fill_steps) >= 1, "Ожидается хотя бы один LINE_FILL"
 
+    transfer = transfer_steps[0]
+    last_fill = fill_steps[-1]
 
+    assert transfer.op_id in wash.depends_on_op_ids, (
+        "VIA_TANK: WASH должен зависеть от TANK_TRANSFER"
+    )
+    assert last_fill.op_id not in wash.depends_on_op_ids, (
+        "VIA_TANK: WASH НЕ должен зависеть от LINE_FILL "
+        "(замыв может идти параллельно сливу)"
+    )
+    
 # ==========================================
 # ТЕСТЫ: ОБРЕЗКА ПОСЛЕ ЛАБОРАТОРИИ (Итерация 5)
 # ==========================================

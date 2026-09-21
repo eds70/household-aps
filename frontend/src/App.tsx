@@ -99,6 +99,7 @@ const AppRoutes: React.FC = () => {
                 <Route path="cz" element={<CzPage />} />
                 <Route path="whatif" element={<WhatIfPage />} />   {/* Итерация 12 */}
                 <Route path="settings" element={<SettingsPage />} />
+                <Route path="settings" element={<SettingsPage />} />
             </Route>
 
             <Route path="*" element={<Navigate to="/equipment" replace />} />

@@ -322,6 +322,40 @@ def test_routing_no_truncate_full_chain_cream():
     assert TaskRole.LINE_FILL in roles
     assert TaskRole.WASH in roles
 
+def test_routing_via_tank_wash_parallel_to_fill():
+    """
+    Итерация 13.4 (fix C1): для VIA_TANK-маршрута WASH должен
+    зависеть только от TANK_TRANSFER, а не от LINE_FILL.
+
+    Это позволяет solver'у разместить WASH параллельно сливу.
+    """
+    batch = {
+        "id": "b1", "product_id": "PF_CREAM", "volume_kg": 3500,
+        "assigned_equipment_id": "REACTOR_1",
+    }
+    steps = build_routing(
+        batch=batch,
+        product=_make_products_map()["PF_CREAM"],
+        reactor=_make_equipment_map()["REACTOR_1"],
+        operations=_make_operations_for_pf("PF_CREAM"),
+        equipment_map=_make_equipment_map(),
+        equipment_links=_make_links(),
+        products_map=_make_products_map(),
+        calc_duration=_calc_duration,
+        truncate_after_lab=False,
+        gp_product=_make_gp_product("GP_CREAM_1L"),
+    )
+
+    wash = next(s for s in steps if s.role == TaskRole.WASH)
+    fill_steps = [s for s in steps if s.role == TaskRole.LINE_FILL]
+
+    # WASH не должен зависеть ни от одной fill-части
+    for fill_step in fill_steps:
+        assert fill_step.op_id not in wash.depends_on_op_ids, (
+            f"VIA_TANK: WASH не должен зависеть от {fill_step.op_id} "
+            f"(замыв может идти параллельно)"
+        )
+
 def test_routing_truncate_flags():
     """После обрезки флаги is_first/is_last установлены."""
     batch = {
@@ -428,6 +462,29 @@ def test_antiseptic_has_two_lab_operations():
     antiseptic_ops = tz_case.OPERATIONS["PF_ANTISEPTIC"]
     lab_count = sum(1 for op in antiseptic_ops if op[6] is True)
     assert lab_count == 2
+
+def test_lab_api_has_auto_reschedule():
+    """
+    Итерация 13.4 (fix C3): в lab.py должны быть
+    _auto_reschedule_after_lab и _get_active_version_id.
+    """
+    from app.api.v1 import lab as lab_module
+
+    assert hasattr(lab_module, "_auto_reschedule_after_lab"), \
+        "lab.py должен содержать _auto_reschedule_after_lab"
+    assert hasattr(lab_module, "_get_active_version_id"), \
+        "lab.py должен содержать _get_active_version_id"
+
+
+def test_lab_block_accepts_background_tasks():
+    """block_batch должен принимать BackgroundTasks."""
+    import inspect
+    from app.api.v1 import lab as lab_module
+
+    src = inspect.getsource(lab_module)
+    assert "BackgroundTasks" in src
+    assert "background_tasks.add_task" in src
+    assert "_auto_reschedule_after_lab" in src
 
 
 if __name__ == "__main__":

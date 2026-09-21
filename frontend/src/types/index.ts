@@ -68,6 +68,9 @@ export interface Material {
     unit: MaterialUnit;
     category: MaterialCategory;
     comment?: string | null;
+    // Итерация 13.1: остатки (JOIN с material_stock)
+    stock_qty?: number | null;
+    reserved_qty?: number | null;
 }
 
 export interface MaterialStock {
@@ -751,4 +754,110 @@ export interface WhatIfChanges {
     shift_mode?: '1x8' | '3x8' | '2x12';
     resource_capacity?: Record<string, number>;
     calendar_events?: WhatIfCalendarChange[];
+}
+
+// ==========================================
+// ИТЕРАЦИЯ 13.2: ЖУРНАЛ ИЗМЕНЕНИЙ ОСТАТКОВ
+// ==========================================
+
+export type MaterialStockLogAction = 'INSERT' | 'UPDATE' | 'DELETE';
+export type MaterialStockLogSource = 'MANUAL' | 'IMPORT' | 'SYSTEM';
+
+export interface MaterialStockLogEntry {
+    id: string;
+    organization_id: string;
+    material_id: string;
+    material_code?: string | null;
+    material_name?: string | null;
+    material_unit?: string | null;
+    action: MaterialStockLogAction;
+    old_qty?: number | null;
+    new_qty?: number | null;
+    old_reserved_qty?: number | null;
+    new_reserved_qty?: number | null;
+    delta_qty?: number | null;
+    delta_reserved_qty?: number | null;
+    changed_at: string;
+    changed_by?: string | null;
+    changed_by_name?: string | null;
+    source?: MaterialStockLogSource | null;
+    reason?: string | null;
+    comment?: string | null;
+}
+
+export interface MaterialStockLogListResponse {
+    entries: MaterialStockLogEntry[];
+    total: number;
+}
+
+// ==========================================
+// ИМПОРТ ИЗ EXCEL
+// ==========================================
+
+export type MaterialImportRowStatus = 'CREATED' | 'UPDATED' | 'SKIPPED' | 'ERROR';
+
+export interface MaterialImportRow {
+    row_number: number;
+    code: string;
+    name?: string | null;
+    category?: string | null;
+    unit?: string | null;
+    qty?: number | null;
+    reserved_qty?: number | null;
+    status: MaterialImportRowStatus;
+    message?: string | null;
+}
+
+export interface MaterialImportResponse {
+    total_rows: number;
+    created: number;
+    updated: number;
+    skipped: number;
+    errors: number;
+    rows: MaterialImportRow[];
+    message: string;
+}
+
+// ==========================================
+// ИТЕРАЦИЯ 13.3: АУДИТ
+// ==========================================
+
+export type AuditSource = 'STOCK' | 'RESCHEDULE' | 'LAB' | 'CZ';
+export type AuditSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
+
+export interface AuditEvent {
+    id: string;
+    source: AuditSource;
+    event_type: string;
+    severity: AuditSeverity;
+    title: string;
+    description?: string | null;
+    entity_type?: string | null;
+    entity_id?: string | null;
+    entity_name?: string | null;
+    actor_id?: string | null;
+    actor_name?: string | null;
+    occurred_at: string;
+    details: Record<string, any>;
+}
+
+export interface AuditListResponse {
+    events: AuditEvent[];
+    total: number;
+    by_source: Record<string, number>;
+}
+
+export interface AuditStatsResponse {
+    period_days: number;
+    date_from: string;
+    date_to: string;
+    total: number;
+    by_source: Record<string, number>;
+    by_severity: Record<string, number>;
+}
+
+export interface AuditSourceInfo {
+    key: AuditSource;
+    label: string;
+    description: string;
 }

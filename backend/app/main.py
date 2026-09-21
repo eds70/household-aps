@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.advisor import router as advisor_router
+from app.api.v1.audit import router as audit_router  # ← Итерация 13.3
 from app.api.v1.auth import router as auth_router
 from app.api.v1.calendar import router as calendar_router
 from app.api.v1.cz import router as cz_router
@@ -43,6 +44,7 @@ tags_metadata = [
     {"name": "Честный Знак"},
     {"name": "Настройки"},
     {"name": "What-if сценарии"},       # Итерация 12
+    {"name": "Аудит"},                  # ← Итерация 13.3
     {"name": "Система"},
 ]
 
@@ -85,6 +87,7 @@ app.include_router(personnel_router)
 app.include_router(cz_router)
 app.include_router(settings_router)
 app.include_router(whatif_router)      # Итерация 12
+app.include_router(audit_router)       # ← Итерация 13.3
 
 
 @app.get("/health", tags=["Система"])

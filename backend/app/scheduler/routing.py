@@ -516,9 +516,36 @@ def build_routing(
 
             prev_op_id = prev_part_id
 
-    # 5. Добавляем замывку
+    # ==========================================
+    # 5. Замыв реактора (Итерация 13.4 — fix C1)
+    # ==========================================
+    # По ТЗ (Раздел 3, п. 2): «Замыв реактора начинается после его
+    # освобождения — либо после перелива в накопительную ёмкость,
+    # либо после слива ПФ на линии розлива по бутылкам».
+    #
+    # Семантика:
+    #   - VIA_TANK: реактор освобождается после TANK_TRANSFER.
+    #     Замыв может идти ПАРАЛЛЕЛЬНО сливу на линию (LINE_FILL).
+    #     Зависимость: WASH зависит от TANK_TRANSFER (последняя
+    #     операция на реакторе до слива).
+    #   - DIRECT: реактор освобождается после LINE_FILL.
+    #     Замыв идёт ПОСЛЕ слива. Зависимость: WASH → LINE_FILL.
+    #
+    # При этом WASH не должен конфликтовать с LINE_FILL по времени
+    # на одном реакторе — NoOverlap в core.py это гарантирует.
     if postponed_wash is not None:
         duration = calc_duration(postponed_wash, batch, reactor, product)
+
+        # Точка привязки WASH:
+        #   - VIA_TANK: последняя операция на реакторе = TANK_TRANSFER
+        #   - DIRECT: последняя операция = LINE_FILL
+        if route_type == RouteType.VIA_TANK and tank_id:
+            # Замыв зависит от перекачки в танк (реактор освобождён)
+            wash_deps = [last_op_before_fill] if last_op_before_fill else []
+        else:
+            # DIRECT: замыв зависит от слива на линию
+            wash_deps = [prev_op_id] if prev_op_id else []
+
         steps.append(RoutingStep(
             op_id=str(postponed_wash["id"]),
             op=postponed_wash,
@@ -526,7 +553,7 @@ def build_routing(
             primary_equipment_id=reactor_id,
             secondary_equipment_id=None,
             duration=duration,
-            depends_on_op_ids=[prev_op_id] if prev_op_id else [],
+            depends_on_op_ids=wash_deps,
             operator_pool=_assign_operator_pool(postponed_wash),
         ))
 

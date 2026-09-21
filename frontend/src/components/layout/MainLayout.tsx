@@ -26,6 +26,7 @@ import {
     Assignment as AssignmentIcon,
     ChevronLeft as ChevronLeftIcon,
     Factory as FactoryIcon,
+    History as HistoryIcon,
     Inventory as InventoryIcon,
     Logout as LogoutIcon,
     Menu as MenuIcon,
@@ -57,6 +58,7 @@ const MENU_ITEMS = [
     { path: '/personnel', label: 'Персонал', icon: <PersonIcon /> },
     { path: '/cz', label: 'Честный Знак', icon: <QrCodeScannerIcon /> },
     { path: '/whatif', label: 'What-if', icon: <ScienceIcon /> },      // Итерация 12
+    { path: '/audit', label: 'Аудит', icon: <HistoryIcon /> },         // Итерация 13.3
     { path: '/settings', label: 'Настройки', icon: <SettingsIcon /> },
 ];
 

@@ -573,12 +573,13 @@ def test_schema_init_has_cz_fields():
     assert "cz_api_key" in content
     assert "enable_cz_auto_close" in content
 
-    # Версия схемы (обновлено: Итерация 12 → v2.0.0)
+    # Версия схемы (обновлено: Итерация 13 → v4.0.0)
     # Проверяем, что версия есть в файле и она не ниже 1.9.0.
-    # Конкретное значение может меняться (v2.0.0, v2.1.0, ...).
-    assert any(v in content for v in ["1.9.0", "2.0.0", "v2.0.0", "v1.9.0"]), (
+    # Конкретное значение может меняться (v2.0.0, v3.0.0, v4.0.0, ...).
+    versions = ["1.9.0", "2.0.0", "3.0.0", "4.0.0", "v1.9.0", "v2.0.0", "v3.0.0", "v4.0.0"]
+    assert any(v in content for v in versions), (
         "init_schema.sql должен содержать номер версии (1.9.0+). "
-        "Текущая ожидаемая версия: v2.0.0 (Итерация 11/12)."
+        f"Текущая ожидаемая версия: v4.0.0 (Итерация 12/13). Искали: {versions}"
     )
 
 # ==========================================
@@ -631,6 +632,24 @@ def test_decimal_conversion_safe():
     assert _to_float("123.45") == 123.45
     assert _to_float("bad", 42.0) == 42.0
 
+def test_c2_tank_2_created_in_migration():
+    """
+    Итерация 13.4 (fix C2): миграция add_19.sql создаёт TANK_2
+    для крем-мыла 5л.
+    """
+    import os
+    path = os.path.join(
+        os.path.dirname(__file__), "..", "migrations", "add_19.sql"
+    )
+    assert os.path.exists(path), "migrations/add_19.sql должен существовать"
 
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    assert "TANK_2" in content
+    assert "REACTOR_2" in content
+    assert "LINE_2" in content
+    assert "equipment_link" in content
+    
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -162,6 +162,12 @@ INSERT INTO equipment (id, organization_id, code, name, type, volume_kg, speed_c
 VALUES (v_tank1, v_org_id, 'TANK_1', 'Накопительная емкость 1', 'TANK', 5000, 1.0)
     ON CONFLICT DO NOTHING;
 
+-- TANK_2 для крем-мыла 5л (Итерация 13.4, fix C2)
+v_tank2 := gen_random_uuid();
+INSERT INTO equipment (id, organization_id, code, name, type, volume_kg, speed_coeff)
+VALUES (v_tank2, v_org_id, 'TANK_2', 'Накопительная емкость 2', 'TANK', 10000, 1.0)
+    ON CONFLICT DO NOTHING;
+
 v_line1 := gen_random_uuid(); v_line2 := gen_random_uuid(); v_line3 := gen_random_uuid();
 
 INSERT INTO equipment (id, organization_id, code, name, type, speed_coeff) VALUES
@@ -181,6 +187,11 @@ INSERT INTO equipment_link (organization_id, from_equipment_id, to_equipment_id,
                                                                                                 (v_org_id, v_reactor2, v_line2,  TRUE),
                                                                                                 (v_org_id, v_reactor3, v_line2,  TRUE),
                                                                                                 (v_org_id, v_reactor4, v_line3,  TRUE);
+
+-- Связи для TANK_2 (Итерация 13.4, fix C2)
+INSERT INTO equipment_link (organization_id, from_equipment_id, to_equipment_id, is_direct) VALUES
+                                                                                                (v_org_id, v_reactor2, v_tank2,   TRUE),
+                                                                                                (v_org_id, v_tank2,    v_line2,   TRUE);
 
 -- ==========================================
 -- 7. МАТРИЦА СОВМЕСТИМОСТИ (11 записей)

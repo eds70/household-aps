@@ -110,20 +110,20 @@ export const productsApi = {
 // Materials API
 // ==========================================
 export const materialsApi = {
-    getAll: async (category?: string) => {
+    getAll: async (category?: string): Promise<import('../types').Material[]> => {
         const params = category ? { category } : {};
         const response = await api.get('/api/v1/materials', { params });
         return response.data;
     },
-    create: async (data: any) => {
+    create: async (data: any): Promise<import('../types').Material> => {
         const response = await api.post('/api/v1/materials', data);
         return response.data;
     },
-    update: async (id: string, data: any) => {
+    update: async (id: string, data: any): Promise<import('../types').Material> => {
         const response = await api.put(`/api/v1/materials/${id}`, data);
         return response.data;
     },
-    delete: async (id: string) => {
+    delete: async (id: string): Promise<{ message: string }> => {
         const response = await api.delete(`/api/v1/materials/${id}`);
         return response.data;
     },
@@ -132,8 +132,65 @@ export const materialsApi = {
         const response = await api.get('/api/v1/materials/stock', { params });
         return response.data;
     },
-    updateStock: async (materialId: string, data: any) => {
+    updateStock: async (materialId: string, data: { qty?: number; reserved_qty?: number }) => {
         const response = await api.put(`/api/v1/materials/${materialId}/stock`, data);
+        return response.data;
+    },
+
+    // ----- Итерация 13.2: журнал изменений -----
+    getStockLog: async (params?: {
+        material_id?: string;
+        source?: string;
+        date_from?: string;
+        date_to?: string;
+        limit?: number;
+    }): Promise<import('../types').MaterialStockLogListResponse> => {
+        const response = await api.get('/api/v1/materials/stock-log', { params });
+        return response.data;
+    },
+    getMaterialLog: async (
+        materialId: string,
+        limit: number = 100,
+    ): Promise<import('../types').MaterialStockLogEntry[]> => {
+        const response = await api.get(`/api/v1/materials/${materialId}/log`, {
+            params: { limit },
+        });
+        return response.data;
+    },
+
+    // ----- Итерация 13.2: импорт/экспорт Excel -----
+    importExcel: async (
+        file: File,
+    ): Promise<import('../types').MaterialImportResponse> => {
+        const formData = new FormData();
+        formData.append('file', file);
+        const response = await api.post('/api/v1/materials/import-excel', formData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+        });
+        return response.data;
+    },
+    downloadImportTemplate: async (): Promise<Blob> => {
+        const response = await api.get('/api/v1/materials/import-template', {
+            responseType: 'blob',
+        });
+        return response.data;
+    },
+    exportExcel: async (): Promise<Blob> => {
+        const response = await api.get('/api/v1/materials/export-excel', {
+            responseType: 'blob',
+        });
+        return response.data;
+    },
+
+    // ----- Итерация 13.3: rollback + cleanup -----
+    revertStockLog: async (logId: string) => {
+        const response = await api.post(`/api/v1/materials/stock-log/${logId}/revert`);
+        return response.data;
+    },
+    cleanupStockLog: async (olderThanDays: number = 90, source?: string) => {
+        const params: any = { older_than_days: olderThanDays };
+        if (source) params.source = source;
+        const response = await api.delete('/api/v1/materials/stock-log/cleanup', { params });
         return response.data;
     },
 };
@@ -715,6 +772,30 @@ export const whatifApi = {
         const response = await api.get(
             `/api/v1/whatif/scenarios/${id}/compare`,
         );
+        return response.data;
+    },
+};
+
+export const auditApi = {
+    getLog: async (params?: {
+        sources?: string;       // "STOCK,LAB"
+        date_from?: string;
+        date_to?: string;
+        severity?: string;
+        search?: string;
+        limit?: number;
+    }): Promise<import('../types').AuditListResponse> => {
+        const response = await api.get('/api/v1/audit/log', { params });
+        return response.data;
+    },
+
+    getStats: async (days: number = 7): Promise<import('../types').AuditStatsResponse> => {
+        const response = await api.get('/api/v1/audit/stats', { params: { days } });
+        return response.data;
+    },
+
+    getSources: async (): Promise<{ sources: import('../types').AuditSourceInfo[] }> => {
+        const response = await api.get('/api/v1/audit/sources');
         return response.data;
     },
 };

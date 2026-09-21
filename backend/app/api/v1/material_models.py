@@ -6,6 +6,10 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
+# ==========================================
+# MATERIAL
+# ==========================================
+
 class MaterialBase(BaseModel):
     code: str
     name: str
@@ -17,6 +21,17 @@ class MaterialBase(BaseModel):
 class MaterialCreate(MaterialBase):
     organization_id: UUID = Field(
         default=UUID("00000000-0000-0000-0000-000000000001")
+    )
+    # Итерация 13.1: начальный остаток при создании
+    initial_qty: Optional[float] = Field(
+        default=0.0,
+        ge=0,
+        description="Начальный остаток материала на складе (в единицах unit)",
+    )
+    initial_reserved_qty: Optional[float] = Field(
+        default=0.0,
+        ge=0,
+        description="Начальное зарезервированное количество",
     )
 
 
@@ -31,10 +46,17 @@ class MaterialUpdate(BaseModel):
 class MaterialResponse(MaterialBase):
     id: UUID
     organization_id: UUID
+    # Итерация 13.1: остатки в ответе (JOIN с material_stock)
+    stock_qty: Optional[float] = 0.0
+    reserved_qty: Optional[float] = 0.0
 
     class Config:
         from_attributes = True
 
+
+# ==========================================
+# MATERIAL STOCK
+# ==========================================
 
 class MaterialStockBase(BaseModel):
     qty: float = 0
@@ -55,6 +77,100 @@ class MaterialStockResponse(MaterialStockBase):
     class Config:
         from_attributes = True
 
+
+# ==========================================
+# ИТЕРАЦИЯ 13.2: ЖУРНАЛ ИЗМЕНЕНИЙ ОСТАТКОВ
+# ==========================================
+
+class MaterialStockLogEntry(BaseModel):
+    """Одна запись журнала изменений остатков."""
+    id: UUID
+    organization_id: UUID
+    material_id: UUID
+    material_code: Optional[str] = None
+    material_name: Optional[str] = None
+    material_unit: Optional[str] = None
+
+    action: str  # INSERT | UPDATE | DELETE
+
+    old_qty: Optional[float] = None
+    new_qty: Optional[float] = None
+    old_reserved_qty: Optional[float] = None
+    new_reserved_qty: Optional[float] = None
+    delta_qty: Optional[float] = None
+    delta_reserved_qty: Optional[float] = None
+
+    changed_at: datetime
+    changed_by: Optional[UUID] = None
+    changed_by_name: Optional[str] = None
+    source: Optional[str] = None
+    reason: Optional[str] = None
+    comment: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class MaterialStockLogListResponse(BaseModel):
+    """Список записей журнала + общее количество."""
+    entries: List[MaterialStockLogEntry]
+    total: int
+
+
+# ==========================================
+# ИТЕРАЦИЯ 13.2: ИМПОРТ ИЗ EXCEL
+# ==========================================
+
+class MaterialImportRow(BaseModel):
+    """Результат импорта одной строки Excel."""
+    row_number: int
+    code: str
+    name: Optional[str] = None
+    category: Optional[str] = None
+    unit: Optional[str] = None
+    qty: Optional[float] = None
+    reserved_qty: Optional[float] = None
+    status: str  # CREATED | UPDATED | SKIPPED | ERROR
+    message: Optional[str] = None
+
+
+class MaterialImportResponse(BaseModel):
+    """Результат импорта из Excel."""
+    total_rows: int
+    created: int
+    updated: int
+    skipped: int
+    errors: int
+    rows: List[MaterialImportRow]
+    message: str
+
+
+# ==========================================
+# ИТЕРАЦИЯ 13.3: ROLLBACK + CLEANUP ЖУРНАЛА
+# ==========================================
+
+class MaterialStockLogRevertResponse(BaseModel):
+    """Ответ на отмену изменения остатков."""
+    log_id: UUID
+    material_id: UUID
+    material_code: Optional[str] = None
+    material_name: Optional[str] = None
+    reverted: bool
+    old_qty: Optional[float] = None
+    new_qty: Optional[float] = None
+    message: str
+
+
+class MaterialStockLogCleanupResponse(BaseModel):
+    """Ответ на очистку журнала."""
+    deleted: int
+    kept: int
+    message: str
+
+
+# ==========================================
+# RECIPES
+# ==========================================
 
 class RecipeItemBase(BaseModel):
     material_id: UUID
@@ -105,6 +221,10 @@ class RecipeResponse(RecipeBase):
         from_attributes = True
 
 
+# ==========================================
+# PRODUCTION ORDER
+# ==========================================
+
 class ProductionOrderBase(BaseModel):
     product_id: UUID
     target_qty: float
@@ -141,7 +261,7 @@ class ProductionOrderResponse(ProductionOrderBase):
 
 
 # ==========================================
-# BATCH: обновлено в Итерации 5 (Лаборатория)
+# BATCH (Итерация 5: лаборатория)
 # ==========================================
 
 class BatchBase(BaseModel):
@@ -149,9 +269,8 @@ class BatchBase(BaseModel):
     volume_kg: float
     assigned_equipment_id: Optional[UUID] = None
     comment: Optional[str] = None
-    # Новые поля Итерации 5
     is_lab_blocked: bool = False
-    lab_status: str = "NOT_REQUIRED"   # NOT_REQUIRED | PENDING_LAB | APPROVED | BLOCKED
+    lab_status: str = "NOT_REQUIRED"
     lab_block_reason: Optional[str] = None
     lab_blocked_at: Optional[datetime] = None
     lab_blocked_by: Optional[UUID] = None
@@ -170,7 +289,6 @@ class BatchUpdate(BaseModel):
     planned_end: Optional[datetime] = None
     status: Optional[str] = None
     comment: Optional[str] = None
-    # Новые поля Итерации 5
     is_lab_blocked: Optional[bool] = None
     lab_status: Optional[str] = None
     lab_block_reason: Optional[str] = None
