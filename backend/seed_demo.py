@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
 # Конфигурация
-DATABASE_URL = "postgresql+asyncpg://aps:aps_secret@localhost:5432/household"
+DATABASE_URL = "postgresql+asyncpg://aps:aps_secret@localhost:5433/household"
 ORG_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 # Часовой пояс +03:00 (как в ТЗ)

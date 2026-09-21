@@ -1,4 +1,4 @@
--- ==========================================
+﻿-- ==========================================
 -- APS СИСТЕМА: ПОЛНАЯ СХЕМА БД
 -- PostgreSQL 16+
 -- Для производства бытовой химии
@@ -29,6 +29,8 @@
 -- ==========================================
 -- 1. МУЛЬТИ-ТЕНАНТНОСТЬ И АВТОРИЗАЦИЯ
 -- ==========================================
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+
 CREATE TABLE organization (
                               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                               name VARCHAR(200) NOT NULL,
@@ -39,6 +41,13 @@ CREATE TABLE organization (
                               comment TEXT
 );
 COMMENT ON TABLE organization IS 'Организации (тенанты). Все бизнес-данные привязаны к организации.';
+
+-- Организация по умолчанию. Нужна до INSERT'ов app_settings/organization_settings
+-- из-за FK-ограничений (seed_demo_data.sql делает ON CONFLICT DO NOTHING).
+INSERT INTO organization (id, name, slug, settings)
+VALUES ('00000000-0000-0000-0000-000000000001', 'Бытовая Химия ООО', 'household-demo',
+        '{"work_start": "08:00", "work_end": "20:00"}')
+    ON CONFLICT (id) DO NOTHING;
 
 CREATE TABLE app_user (
                           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -109,10 +118,11 @@ CREATE TABLE equipment_capability (
                                       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                                       organization_id UUID NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
                                       equipment_id UUID NOT NULL REFERENCES equipment(id) ON DELETE CASCADE,
-                                      product_id UUID NOT NULL REFERENCES product(id) ON DELETE CASCADE,
+                                      product_id UUID NOT NULL,
                                       max_fill_percent NUMERIC(3,2) DEFAULT 0.80,
                                       UNIQUE (organization_id, equipment_id, product_id)
 );
+-- FK на product добавляется отдельным ALTER, т.к. product создаётся ниже в этом же скрипте.
 COMMENT ON TABLE equipment_capability IS 'Матрица совместимости оборудования и продукции.';
 
 CREATE TABLE resource_pool (
@@ -185,6 +195,10 @@ CREATE TABLE product (
 );
 COMMENT ON TABLE product IS 'Продукция: полуфабрикаты (ПФ) и готовая продукция (ГП).';
 COMMENT ON COLUMN product.route_type IS 'Способ слива ПФ: DIRECT (напрямую на линию) или VIA_TANK (через накопительную емкость)';
+
+ALTER TABLE equipment_capability
+    ADD CONSTRAINT equipment_capability_product_fk
+    FOREIGN KEY (product_id) REFERENCES product(id) ON DELETE CASCADE;
 
 CREATE TABLE recipe (
                         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

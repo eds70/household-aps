@@ -5,6 +5,7 @@ sqlalchemy[asyncio]>=2.0.52
 asyncpg>=0.31.0
 pydantic>=2.13.0
 pydantic-settings>=2.0.0
+email-validator>=2.0.0
 
 # OR-Tools
 ortools>=9.15.0

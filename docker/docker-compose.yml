@@ -1,20 +1,52 @@
-﻿version: "3.9"
-services:
+﻿services:
   postgres:
-    image: postgres:17
+    image: postgres:16
     container_name: aps_postgres
     environment:
       POSTGRES_USER: aps
       POSTGRES_PASSWORD: aps_secret
       POSTGRES_DB: household
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ../backend/init_schema.sql:/docker-entrypoint-initdb.d/01-init_schema.sql:ro
+      - ../backend/seed_demo_data.sql:/docker-entrypoint-initdb.d/02-seed_data.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U aps"]
+      test: ["CMD-SHELL", "pg_isready -U aps -d household"]
       interval: 5s
-      retries: 5
+      timeout: 5s
+      retries: 12
+
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: aps_backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://aps:aps_secret@postgres:5432/household
+      SECRET_KEY: a3f8b2c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1
+      ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: "1440"
+      DEFAULT_ORG_ID: "00000000-0000-0000-0000-000000000001"
+      ALLOWED_ORIGINS: http://localhost:5173,http://localhost:3000
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+    container_name: aps_frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
 
 volumes:
   pgdata:

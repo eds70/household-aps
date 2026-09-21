@@ -1,4 +1,4 @@
-# ==========================================
+﻿# ==========================================
 # APS Production Scheduler — Quick Start
 # ==========================================
 # Поднимает весь проект с нуля одной командой:
@@ -115,7 +115,7 @@ if (-not $SkipDb) {
             -e POSTGRES_USER=aps `
             -e POSTGRES_PASSWORD=aps_secret `
             -e POSTGRES_DB=household `
-            -p 5432:5432 `
+            -p 5433:5432 `
             -d postgres:16 | Out-Null
 
         Write-Host "   Ждём инициализации PostgreSQL (10 сек)..."
@@ -252,3 +252,4 @@ Write-Host "Логин по умолчанию:" -ForegroundColor Cyan
 Write-Host "  Email:  admin@household.ru"
 Write-Host "  Пароль: admin123"
 Write-Host ""
+

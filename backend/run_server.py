@@ -1,4 +1,12 @@
-﻿import uvicorn
+﻿import sys
+
+import uvicorn
+
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 if __name__ == "__main__":
     print("🚀 Запуск APS Production Scheduler API...")

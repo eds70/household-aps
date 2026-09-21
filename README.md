@@ -740,6 +740,29 @@ npm run dev
 *Приложение: http://localhost:5173*
 *Демо-доступ: `admin@household.ru` / `admin123`*
 
+### Запуск всего стека в Docker (backend + frontend + БД)
+
+Ничего локально ставить не нужно — достаточно Docker Desktop. Из корня проекта:
+
+```
+.\start-docker.bat
+```
+
+Или вручную:
+
+```
+docker compose -f docker\docker-compose.yml up -d --build
+```
+
+- **Приложение:** http://localhost:5173 (фронт + прокси на API, Swagger — `/docs`)
+- **API напрямую:** http://localhost:8000/docs
+- **PostgreSQL:** `localhost:5433` (`aps` / `aps_secret` / `household`)
+- **Логин:** `admin@household.ru` / `admin123`
+
+Остановка: `.\stop-docker.bat` (данные в volume `pgdata` сохраняются; полный сброс — `down -v`).
+
+На первом запуске схема и демо-данные применяются автоматически (`init_schema.sql` + `seed_demo_data.sql` монтируются в `/docker-entrypoint-initdb.d`), администратор создаётся при старте backend.
+
 ## 📚 Документация API
 
 После запуска backend: **http://localhost:8000/docs**
