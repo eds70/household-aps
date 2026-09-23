@@ -348,7 +348,7 @@ const MainLayout: React.FC = () => {
                         flexGrow: 1,
                         minHeight: 0,
                         overflow: 'hidden',
-                        p: 3,
+                        p: { xs: 0.5, sm: 1, md: 2 },   // ← было p: 3
                         display: 'flex',
                         flexDirection: 'column',
                     }}

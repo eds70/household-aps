@@ -20,6 +20,7 @@ import pytest
 from app.scheduler.routing import (
     build_routing,
     TaskRole,
+    DurationFormula,
     get_routing_summary,
     _find_tank_for_reactor,
     _find_line_for_product,
@@ -461,10 +462,16 @@ def test_truncate_after_lab_dish():
     assert len(steps) == 4
     assert steps[-1].op.get("needs_lab") is True
 
-
 def test_truncate_after_lab_false_full_chain():
     """
     truncate_after_lab=False — полная цепочка с разбиением LINE_FILL.
+
+    Итерация 13.6 (fix #roles): для PF_ANTISEPTIC (route_type=DIRECT)
+    операция PUMPING («Перекачка в накопительную ёмкость») ПРОПУСКАЕТСЯ,
+    потому что у антисептика нет танка — слив идёт напрямую на линию.
+
+    Было: 8 операций → 7 REACTOR_OP + 1 WASH
+    Стало: 7 операций (8 − 1 PUMPING) → 6 REACTOR_OP + 1 WASH
     """
     batch = {"id": "b1", "product_id": "PF_ANTISEPTIC", "volume_kg": 5600,
              "assigned_equipment_id": "REACTOR_3"}
@@ -480,18 +487,91 @@ def test_truncate_after_lab_false_full_chain():
         truncate_after_lab=False,
         gp_product=_make_gp_product("GP_ANTISEPTIC_10L"),
     )
+
     # Последний — WASH
     assert steps[-1].role == TaskRole.WASH
 
-    # 8 операций (без LINE_FILL и WASH), N частей LINE_FILL, WASH
     reactor_ops = [s for s in steps if s.role == TaskRole.REACTOR_OP]
     fill_steps = [s for s in steps if s.role == TaskRole.LINE_FILL]
     wash_steps = [s for s in steps if s.role == TaskRole.WASH]
 
-    assert len(reactor_ops) == 7  # 8 операций - 1 WASH = 7 REACTOR_OP
+    # Итерация 13.6: PUMPING пропускается для DIRECT-маршрута.
+    # У PF_ANTISEPTIC 8 операций, из них 1 PUMPING → 7 реальных.
+    # Из 7: 6 REACTOR_OP + 1 WASH (WASH выносится отдельно).
+    assert len(reactor_ops) == 6, (
+        f"Ожидалось 6 REACTOR_OP (8 операций − 1 PUMPING − 1 WASH), "
+        f"получено {len(reactor_ops)}"
+    )
     assert len(fill_steps) >= 1
     assert len(wash_steps) == 1
 
+    # PUMPING не должен попасть в цепочку ни в какой роли для DIRECT
+    pumping_steps = [
+        s for s in steps
+        if s.op.get("duration_formula") == "pumping"
+    ]
+    assert len(pumping_steps) == 0, (
+        "PUMPING-операция не должна попадать в цепочку "
+        "для DIRECT-маршрута (нет танка)"
+    )
+
+def test_pumping_skipped_for_direct_route():
+    """
+    Итерация 13.6 (fix #roles): для DIRECT-маршрута PUMPING-операции
+    пропускаются (нет танка — нечего перекачивать).
+    """
+    batch = {"id": "b1", "product_id": "PF_ANTISEPTIC", "volume_kg": 5600,
+             "assigned_equipment_id": "REACTOR_3"}
+    steps = build_routing(
+        batch=batch,
+        product=_make_products_map()["PF_ANTISEPTIC"],
+        reactor=_make_equipment_map()["REACTOR_3"],
+        operations=_make_operations_for_pf("PF_ANTISEPTIC"),
+        equipment_map=_make_equipment_map(),
+        equipment_links=_make_links(),
+        products_map=_make_products_map(),
+        calc_duration=_calc_duration,
+        gp_product=_make_gp_product("GP_ANTISEPTIC_10L"),
+    )
+
+    # Ни одного TANK_TRANSFER (DIRECT — без танка)
+    assert not any(s.role == TaskRole.TANK_TRANSFER for s in steps)
+
+    # Ни одной PUMPING-операции
+    pumping_steps = [
+        s for s in steps
+        if s.op.get("duration_formula") == DurationFormula.PUMPING
+    ]
+    assert len(pumping_steps) == 0
+
+
+def test_pumping_preserved_for_via_tank_route():
+    """
+    Итерация 13.6 (fix #roles): для VIA_TANK-маршрута PUMPING
+    превращается в TANK_TRANSFER.
+    """
+    batch = {"id": "b1", "product_id": "PF_CREAM", "volume_kg": 3500,
+             "assigned_equipment_id": "REACTOR_1"}
+    steps = build_routing(
+        batch=batch,
+        product=_make_products_map()["PF_CREAM"],
+        reactor=_make_equipment_map()["REACTOR_1"],
+        operations=_make_operations_for_pf("PF_CREAM"),
+        equipment_map=_make_equipment_map(),
+        equipment_links=_make_links(),
+        products_map=_make_products_map(),
+        calc_duration=_calc_duration,
+        gp_product=_make_gp_product("GP_CREAM_1L"),
+    )
+
+    # Должна быть ровно одна TANK_TRANSFER
+    transfer_steps = [s for s in steps if s.role == TaskRole.TANK_TRANSFER]
+    assert len(transfer_steps) == 1
+
+    # TANK_TRANSFER занимает реактор + танк
+    transfer = transfer_steps[0]
+    assert transfer.primary_equipment_id == "REACTOR_1"
+    assert transfer.secondary_equipment_id == "TANK_1"
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

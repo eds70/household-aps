@@ -1,21 +1,36 @@
 // src/pages/ProductsPage.tsx
-import React, { useState, useEffect } from 'react';
+import React, {useEffect, useState} from 'react';
 import {
-    Box, Button, Card, CardContent, Dialog, DialogActions,
-    DialogContent, DialogTitle, FormControl, InputLabel,
-    MenuItem, Select, TextField, Typography, IconButton,
-    CircularProgress, Alert, Chip,
+    Alert,
+    Box,
+    Button,
+    Card,
+    CardContent,
+    Chip,
+    CircularProgress,
+    Dialog,
+    DialogActions,
+    DialogContent,
+    DialogTitle,
+    FormControl,
+    IconButton,
+    InputLabel,
+    MenuItem,
+    Select,
+    TextField,
+    Tooltip,
+    Typography,
 } from '@mui/material';
-import { Add as AddIcon, Delete as DeleteIcon, Lock as LockIcon } from '@mui/icons-material';
-import { AgGridReact } from 'ag-grid-react';
-import { ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
+import {Add as AddIcon, Delete as DeleteIcon, Lock as LockIcon} from '@mui/icons-material';
+import {AgGridReact} from 'ag-grid-react';
+import type {ColDef, GridReadyEvent} from 'ag-grid-community';
+import {AllCommunityModule, ModuleRegistry} from 'ag-grid-community';
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-alpine.css';
-import type { ColDef, GridReadyEvent } from 'ag-grid-community';
-import type { Product } from '../types';
+import type {Product} from '../types';
 import axios from 'axios';
-import { API_BASE_URL } from '../config';
-import { usePlan } from '../context/PlainContext';
+import {API_BASE_URL} from '../config';
+import {usePlan} from '../context/PlainContext';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -89,11 +104,30 @@ const ProductsPage: React.FC = () => {
             },
         },
         {
-            headerName: 'Действия', width: 100, editable: false,
+            headerName: 'Действия',
+            width: 120,
+            cellClass: 'ag-cell-actions',
             cellRenderer: (params: any) => isReadOnly ? null : (
-                <IconButton color="error" size="small" onClick={() => handleDelete(params.data.id)}>
-                    <DeleteIcon fontSize="small" />
-                </IconButton>
+                <Box
+                    sx={{
+                        display: 'flex',
+                        gap: 0.5,
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: '100%',
+                        height: '100%',
+                    }}
+                >
+                    <Tooltip title="Удалить" arrow>
+                        <IconButton
+                            size="small"
+                            color="error"
+                            onClick={() => handleDelete(params.data.id)}
+                        >
+                            <DeleteIcon fontSize="small" />
+                        </IconButton>
+                    </Tooltip>
+                </Box>
             ),
         },
     ];

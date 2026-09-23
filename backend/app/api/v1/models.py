@@ -80,6 +80,11 @@ class GanttTask(BaseModel):
     lab_block_reason: Optional[str] = None
     # Итерация 7: режим охлаждения
     cooling_mode: Optional[str] = None   # "fast" | "slow" | None
+    # Итерация 13.6: связи между задачами
+    depends_on_task_ids: List[str] = Field(
+        default_factory=list,
+        description="Список UUID задач-предшественников",
+    )
 
 
 class GanttResponse(BaseModel):

@@ -1,44 +1,46 @@
 // frontend/src/pages/RecipesPage.tsx
-import React, { useState, useEffect } from 'react';
+import React, {useEffect, useState} from 'react';
 import {
+    Alert,
     Box,
     Button,
     Card,
     CardContent,
+    Chip,
+    CircularProgress,
     Dialog,
     DialogActions,
     DialogContent,
     DialogTitle,
     FormControl,
+    IconButton,
     InputLabel,
     MenuItem,
+    Paper,
     Select,
-    TextField,
-    Typography,
-    IconButton,
-    CircularProgress,
-    Alert,
-    Chip,
     Table,
     TableBody,
     TableCell,
     TableContainer,
     TableHead,
     TableRow,
-    Paper,
+    TextField,
+    Tooltip,
+    Typography,
 } from '@mui/material';
 import {
     Add as AddIcon,
     Delete as DeleteIcon,
+    InfoOutlined as InfoOutlinedIcon,
     Science as ScienceIcon,
 } from '@mui/icons-material';
-import { AgGridReact } from 'ag-grid-react';
-import { ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
+import {AgGridReact} from 'ag-grid-react';
+import type {ColDef, GridReadyEvent} from 'ag-grid-community';
+import {AllCommunityModule, ModuleRegistry} from 'ag-grid-community';
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-alpine.css';
-import type { ColDef, GridReadyEvent } from 'ag-grid-community';
-import type { Recipe, RecipeItem, Material } from '../types';
-import { recipesApi, materialsApi } from '../services/api';
+import type {Material, Recipe, RecipeItem} from '../types';
+import {materialsApi, recipesApi} from '../services/api';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -125,23 +127,38 @@ const RecipesPage: React.FC = () => {
         },
         {
             headerName: 'Действия',
-            width: 200,
+            width: 120,
+            cellClass: 'ag-cell-actions',
+            editable: false,
             cellRenderer: (params: any) => (
-                <Box sx={{ display: 'flex', gap: 0.5 }}>
-                    <Button
-                        size="small"
-                        variant="outlined"
-                        onClick={() => handleViewRecipe(params.data.id)}
-                    >
-                        Состав
-                    </Button>
-                    <IconButton
-                        color="error"
-                        size="small"
-                        onClick={() => handleDelete(params.data.id)}
-                    >
-                        <DeleteIcon fontSize="small" />
-                    </IconButton>
+                <Box
+                    sx={{
+                        display: 'flex',
+                        gap: 0.5,
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: '100%',
+                        height: '100%',
+                    }}
+                >
+                    <Tooltip title="Показать состав рецепта" arrow>
+                        <IconButton
+                            size="small"
+                            color="primary"
+                            onClick={() => handleViewRecipe(params.data.id)}
+                        >
+                            <InfoOutlinedIcon fontSize="small" />
+                        </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Удалить" arrow>
+                        <IconButton
+                            size="small"
+                            color="error"
+                            onClick={() => handleDelete(params.data.id)}
+                        >
+                            <DeleteIcon fontSize="small" />
+                        </IconButton>
+                    </Tooltip>
                 </Box>
             ),
         },

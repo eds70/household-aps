@@ -29,7 +29,13 @@
       - 1x8:  6 часов (360 мин)
       - 3x8:  6 часов (360 мин)
       - 2x12: 10 часов (600 мин)
-    Это позволяет задачам помещаться в рабочий интервал смены.
+
+Итерация 13.4 (fix C1):
+  - WASH зависит от TANK_TRANSFER (VIA_TANK) или LINE_FILL (DIRECT).
+
+Итерация 13.6 (fix #roles):
+  - PUMPING-операции пропускаются для DIRECT-маршрута.
+    Ранее они попадали в цепочку как REACTOR_OP, что было неверно.
 """
 
 from dataclasses import dataclass, field
@@ -284,13 +290,10 @@ def _split_fill_duration(
 
     Итерация 11 (Шаг 6): максимальная длительность части зависит
     от режима смен:
-      - 1x8:  6 часов = 360 мин (75% смены)
+      - 1x8:  6 часов = 360 мин
       - 3x8:  6 часов = 360 мин
-      - 2x12: 10 часов = 600 мин (83% смены)
+      - 2x12: 10 часов = 600 мин
     Fallback: 8 часов = 480 мин.
-
-    Обоснование: задача должна помещаться в один рабочий интервал
-    смены с запасом (setups, overlaps, буфер).
 
     Примеры:
         _split_fill_duration(1400, "3x8") → [467, 467, 466]
@@ -321,7 +324,9 @@ def _split_fill_duration(
     return parts
 
 
-# --- Основная функция ---
+# ==========================================
+# Основная функция
+# ==========================================
 
 def build_routing(
         batch: Dict,
@@ -335,13 +340,19 @@ def build_routing(
         gp_product: Optional[Dict] = None,
         equipment_capability: Optional[List[Dict]] = None,
         truncate_after_lab: bool = False,
-        shift_mode: str = "2x12",       # ← Итерация 11 (Шаг 6)
+        shift_mode: str = "2x12",
 ) -> List[RoutingStep]:
     """
     Строит цепочку шагов для партии.
 
     Итерация 11 (Шаг 6): shift_mode используется для разбиения
     длинных LINE_FILL на подзадачи подходящей длины.
+
+    Итерация 13.4 (fix C1): WASH зависит от TANK_TRANSFER (VIA_TANK)
+    или LINE_FILL (DIRECT) — параллельно сливу при VIA_TANK.
+
+    Итерация 13.6 (fix #roles): PUMPING-операции пропускаются для
+    DIRECT-маршрута (у них нет танка).
     """
     if not operations:
         return []
@@ -393,8 +404,22 @@ def build_routing(
             postponed_wash = op
             continue
 
-        if is_pumping and route_type == RouteType.VIA_TANK and tank_id:
-            postponed_pumping = op
+        # ==========================================
+        # Итерация 13.6 (fix #roles): правильная обработка PUMPING
+        # ==========================================
+        # По ТЗ (Раздел 2.1.6): операция «Перекачка в накопительную
+        # ёмкость» имеет смысл ТОЛЬКО для VIA_TANK-маршрута.
+        #
+        # Логика:
+        #   - VIA_TANK + tank: postpone, станет TANK_TRANSFER.
+        #   - DIRECT (без танка): операция ПРОПУСКАЕТСЯ,
+        #     потому что слив идёт напрямую на линию через LINE_FILL.
+        # ==========================================
+        if is_pumping:
+            if route_type == RouteType.VIA_TANK and tank_id:
+                # Откладываем до этапа «Перекачка в танк»
+                postponed_pumping = op
+            # В обоих случаях — не добавляем как REACTOR_OP
             continue
 
         duration = calc_duration(op, batch, reactor, product)
@@ -526,13 +551,9 @@ def build_routing(
     # Семантика:
     #   - VIA_TANK: реактор освобождается после TANK_TRANSFER.
     #     Замыв может идти ПАРАЛЛЕЛЬНО сливу на линию (LINE_FILL).
-    #     Зависимость: WASH зависит от TANK_TRANSFER (последняя
-    #     операция на реакторе до слива).
+    #     Зависимость: WASH зависит от TANK_TRANSFER.
     #   - DIRECT: реактор освобождается после LINE_FILL.
     #     Замыв идёт ПОСЛЕ слива. Зависимость: WASH → LINE_FILL.
-    #
-    # При этом WASH не должен конфликтовать с LINE_FILL по времени
-    # на одном реакторе — NoOverlap в core.py это гарантирует.
     if postponed_wash is not None:
         duration = calc_duration(postponed_wash, batch, reactor, product)
 
@@ -540,10 +561,8 @@ def build_routing(
         #   - VIA_TANK: последняя операция на реакторе = TANK_TRANSFER
         #   - DIRECT: последняя операция = LINE_FILL
         if route_type == RouteType.VIA_TANK and tank_id:
-            # Замыв зависит от перекачки в танк (реактор освобождён)
             wash_deps = [last_op_before_fill] if last_op_before_fill else []
         else:
-            # DIRECT: замыв зависит от слива на линию
             wash_deps = [prev_op_id] if prev_op_id else []
 
         steps.append(RoutingStep(

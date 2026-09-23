@@ -2,20 +2,14 @@
 """
 API для диаграммы Ганта.
 
-Итерация 1:
-- Возвращает linked_equipment_id, linked_equipment_name, task_role
-
-Итерация 5 (hotfix):
-- Параметр version_id. Фильтрация по schedule_version_id.
-
-Итерация 5 (hotfix #3):
-- is_lab_blocked, lab_status, lab_block_reason
-
-Итерация 7:
-- cooling_mode (fast | slow) для операций охлаждения с деградацией.
+Итерация 1: linked_equipment_id, task_role.
+Итерация 5 (hotfix): version_id, is_lab_blocked, lab_status, lab_block_reason.
+Итерация 7: cooling_mode.
+Итерация 13.6: depends_on_task_ids для связей между задачами.
 """
 
 import io
+import json
 from datetime import datetime
 from uuid import UUID
 
@@ -32,6 +26,53 @@ from .models import GanttTask, GanttResponse
 from .schedule import _last_schedule_result
 
 router = APIRouter(prefix="/api/v1/gantt", tags=["Диаграмма Ганта"])
+
+
+# ==========================================
+# Утилиты
+# ==========================================
+
+def _parse_deps(raw) -> list:
+    """
+    Парсит JSONB-поле depends_on_task_ids → list[str].
+
+    Обрабатывает:
+      - None → []
+      - list (SQLAlchemy/asyncpg отдаёт JSONB как list) → [str(d) for d in raw]
+      - str (JSON-строка) → json.loads → list[str]
+      - всё остальное → []
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(d) for d in raw]
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(d) for d in parsed]
+        except (ValueError, TypeError):
+            pass
+    return []
+
+
+def _row_get(row, key: str, default=None):
+    """
+    Надёжный доступ к полю SQLAlchemy Row.
+
+    Итерация 13.6 (fix): getattr на Row иногда возвращает None
+    для JSONB-полей с алиасами. Используем row._mapping.
+    """
+    try:
+        mapping = dict(row._mapping)
+        if key in mapping:
+            return mapping[key]
+    except (AttributeError, KeyError, TypeError):
+        pass
+    try:
+        return getattr(row, key, default)
+    except (AttributeError, KeyError):
+        return default
 
 
 async def _resolve_version_id(
@@ -81,84 +122,104 @@ async def _resolve_version_id(
     return row.id if row else None
 
 
+# ==========================================
+# GET /api/v1/gantt/ — данные диаграммы
+# ==========================================
+
 @router.get("/", response_model=GanttResponse)
 async def get_gantt_data(
-        version_id: UUID | None = Query(default=None, description="ID сохраненной версии плана. Если не задан — последняя активная."),
+        version_id: UUID | None = Query(
+            default=None,
+            description="ID сохраненной версии плана. Если не задан — последняя активная.",
+        ),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """
-    Получение данных для диаграммы Ганта.
-
-    Логика:
-      - Если version_id передан явно — загружаем из БД по нему.
-      - Если не передан и есть сохранённые версии — берём последнюю активную.
-      - Иначе — из последнего рассчитанного в памяти плана.
-    """
+    """Получение данных для диаграммы Ганта."""
     resolved_version_id = await _resolve_version_id(db, org_id, version_id)
 
-    # Если есть сохранённая версия — грузим из БД
     if resolved_version_id is not None:
+        # ==========================================
+        # Проверяем доступные колонки (graceful-совместимость)
+        # ==========================================
         col_check = await db.execute(
             text("""
                 SELECT column_name FROM information_schema.columns
                 WHERE table_name = 'scheduled_task'
-                  AND column_name IN ('linked_equipment_id', 'task_role')
+                  AND column_name IN (
+                      'linked_equipment_id', 'task_role',
+                      'cooling_mode', 'operation_name',
+                      'depends_on_task_ids'
+                  )
             """)
         )
         available_cols = {row.column_name for row in col_check.fetchall()}
         has_linked = "linked_equipment_id" in available_cols
         has_role = "task_role" in available_cols
+        has_cooling = "cooling_mode" in available_cols
+        has_opname = "operation_name" in available_cols
+        has_deps = "depends_on_task_ids" in available_cols
 
-        if has_linked and has_role:
-            query = text("""
-                SELECT
-                    st.id, st.batch_id,
-                    st.planned_start AS start, st.planned_end AS end,
-                    eq.name AS equipment_name, eq.id AS equipment_id,
-                    leq.name AS linked_equipment_name, leq.id AS linked_equipment_id,
-                    p.name AS product_name, p.code AS product_code, p.id AS product_id,
-                    COALESCE(st.operation_name, ot.name) AS operation_name,
-                    st.task_role,
-                    COALESCE(b.is_lab_blocked, FALSE) AS is_lab_blocked,
-                    b.lab_status AS lab_status,
-                    b.lab_block_reason AS lab_block_reason,
-                    st.cooling_mode
-                FROM scheduled_task st
-                LEFT JOIN equipment eq ON st.equipment_id = eq.id
-                LEFT JOIN equipment leq ON st.linked_equipment_id = leq.id
-                LEFT JOIN operation_template ot ON st.operation_template_id = ot.id
-                LEFT JOIN batch b ON st.batch_id = b.id
-                LEFT JOIN product p ON b.product_id = p.id
-                WHERE st.schedule_version_id = :version_id
-                  AND st.organization_id = :org_id
-                ORDER BY eq.name, st.planned_start ASC
-            """)
-        else:
-            query = text("""
-                SELECT
-                    st.id, st.batch_id,
-                    st.planned_start AS start, st.planned_end AS end,
-                    eq.name AS equipment_name, eq.id AS equipment_id,
-                    NULL::text AS linked_equipment_name, NULL::uuid AS linked_equipment_id,
-                    p.name AS product_name, p.code AS product_code, p.id AS product_id,
-                    COALESCE(st.operation_name, ot.name) AS operation_name,
-                    NULL::text AS task_role,
-                    COALESCE(b.is_lab_blocked, FALSE) AS is_lab_blocked,
-                    b.lab_status AS lab_status,
-                    b.lab_block_reason AS lab_block_reason,
-                    st.cooling_mode
-                FROM scheduled_task st
-                LEFT JOIN equipment eq ON st.equipment_id = eq.id
-                LEFT JOIN operation_template ot ON st.operation_template_id = ot.id
-                LEFT JOIN batch b ON st.batch_id = b.id
-                LEFT JOIN product p ON b.product_id = p.id
-                WHERE st.schedule_version_id = :version_id
-                  AND st.organization_id = :org_id
-                ORDER BY eq.name, st.planned_start ASC
-            """)
+        # Динамический SELECT
+        linked_select = (
+            "leq.name AS linked_equipment_name, leq.id AS linked_equipment_id,"
+            if has_linked else
+            "NULL::text AS linked_equipment_name, NULL::uuid AS linked_equipment_id,"
+        )
+        role_select = (
+            "st.task_role," if has_role else "NULL::text AS task_role,"
+        )
+        cooling_select = (
+            "st.cooling_mode,"
+            if has_cooling else
+            "NULL::text AS cooling_mode,"
+        )
+        opname_select = (
+            "COALESCE(st.operation_name, ot.name) AS operation_name,"
+            if has_opname else
+            "ot.name AS operation_name,"
+        )
+        deps_select = (
+            "COALESCE(st.depends_on_task_ids, '[]'::jsonb) AS depends_on_task_ids,"
+            if has_deps else
+            "'[]'::jsonb AS depends_on_task_ids,"
+        )
+        linked_join = (
+            "LEFT JOIN equipment leq ON st.linked_equipment_id = leq.id"
+            if has_linked else
+            ""
+        )
 
-        result = await db.execute(query, {"version_id": resolved_version_id, "org_id": org_id})
+        query = text(f"""
+            SELECT
+                st.id, st.batch_id,
+                st.planned_start AS start, st.planned_end AS end,
+                eq.name AS equipment_name, eq.id AS equipment_id,
+                {linked_select}
+                p.name AS product_name, p.code AS product_code, p.id AS product_id,
+                {opname_select}
+                {role_select}
+                COALESCE(b.is_lab_blocked, FALSE) AS is_lab_blocked,
+                b.lab_status AS lab_status,
+                b.lab_block_reason AS lab_block_reason,
+                {cooling_select}
+                {deps_select}
+                st.id AS _dummy
+            FROM scheduled_task st
+            LEFT JOIN equipment eq ON st.equipment_id = eq.id
+            {linked_join}
+            LEFT JOIN operation_template ot ON st.operation_template_id = ot.id
+            LEFT JOIN batch b ON st.batch_id = b.id
+            LEFT JOIN product p ON b.product_id = p.id
+            WHERE st.schedule_version_id = :version_id
+              AND st.organization_id = :org_id
+            ORDER BY eq.name, st.planned_start ASC
+        """)
+
+        result = await db.execute(
+            query,
+            {"version_id": resolved_version_id, "org_id": org_id},
+        )
         rows = result.fetchall()
 
         if not rows:
@@ -172,16 +233,31 @@ async def get_gantt_data(
         product_set = set()
 
         for row in rows:
-            eq_name = str(row.equipment_name or row.equipment_id)[:30] if row.equipment_id else "Unknown"
-            prod_name = str(row.product_name or row.product_code or row.product_id)[:30] if row.product_id else "Unknown"
-            batch_name = f"Партия {str(row.batch_id)[:8]}" if row.batch_id else "Unknown"
+            eq_name = (
+                str(row.equipment_name or row.equipment_id)[:30]
+                if row.equipment_id else "Unknown"
+            )
+            prod_name = (
+                str(row.product_name or row.product_code or row.product_id)[:30]
+                if row.product_id else "Unknown"
+            )
+            batch_name = (
+                f"Партия {str(row.batch_id)[:8]}" if row.batch_id else "Unknown"
+            )
 
             equipment_set.add(eq_name)
             if row.linked_equipment_name:
                 equipment_set.add(str(row.linked_equipment_name)[:30])
             product_set.add(prod_name)
 
-            duration_mins = int((row.end - row.start).total_seconds() / 60) if row.start and row.end else 0
+            duration_mins = (
+                int((row.end - row.start).total_seconds() / 60)
+                if row.start and row.end else 0
+            )
+
+            # Итерация 13.6 (fix): надёжный парсинг JSONB через _row_get
+            deps_raw = _row_get(row, "depends_on_task_ids", None)
+            deps_list = _parse_deps(deps_raw)
 
             gantt_tasks.append(GanttTask(
                 id=str(row.id),
@@ -192,13 +268,23 @@ async def get_gantt_data(
                 start=row.start,
                 end=row.end,
                 duration_minutes=duration_mins,
-                linked_equipment_id=str(row.linked_equipment_id) if row.linked_equipment_id else None,
-                linked_equipment_name=str(row.linked_equipment_name) if row.linked_equipment_name else None,
+                linked_equipment_id=(
+                    str(row.linked_equipment_id)
+                    if row.linked_equipment_id else None
+                ),
+                linked_equipment_name=(
+                    str(row.linked_equipment_name)
+                    if row.linked_equipment_name else None
+                ),
                 task_role=row.task_role,
-                is_lab_blocked=bool(row.is_lab_blocked) if row.is_lab_blocked is not None else False,
+                is_lab_blocked=(
+                    bool(row.is_lab_blocked)
+                    if row.is_lab_blocked is not None else False
+                ),
                 lab_status=row.lab_status,
                 lab_block_reason=row.lab_block_reason,
-                cooling_mode=row.cooling_mode,   # Итерация 7
+                cooling_mode=row.cooling_mode,
+                depends_on_task_ids=deps_list,
             ))
 
         makespan_hours = 0.0
@@ -215,7 +301,9 @@ async def get_gantt_data(
             product_list=sorted(list(product_set)),
         )
 
-    # === Fallback: из памяти ===
+    # ==========================================
+    # Fallback: из памяти
+    # ==========================================
     if not _last_schedule_result:
         raise HTTPException(
             status_code=404,
@@ -252,7 +340,11 @@ async def get_gantt_data(
             end_dt = datetime.fromisoformat(end_dt.replace('Z', '+00:00'))
 
         duration_mins = int(task.get("duration", 0))
-        if start_dt and end_dt and isinstance(start_dt, datetime) and isinstance(end_dt, datetime):
+        if (
+                start_dt and end_dt
+                and isinstance(start_dt, datetime)
+                and isinstance(end_dt, datetime)
+        ):
             duration_mins = int((end_dt - start_dt).total_seconds() / 60)
 
         gantt_tasks.append(GanttTask(
@@ -270,17 +362,24 @@ async def get_gantt_data(
             is_lab_blocked=False,
             lab_status=None,
             lab_block_reason=None,
-            cooling_mode=task.get("cooling_mode"),   # Итерация 7
+            cooling_mode=task.get("cooling_mode"),
+            depends_on_task_ids=task.get("depends_on_task_ids", []),
         ))
 
     return GanttResponse(
         tasks=gantt_tasks,
         total_tasks=len(gantt_tasks),
-        makespan_hours=float(_last_schedule_result.get("makespan_minutes", 0)) / 60,
+        makespan_hours=(
+                float(_last_schedule_result.get("makespan_minutes", 0)) / 60
+        ),
         equipment_list=sorted(list(equipment_set)),
         product_list=sorted(list(product_set)),
     )
 
+
+# ==========================================
+# GET /api/v1/gantt/export — экспорт в Excel
+# ==========================================
 
 @router.get("/export")
 async def export_gantt_to_excel(
@@ -289,7 +388,9 @@ async def export_gantt_to_excel(
         db: AsyncSession = Depends(get_db_session),
 ):
     """Экспорт Ганта в Excel."""
-    response_data = await get_gantt_data(version_id=version_id, org_id=org_id, db=db)
+    response_data = await get_gantt_data(
+        version_id=version_id, org_id=org_id, db=db
+    )
     tasks = response_data.tasks
 
     wb = Workbook()
@@ -299,11 +400,13 @@ async def export_gantt_to_excel(
     headers = [
         "Оборудование", "Связанное оборудование", "Роль", "Операция",
         "Партия", "Продукт", "Начало", "Конец", "Длительность (мин)",
-        "Заблокировано", "Причина", "Режим охлаждения",
+        "Заблокировано", "Причина", "Режим охлаждения", "Зависит от",
     ]
     ws_table.append(headers)
 
-    header_fill = PatternFill(start_color="2C3E50", end_color="2C3E50", fill_type="solid")
+    header_fill = PatternFill(
+        start_color="2C3E50", end_color="2C3E50", fill_type="solid"
+    )
     header_font = Font(bold=True, color="FFFFFF")
     for cell in ws_table[1]:
         cell.fill = header_fill
@@ -311,8 +414,19 @@ async def export_gantt_to_excel(
         cell.alignment = Alignment(horizontal="center")
 
     for task in tasks:
-        start_str = task.start.strftime("%Y-%m-%d %H:%M") if isinstance(task.start, datetime) else str(task.start)
-        end_str = task.end.strftime("%Y-%m-%d %H:%M") if isinstance(task.end, datetime) else str(task.end)
+        start_str = (
+            task.start.strftime("%Y-%m-%d %H:%M")
+            if isinstance(task.start, datetime) else str(task.start)
+        )
+        end_str = (
+            task.end.strftime("%Y-%m-%d %H:%M")
+            if isinstance(task.end, datetime) else str(task.end)
+        )
+
+        deps_str = (
+            ", ".join([d[:8] for d in task.depends_on_task_ids])
+            if task.depends_on_task_ids else ""
+        )
 
         ws_table.append([
             task.equipment_id,
@@ -326,21 +440,32 @@ async def export_gantt_to_excel(
             task.duration_minutes,
             "Да" if task.is_lab_blocked else "Нет",
             task.lab_block_reason or "",
-            task.cooling_mode or "",   # Итерация 7
-        ])
+            task.cooling_mode or "",
+            deps_str,
+            ])
 
     for col in ws_table.columns:
-        max_len = max(len(str(cell.value)) for cell in col if cell.value is not None)
-        ws_table.column_dimensions[get_column_letter(col[0].column)].width = min(max_len + 2, 40)
+        max_len = max(
+            len(str(cell.value)) for cell in col if cell.value is not None
+        )
+        ws_table.column_dimensions[get_column_letter(col[0].column)].width = min(
+            max_len + 2, 40
+        )
 
     file_stream = io.BytesIO()
     wb.save(file_stream)
     file_stream.seek(0)
 
-    filename = f"APS_Gantt_{version_id if version_id else 'draft'}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+    filename = (
+        f"APS_Gantt_{version_id if version_id else 'draft'}_"
+        f"{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+    )
 
     return StreamingResponse(
         file_stream,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )

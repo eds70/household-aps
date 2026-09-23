@@ -6,26 +6,16 @@
 Итерация 5 (hotfix): деактивация старых версий.
 Итерация 6: сохранение operator_pool в scheduled_task.
 Итерация 7: сохранение cooling_mode в scheduled_task.
-
-Итерация 9 (fix #1):
-  - Для LINE_FILL (динамические fill_*) equipment_id = линия (secondary),
-    а linked_equipment_id = реактор/танк (primary).
-    Раньше задача слива привязывалась к реактору, что физически неверно.
-  - Добавлено сохранение operation_name — фактического имени операции.
-    Для fill_* нет operation_template_id, поэтому имя бралось из fallback-
-    шаблона (первая операция партии), что вводило в заблуждение.
-
-Итерация 12 (what-if):
-  - ScheduleSaver теперь принимает опциональную session.
-    Это позволяет what-if сценариям использовать savepoint:
-    сохранять новую версию плана внутри той же сессии,
-    что и временные изменения (которые потом откатываются).
-  - Если session не передана — создаём свою (обратная совместимость).
+Итерация 9 (fix): LINE_FILL привязывается к линии (secondary),
+                  operation_name сохраняется.
+Итерация 12 (what-if): опциональная session.
+Итерация 13.6: двухпроходное сохранение связей
+               (depends_on_task_ids).
 """
-
+import json
 import logging
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -57,7 +47,6 @@ class ScheduleSaver:
 
         if session is not None:
             # Итерация 12: используем переданную сессию.
-            # В этом режиме НЕ создаём engine — сессия принадлежит вызывающему.
             self.async_session = session
             self.engine = None
             self._owns_session = False
@@ -71,8 +60,12 @@ class ScheduleSaver:
                 class_=AsyncSession,
                 expire_on_commit=False,
             )
-            self.async_session = None  # создадим в save_schedule
+            self.async_session = None
             self._owns_session = True
+
+    # ==========================================
+    # ВСПОМОГАТЕЛЬНЫЕ
+    # ==========================================
 
     async def _has_column(self, session, table: str, column: str) -> bool:
         """Проверяет, существует ли колонка в таблице."""
@@ -112,33 +105,36 @@ class ScheduleSaver:
         """
         return find_shift_id_for_time(shifts, dt)
 
+    # ==========================================
+    # ПУБЛИЧНЫЙ МЕТОД
+    # ==========================================
+
     async def save_schedule(
             self, schedule_data: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
         Сохраняет построенный план в БД.
 
-        Итерация 12: если session передана в __init__ — используем её
-        (для what-if savepoint). Иначе — создаём свою сессию
-        (обратная совместимость).
+        Итерация 12: если session передана в __init__ — используем её.
+        Иначе — создаём свою сессию.
 
         Args:
-            schedule_data: результат ProductionScheduler.build_schedule():
+            schedule_data: результат ProductionScheduler.build_schedule().
 
         Returns:
             Статистика сохранения.
         """
         tasks = schedule_data["tasks"]
 
-        # Итерация 12: определяем, использовать ли переданную сессию.
         if self._owns_session:
-            # Создаём свою сессию (обратная совместимость).
             async with self._session_maker() as session:
                 return await self._do_save(session, tasks)
         else:
-            # Используем переданную сессию (what-if savepoint).
-            # НЕ закрываем и НЕ коммитим — это делает вызывающий.
             return await self._do_save(self.async_session, tasks)
+
+    # ==========================================
+    # ОСНОВНАЯ ЛОГИКА
+    # ==========================================
 
     async def _do_save(
             self,
@@ -148,9 +144,9 @@ class ScheduleSaver:
         """
         Основная логика сохранения.
 
-        Работает с переданной сессией. Коммит делает вызывающий
-        (для what-if — savepoint откатится; для обычного режима —
-        коммитим в конце).
+        Итерация 13.6: двухпроходное сохранение.
+          - 1-й проход: INSERT всех задач, сбор {key: task_uuid}.
+          - 2-й проход: UPDATE depends_on_task_ids.
         """
         version_id = uuid4()
         plan_name = f"План от {datetime.now().strftime('%Y-%m-%d %H:%M')}"
@@ -251,7 +247,7 @@ class ScheduleSaver:
         )
 
         # ==========================================
-        # 4. Проверяем, какие колонки доступны в scheduled_task
+        # 4. Проверка доступных колонок в scheduled_task
         # ==========================================
         has_linked = await self._has_column(
             session, "scheduled_task", "linked_equipment_id"
@@ -274,6 +270,9 @@ class ScheduleSaver:
         has_operation_name = await self._has_column(
             session, "scheduled_task", "operation_name"
         )
+        has_depends_on = await self._has_column(
+            session, "scheduled_task", "depends_on_task_ids"
+        )
 
         shifts = await self._load_shifts(session) if has_shift else []
         log_with_context(
@@ -283,13 +282,18 @@ class ScheduleSaver:
         )
 
         # ==========================================
-        # 5. Сохраняем задачи
+        # 5. Сохраняем задачи (1-й проход: INSERT)
         # ==========================================
         shift_matched = 0
         shift_none = 0
         cooling_fast_count = 0
         cooling_slow_count = 0
         line_fill_fixed = 0
+
+        # {key: uuid} где key = (batch_id, op_id)
+        task_uuid_map: Dict[Tuple[str, str], str] = {}
+        # Сохраняем «сырые» задачи для второго прохода
+        saved_tasks: List[Dict[str, Any]] = []
 
         for task in tasks:
             op_id = task["op_id"]
@@ -341,7 +345,7 @@ class ScheduleSaver:
                 cooling_slow_count += 1
 
             # ==========================================
-            # 5.4. Итерация 9 (fix): правильная привязка LINE_FILL
+            # 5.4. LINE_FILL — правильная привязка (Итерация 9)
             # ==========================================
             task_role = task.get("role")
             is_line_fill = (
@@ -361,7 +365,7 @@ class ScheduleSaver:
                 linked_eq_id_for_db = secondary_eq
 
             # ==========================================
-            # 5.5. Формируем словарь для INSERT
+            # 5.5. Формируем INSERT
             # ==========================================
             insert_data = {
                 "org_id": self.org_id,
@@ -379,9 +383,6 @@ class ScheduleSaver:
                 "operation_name": task.get("operation_name", "Операция"),
             }
 
-            # ==========================================
-            # 5.6. Собираем список колонок и значений
-            # ==========================================
             columns = [
                 "organization_id", "schedule_version_id", "batch_id",
                 "operation_template_id", "equipment_id",
@@ -421,9 +422,73 @@ class ScheduleSaver:
             query = text(f"""
                 INSERT INTO scheduled_task ({', '.join(columns)})
                 VALUES ({', '.join(values)})
+                RETURNING id
             """)
 
-            await session.execute(query, insert_data)
+            result = await session.execute(query, insert_data)
+            row = result.fetchone()
+            if row:
+                task_uuid = str(row.id)
+                # Ключ — (batch_id, op_id_оригинальный) для связей.
+                # Используем ОРИГИНАЛЬНЫЙ op_id (не op_id_for_db),
+                # потому что depends_on_op_ids ссылается на реальные op_id.
+                task_uuid_map[(str(task["batch_id"]), str(op_id))] = task_uuid
+                saved_tasks.append(task)
+
+        # ==========================================
+        # 5.6. UPDATE depends_on_task_ids (2-й проход)
+        # ==========================================
+        # Итерация 13.6: заполняем связи между задачами.
+        # Для каждой сохранённой задачи смотрим её depends_on_op_ids
+        # (в терминах op_id) и находим UUID предшественников.
+        # ==========================================
+        deps_updated = 0
+        if has_depends_on:
+            for task in saved_tasks:
+                batch_id = str(task["batch_id"])
+                op_id = str(task["op_id"])
+                dep_op_ids = task.get("depends_on_op_ids", []) or []
+                if not dep_op_ids:
+                    continue
+
+                self_uuid = task_uuid_map.get((batch_id, op_id))
+                if self_uuid is None:
+                    continue
+
+                dep_uuids: List[str] = []
+                for dep_op_id in dep_op_ids:
+                    dep_uuid = task_uuid_map.get((batch_id, str(dep_op_id)))
+                    if dep_uuid is not None:
+                        dep_uuids.append(dep_uuid)
+
+                if not dep_uuids:
+                    continue
+
+                await session.execute(
+                    text("""
+                        UPDATE scheduled_task
+                        SET depends_on_task_ids = CAST(:deps AS jsonb)
+                        WHERE id = :task_id
+                    """),
+                    {
+                        "deps": json.dumps(dep_uuids),
+                        "task_id": self_uuid,
+                    },
+                )
+                deps_updated += 1
+
+            log_with_context(
+                logger, logging.INFO,
+                f"Связи зависимостей: обновлено {deps_updated} задач",
+                stage="save", org_id=str(self.org_id),
+            )
+        else:
+            log_with_context(
+                logger, logging.WARNING,
+                "Колонка depends_on_task_ids не найдена — "
+                "примените миграцию add_20.sql",
+                stage="save", org_id=str(self.org_id),
+            )
 
         # ==========================================
         # 6. Commit — ТОЛЬКО если saver владеет сессией
@@ -439,6 +504,7 @@ class ScheduleSaver:
             f"Привязка к сменам: matched={shift_matched}, none={shift_none}. "
             f"Cooling: fast={cooling_fast_count}, slow={cooling_slow_count}. "
             f"LINE_FILL перепривязано к линии: {line_fill_fixed}. "
+            f"Связей зависимостей: {deps_updated}. "
             f"owns_session={self._owns_session}",
             stage="save", org_id=str(self.org_id),
         )
@@ -451,4 +517,5 @@ class ScheduleSaver:
             "cooling_fast": cooling_fast_count,
             "cooling_slow": cooling_slow_count,
             "line_fill_fixed": line_fill_fixed,
+            "deps_updated": deps_updated,
         }

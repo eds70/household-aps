@@ -1,4 +1,7 @@
-/* Базовые стили APS Scheduler */
+/* ==========================================
+   frontend/src/index.css
+   Базовые стили APS Scheduler
+   ========================================== */
 * {
   box-sizing: border-box;
 }
@@ -20,7 +23,9 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Скроллбар */
+/* ==========================================
+   Скроллбар (глобальный)
+   ========================================== */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -39,7 +44,9 @@ body {
   background: #555;
 }
 
-/* AgGrid — обязательная высота внутри flex-контейнеров */
+/* ==========================================
+   AgGrid — базовые стили
+   ========================================== */
 .ag-theme-alpine {
   height: 100%;
   width: 100%;
@@ -74,6 +81,9 @@ body {
   background-color: #e3f2fd !important;
 }
 
+/* ==========================================
+   AgGrid — Tooltip (переопределение стилей)
+   ========================================== */
 .ag-tooltip {
   background-color: #2c3e50 !important;
   color: #ffffff !important;
@@ -101,11 +111,55 @@ body {
 }
 
 /* ==========================================
+   AgGrid — центрирование содержимого ячеек
+   ==========================================
+   Используется для колонок «Действия» с иконками.
+   Встроенные чекбоксы AgGrid (bool-колонки) — исключены
+   через :has(), чтобы не «уезжали».
+   ========================================== */
+
+/* 1. По умолчанию все ячейки — flex с центрированием по вертикали. */
+.ag-theme-alpine .ag-cell {
+  display: flex !important;
+  align-items: center !important;
+}
+
+/* 2. Ячейки с чекбоксами AgGrid (bool-колонки) — возвращаем
+   исходное поведение, чтобы чекбоксы не «уезжали». */
+.ag-theme-alpine .ag-cell:has(.ag-checkbox-input-wrapper) {
+  display: block !important;
+}
+
+/* 3. Ячейки с классом-маркером — центрируем и по горизонтали. */
+.ag-theme-alpine .ag-cell.ag-cell-actions {
+  justify-content: center !important;
+}
+
+/* 4. Внутренние элементы (Button, IconButton) — по центру по вертикали. */
+.ag-theme-alpine .ag-cell .MuiButton-root,
+.ag-theme-alpine .ag-cell .MuiIconButton-root {
+  align-self: center !important;
+  margin: 0 !important;
+}
+
+/* 5. Ячейки с MUI Box (flex-контейнер) — растягиваем на всю высоту. */
+.ag-theme-alpine .ag-cell .MuiBox-root {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  width: 100%;
+}
+
+/* 6. Ячейка с классом-маркером — растягиваем внутренний Box
+   на всю ширину и центрируем содержимое. */
+.ag-theme-alpine .ag-cell.ag-cell-actions .MuiBox-root {
+  justify-content: center;
+}
+
+/* ==========================================
    ALLOTMENT — стилизация сплиттера
    ==========================================
    Классы sash-module_* — CSS-модули Allotment.
-   Префиксы "sash-module_horizontal" и "sash-module_vertical" —
-   стабильные, хеш __K-9l8 игнорируется.
    ========================================== */
 
 /* Общий стиль */
@@ -189,19 +243,19 @@ body {
 }
 
 /* ==========================================
-   C2 (Итерация 9): UX оптимизация для drag-and-drop
+   ГАНТ (vis-timeline) — общие стили
    ==========================================
-   Визуальная обратная связь при наведении и перетаскивании
-   задач на диаграмме Ганта (vis-timeline).
+   Итерация 11: pan + zoom + drag одновременно.
+   Итерация 13.5: вертикальный скролл, тонкий скроллбар.
    ========================================== */
 
-/* 1. Hover на задаче — курсор "хватания" + лёгкая подсветка */
+/* 1. Задачи — базовый hover */
 .vis-item.vis-range:hover {
   cursor: grab;
   filter: brightness(1.05);
 }
 
-/* 2. Активное перетаскивание — курсор "захвачено" + тень */
+/* 2. Активное перетаскивание задачи — курсор + тень */
 .vis-item.vis-drag-center,
 .vis-item.vis-dragging {
   cursor: grabbing !important;
@@ -210,16 +264,16 @@ body {
   z-index: 100 !important;
 }
 
-/* 3. Задача, готовая к перемещению (при mouseDown) — подсветка контура */
+/* 3. Выбранная задача — пунктирная рамка */
 .vis-item.vis-selected {
   outline: 2px dashed #3498db !important;
   outline-offset: 2px;
 }
 
-/* 4. Отключаем "палец" на timeline — pan отключён (Итерация 9) */
-/* Итерация 11 (fix): переопределено ниже — pan снова включён */
-.vis-panel.vis-center {
-  cursor: default;
+/* 4. Setup и downtime — не таскаются */
+.vis-item.item-downtime,
+.vis-item.item-setup {
+  cursor: not-allowed !important;
 }
 
 /* 5. Плавная анимация при hover */
@@ -227,13 +281,7 @@ body {
   transition: box-shadow 0.15s, filter 0.15s;
 }
 
-/* 6. Явный grab-курсор для downtime и setup — их НЕ тащим */
-.vis-item.item-downtime,
-.vis-item.item-setup {
-  cursor: not-allowed !important;
-}
-
-/* 7. Курсор в режиме просмотра */
+/* 6. Readonly-режим — курсор default */
 .gantt-readonly .vis-item.vis-range {
   cursor: default !important;
 }
@@ -242,20 +290,10 @@ body {
 }
 
 /* ==========================================
-   Итерация 11 (fix): pan + zoom + drag одновременно
-   ==========================================
-   Компромисс (Механизм 3):
-     - Pan по пустому месту (клик + drag).
-     - Zoom колёсиком мыши.
-     - Drag только для реальных задач (не setup/downtime).
-     - Разные курсоры для разных зон.
-
-   Переопределяет правило (4) выше — pan снова включён.
+   ГАНТ (vis-timeline) — pan + zoom + drag
    ========================================== */
 
-/* 8. Pan: курсор "grab" на пустом месте диаграммы.
-   Применяется к панелям vis-timeline (центр, левая колонка с группами,
-   правая область). При зажатой ЛКМ курсор меняется на "grabbing". */
+/* 7. Pan: курсор grab на пустом месте диаграммы */
 .vis-panel.vis-center,
 .vis-panel.vis-left,
 .vis-panel.vis-right {
@@ -268,8 +306,7 @@ body {
   cursor: grabbing;
 }
 
-/* 9. Задачи: grab-курсор (только для реальных задач, не setup/downtime).
-   При зажатой ЛКМ курсор меняется на "grabbing". */
+/* 8. Задачи — grab-курсор (только для реальных задач) */
 .vis-item.vis-range:not(.item-downtime):not(.item-setup) {
   cursor: grab;
 }
@@ -278,8 +315,7 @@ body {
   cursor: grabbing;
 }
 
-/* 10. Readonly: pan остаётся (пользователь может смотреть диаграмму),
-   drag задач — отключён (editable.updateTime возвращает false). */
+/* 9. Readonly: pan остаётся, drag отключён */
 .gantt-readonly .vis-panel.vis-center,
 .gantt-readonly .vis-panel.vis-left,
 .gantt-readonly .vis-panel.vis-right {
@@ -292,3 +328,229 @@ body {
 .gantt-readonly .vis-item.vis-dragging {
   cursor: default !important;
 }
+
+/* ==========================================
+   ГАНТ — контейнер (Итерация 13.5)
+   ==========================================
+   Вертикальный скролл внутри диаграммы,
+   тонкий скроллбар, запрет горизонтального overflow.
+   ========================================== */
+
+/* 1. Контейнер диаграммы — растянуть на всю высоту */
+.gantt-container {
+  position: relative;
+  overflow: hidden;
+}
+
+.gantt-container .vis-timeline {
+  height: 100% !important;
+  overflow: hidden !important;
+  border: none !important;
+}
+
+/* 2. Панели vis-timeline — вертикальный скролл */
+.gantt-container .vis-panel.vis-center,
+.gantt-container .vis-panel.vis-left,
+.gantt-container .vis-panel.vis-right {
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+}
+
+/* 3. Тонкий скроллбар (Chrome/Edge/Safari) */
+.gantt-container .vis-panel::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.gantt-container .vis-panel::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 5px;
+}
+
+.gantt-container .vis-panel::-webkit-scrollbar-thumb {
+  background: #bdc3c7;
+  border-radius: 5px;
+}
+
+.gantt-container .vis-panel::-webkit-scrollbar-thumb:hover {
+  background: #95a5a6;
+}
+
+/* 4. Firefox */
+.gantt-container .vis-panel {
+  scrollbar-width: thin;
+  scrollbar-color: #bdc3c7 #f1f1f1;
+}
+
+/* 5. Метки групп — фиксированная высота, разделитель */
+.gantt-container .vis-label {
+  border-bottom: 1px solid #ecf0f1;
+  box-sizing: border-box;
+}
+
+/* 6. Задачи — hover с тенью */
+.gantt-container .vis-item {
+  transition: box-shadow 0.15s;
+}
+
+.gantt-container .vis-item:hover {
+  z-index: 10 !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+/* 7. Курсоры для pan на панелях */
+.gantt-container .vis-panel.vis-center,
+.gantt-container .vis-panel.vis-left,
+.gantt-container .vis-panel.vis-right {
+  cursor: grab;
+}
+
+.gantt-container .vis-panel.vis-center:active,
+.gantt-container .vis-panel.vis-left:active,
+.gantt-container .vis-panel.vis-right:active {
+  cursor: grabbing;
+}
+
+/* 8. Курсоры для drag на задачах */
+.gantt-container .vis-item.vis-range:not(.item-downtime):not(.item-setup) {
+  cursor: grab;
+}
+
+.gantt-container .vis-item.vis-range:not(.item-downtime):not(.item-setup):active {
+  cursor: grabbing;
+}
+
+/* 9. Setup и downtime — not-allowed */
+.gantt-container .vis-item.item-downtime,
+.gantt-container .vis-item.item-setup {
+  cursor: not-allowed !important;
+}
+
+/* 10. Readonly-режим — курсор default на задачах */
+.gantt-container.gantt-readonly .vis-item.vis-range {
+  cursor: default !important;
+}
+
+/* 11. Подсветка проблемных задач */
+.gantt-container .item-blocked {
+  box-shadow: 0 0 8px rgba(231, 76, 60, 0.4);
+}
+.gantt-container .item-blocked:hover {
+  box-shadow: 0 0 12px rgba(231, 76, 60, 0.7);
+}
+
+.gantt-container .item-cooling-slow {
+  box-shadow: 0 0 8px rgba(230, 126, 34, 0.4);
+}
+.gantt-container .item-cooling-slow:hover {
+  box-shadow: 0 0 12px rgba(230, 126, 34, 0.7);
+}
+
+.gantt-container .item-cz-incomplete {
+  box-shadow: 0 0 8px rgba(25, 118, 210, 0.4);
+}
+.gantt-container .item-cz-incomplete:hover {
+  box-shadow: 0 0 12px rgba(25, 118, 210, 0.7);
+}
+
+/* 12. Миникарта — упрощённый вид */
+.gantt-container + .MuiPaper-root .vis-item,
+.gantt-container ~ .MuiPaper-root .vis-item {
+  border-color: transparent;
+  cursor: pointer;
+}
+
+.gantt-container + .MuiPaper-root .vis-label,
+.gantt-container ~ .MuiPaper-root .vis-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: #7f8c8d;
+  padding: 2px 4px !important;
+}
+
+.gantt-container + .MuiPaper-root .vis-time-axis,
+.gantt-container ~ .MuiPaper-root .vis-time-axis {
+  display: none;
+}
+
+.gantt-container + .MuiPaper-root .vis-panel.vis-bottom,
+.gantt-container ~ .MuiPaper-root .vis-panel.vis-bottom {
+  display: none;
+}
+
+/* ==========================================
+   Итерация 13.6: связи между задачами на Ганте
+   ========================================== */
+
+/* SVG-overlay поверх диаграммы */
+.gantt-dependencies-svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;   /* не блокирует клики по задачам */
+  z-index: 5;
+  overflow: hidden;       /* линии не выходят за пределы контейнера */
+}
+
+/* Ортогональный провод между задачами */
+.gantt-dependency-line {
+  fill: none;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  transition: stroke 0.15s, stroke-width 0.15s, stroke-opacity 0.15s;
+}
+
+/* Стрелка на конце провода */
+.gantt-dependency-arrowhead {
+  transition: fill 0.15s, fill-opacity 0.15s;
+}
+
+/* Подсветка при hover на цепочку (задаётся inline в JS) */
+.gantt-dependency-line.highlighted {
+  stroke-width: 2.5;
+  stroke-opacity: 1;
+}
+
+.gantt-dependency-arrowhead.highlighted {
+  fill-opacity: 1;
+}
+
+/* Задача в подсвеченной цепочке — оранжевая рамка */
+.gantt-container .vis-item.chain-highlighted {
+  z-index: 20 !important;
+  box-shadow: 0 0 0 2px #e67e22, 0 4px 12px rgba(230, 126, 34, 0.4) !important;
+}
+
+/* ==========================================
+   Итерация 13.10: фоновые полосы выходных
+   ==========================================
+   Выходные — type: 'background' items.
+   Рисуются под задачами в виде вертикальных полос.
+   Не перехватывают клики.
+   ========================================== */
+
+/* Фоновая полоса выходного дня */
+.gantt-container .vis-item.weekend-background {
+  z-index: 0 !important;
+  pointer-events: none !important;
+  border-radius: 0 !important;
+}
+
+/* Подсветка субботы и воскресенья в верхней полосе дат (grid) */
+.gantt-container .vis-time-axis .vis-grid.vis-saturday,
+.gantt-container .vis-time-axis .vis-grid.vis-sunday {
+  background-color: rgba(155, 89, 182, 0.10);
+}
+
+/* Текст субботы и воскресенья в верхней полосе дат */
+.gantt-container .vis-time-axis .vis-text.vis-saturday,
+.gantt-container .vis-time-axis .vis-text.vis-sunday {
+  color: #8e44ad;
+  font-weight: 600;
+}
+
+/* ==========================================
+   КОНЕЦ
+   ========================================== */
