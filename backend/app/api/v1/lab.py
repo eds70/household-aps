@@ -14,6 +14,8 @@ API лаборатории (Итерация 5 + fix C3).
 Итерация 11 (Шаг 5): чтение флага enable_lab_blocking через settings_reader.
 Итерация 13.4 (fix C3): авто-перепланирование после block/unblock/approve
     через BackgroundTasks.
+Итерация 13.14: опциональный version_id — флаг enable_lab_blocking
+    читается из plan_settings плана (fallback на app_settings).
 """
 
 import logging
@@ -70,13 +72,18 @@ VALID_LAB_STATUSES = {
 # ПРОВЕРКИ
 # ==========================================
 
-async def _check_lab_blocking_enabled(db: AsyncSession, org_id: UUID) -> None:
+async def _check_lab_blocking_enabled(
+        db: AsyncSession,
+        org_id: UUID,
+        version_id: Optional[UUID] = None,
+) -> None:
     """
     Проверяет, включён ли feature-флаг enable_lab_blocking.
 
-    Итерация 11 (Шаг 5): читает из app_settings через settings_reader.
+    Итерация 13.14: если version_id задан — флаг читается из plan_settings
+    этого плана. Иначе — из app_settings (глобальные).
     """
-    flags = await read_feature_flags(db, org_id)
+    flags = await read_feature_flags(db, org_id, version_id=version_id)
     if not flags.enable_lab_blocking:
         raise HTTPException(
             status_code=400,
@@ -205,9 +212,8 @@ async def _auto_reschedule_after_lab(
 
     Вызывается из эндпоинтов block/unblock/approve.
 
-    Если перепланирование не удалось (например, нет активной версии) —
-    просто логируем и не падаем. Мастер всегда может запустить
-    вручную через /schedule.
+    Итерация 13.14: Rescheduler использует version_id=from_version_id,
+    поэтому перепланирование идёт с настройками плана (plan_settings).
     """
     from app.scheduler.rescheduler import Rescheduler
 
@@ -246,11 +252,18 @@ async def _auto_reschedule_after_lab(
 async def list_pending_batches(
         include_blocked: bool = Query(default=True, description="Включать заблокированные"),
         include_pending: bool = Query(default=True, description="Включать ожидающие анализа"),
+        version_id: Optional[UUID] = Query(
+            default=None,
+            description="ID плана. Если не задан — флаг читается из app_settings.",
+        ),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """Возвращает партии, ожидающие анализа (PENDING_LAB) или заблокированные (BLOCKED)."""
-    await _check_lab_blocking_enabled(db, org_id)
+    """
+    Возвращает партии, ожидающие анализа (PENDING_LAB)
+    или заблокированные (BLOCKED).
+    """
+    await _check_lab_blocking_enabled(db, org_id, version_id=version_id)
 
     statuses = []
     if include_pending:
@@ -337,11 +350,12 @@ async def list_pending_batches(
 @router.get("/batch/{batch_id}", response_model=BatchLabStatusResponse)
 async def get_batch_lab_status(
         batch_id: UUID,
+        version_id: Optional[UUID] = Query(default=None),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
     """Возвращает текущий статус партии по лаборатории."""
-    await _check_lab_blocking_enabled(db, org_id)
+    await _check_lab_blocking_enabled(db, org_id, version_id=version_id)
 
     result = await db.execute(
         text("""
@@ -394,11 +408,12 @@ async def get_batch_lab_status(
 async def get_batch_lab_log(
         batch_id: UUID,
         limit: int = Query(default=50, ge=1, le=500),
+        version_id: Optional[UUID] = Query(default=None),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
     """Возвращает журнал проверок лаборатории по партии."""
-    await _check_lab_blocking_enabled(db, org_id)
+    await _check_lab_blocking_enabled(db, org_id, version_id=version_id)
 
     result = await db.execute(
         text("""
@@ -442,12 +457,13 @@ async def get_batch_lab_log(
 async def request_analysis(
         batch_id: UUID,
         payload: RequestAnalysisRequest,
+        version_id: Optional[UUID] = Query(default=None),
         current_user: dict = Depends(get_current_user),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
     """Помечает партию как ожидающую лабораторного анализа (PENDING_LAB)."""
-    await _check_lab_blocking_enabled(db, org_id)
+    await _check_lab_blocking_enabled(db, org_id, version_id=version_id)
     _check_role(current_user)
 
     check = await db.execute(
@@ -507,12 +523,13 @@ async def block_batch(
         batch_id: UUID,
         payload: BlockBatchRequest,
         background_tasks: BackgroundTasks,
+        version_id: Optional[UUID] = Query(default=None),
         current_user: dict = Depends(get_current_user),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
     """Блокирует партию лабораторией."""
-    await _check_lab_blocking_enabled(db, org_id)
+    await _check_lab_blocking_enabled(db, org_id, version_id=version_id)
     _check_role(current_user)
 
     check = await db.execute(
@@ -614,12 +631,13 @@ async def unblock_batch(
         batch_id: UUID,
         payload: UnblockBatchRequest,
         background_tasks: BackgroundTasks,
+        version_id: Optional[UUID] = Query(default=None),
         current_user: dict = Depends(get_current_user),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
     """Разблокирует партию."""
-    await _check_lab_blocking_enabled(db, org_id)
+    await _check_lab_blocking_enabled(db, org_id, version_id=version_id)
     _check_role(current_user)
 
     check = await db.execute(
@@ -713,12 +731,13 @@ async def approve_batch(
         batch_id: UUID,
         payload: ApproveBatchRequest,
         background_tasks: BackgroundTasks,
+        version_id: Optional[UUID] = Query(default=None),
         current_user: dict = Depends(get_current_user),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
     """Одобряет партию после успешного лабораторного анализа."""
-    await _check_lab_blocking_enabled(db, org_id)
+    await _check_lab_blocking_enabled(db, org_id, version_id=version_id)
     _check_role(current_user)
 
     if payload.result not in ("PASSED", "FAILED"):

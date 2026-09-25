@@ -6,6 +6,7 @@ import {
     Avatar,
     Box,
     Button,
+    Chip,
     CssBaseline,
     Divider,
     Drawer,
@@ -25,9 +26,11 @@ import {
     AccountTree as AccountTreeIcon,
     Assignment as AssignmentIcon,
     ChevronLeft as ChevronLeftIcon,
+    Edit as EditIcon,
     Factory as FactoryIcon,
     History as HistoryIcon,
     Inventory as InventoryIcon,
+    Lock as LockIcon,
     Logout as LogoutIcon,
     Menu as MenuIcon,
     MenuOpen as MenuOpenIcon,
@@ -40,6 +43,7 @@ import {
     Timeline as TimelineIcon,
 } from '@mui/icons-material';
 import {useAuth} from '../../context/AuthContext';
+import {usePlan} from '../../context/PlainContext';
 
 const DRAWER_WIDTH_EXPANDED = 240;
 const DRAWER_WIDTH_COLLAPSED = 56;
@@ -57,8 +61,8 @@ const MENU_ITEMS = [
     { path: '/shift', label: 'Мастер смены', icon: <AssignmentIcon /> },
     { path: '/personnel', label: 'Персонал', icon: <PersonIcon /> },
     { path: '/cz', label: 'Честный Знак', icon: <QrCodeScannerIcon /> },
-    { path: '/whatif', label: 'What-if', icon: <ScienceIcon /> },      // Итерация 12
-    { path: '/audit', label: 'Аудит', icon: <HistoryIcon /> },         // Итерация 13.3
+    { path: '/whatif', label: 'What-if', icon: <ScienceIcon /> },
+    { path: '/audit', label: 'Аудит', icon: <HistoryIcon /> },
     { path: '/settings', label: 'Настройки', icon: <SettingsIcon /> },
 ];
 
@@ -72,6 +76,7 @@ const ROLE_LABELS: Record<string, string> = {
 
 const MainLayout: React.FC = () => {
     const { user, logout } = useAuth();
+    const { currentVersionId, currentPlanName } = usePlan();
     const navigate = useNavigate();
     const location = useLocation();
     const [mobileOpen, setMobileOpen] = useState(false);
@@ -103,6 +108,10 @@ const MainLayout: React.FC = () => {
     };
 
     const currentDrawerWidth = collapsed ? DRAWER_WIDTH_COLLAPSED : DRAWER_WIDTH_EXPANDED;
+
+    // Итерация 13.13: есть ли открытый план.
+    // Если план открыт — работаем в режиме просмотра (readonly).
+    const isPlanOpen = currentVersionId !== null;
 
     const drawerContent = (
         <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -244,9 +253,80 @@ const MainLayout: React.FC = () => {
                         </IconButton>
                     </Tooltip>
 
-                    <Typography variant="h6" noWrap sx={{ flexGrow: 1 }}>
-                        {MENU_ITEMS.find((item) => item.path === location.pathname)?.label || 'APS Scheduler'}
-                    </Typography>
+                    {/* ============================================
+                        Итерация 13.13: заголовок страницы + активный план.
+                        Название плана выводится рядом с заголовком страницы,
+                        чтобы было видно на ЛЮБОЙ странице приложения.
+                        ============================================ */}
+                    <Box
+                        sx={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 1.5,
+                            flexGrow: 1,
+                            minWidth: 0,
+                        }}
+                    >
+                        {/* Заголовок текущей страницы */}
+                        <Typography variant="h6" noWrap sx={{ flexShrink: 0 }}>
+                            {MENU_ITEMS.find((item) => item.path === location.pathname)?.label || 'APS Scheduler'}
+                        </Typography>
+
+                        <Divider
+                            orientation="vertical"
+                            flexItem
+                            sx={{ bgcolor: 'rgba(255,255,255,0.3)', flexShrink: 0 }}
+                        />
+
+                        {/* ============================================
+                            Активный план:
+                            - План открыт: синий Chip + 🔒 (readonly).
+                            - План не открыт: серый Chip + ✏ (редактирование).
+                            ============================================ */}
+                        {isPlanOpen ? (
+                            <Tooltip
+                                title={`Открыт план: ${currentPlanName}. Режим просмотра (readonly).`}
+                                arrow
+                            >
+                                <Chip
+                                    icon={<LockIcon sx={{ color: '#ffffff !important' }} />}
+                                    label={currentPlanName}
+                                    size="small"
+                                    sx={{
+                                        bgcolor: '#3498db',
+                                        color: '#ffffff',
+                                        fontWeight: 600,
+                                        fontSize: '0.8rem',
+                                        maxWidth: 420,
+                                        border: '1px solid #2980b9',
+                                        '& .MuiChip-label': {
+                                            overflow: 'hidden',
+                                            textOverflow: 'ellipsis',
+                                            whiteSpace: 'nowrap',
+                                        },
+                                    }}
+                                />
+                            </Tooltip>
+                        ) : (
+                            <Tooltip
+                                title="План не выбран. Справочники доступны для редактирования."
+                                arrow
+                            >
+                                <Chip
+                                    icon={<EditIcon sx={{ color: '#ffffff !important' }} />}
+                                    label="Режим редактирования"
+                                    size="small"
+                                    sx={{
+                                        bgcolor: 'rgba(255,255,255,0.15)',
+                                        color: '#ffffff',
+                                        fontWeight: 500,
+                                        fontSize: '0.8rem',
+                                        border: '1px dashed rgba(255,255,255,0.4)',
+                                    }}
+                                />
+                            </Tooltip>
+                        )}
+                    </Box>
 
                     {user && (
                         <>
@@ -348,7 +428,7 @@ const MainLayout: React.FC = () => {
                         flexGrow: 1,
                         minHeight: 0,
                         overflow: 'hidden',
-                        p: { xs: 0.5, sm: 1, md: 2 },   // ← было p: 3
+                        p: { xs: 0.5, sm: 1, md: 2 },
                         display: 'flex',
                         flexDirection: 'column',
                     }}

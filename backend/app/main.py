@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.advisor import router as advisor_router
-from app.api.v1.audit import router as audit_router  # ← Итерация 13.3
+from app.api.v1.audit import router as audit_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.calendar import router as calendar_router
 from app.api.v1.cz import router as cz_router
@@ -16,13 +16,14 @@ from app.api.v1.materials import router as materials_router
 from app.api.v1.operations import router as operations_router
 from app.api.v1.orders import router as orders_router
 from app.api.v1.personnel import router as personnel_router
+from app.api.v1.plan_settings import router as plan_settings_router  # ← НОВОЕ
 from app.api.v1.products import router as products_router
 from app.api.v1.recipes import router as recipes_router
 from app.api.v1.reschedule import router as reschedule_router
 from app.api.v1.schedule import router as schedule_router
 from app.api.v1.settings import router as settings_router
 from app.api.v1.shift import router as shift_router
-from app.api.v1.whatif import router as whatif_router  # Итерация 12
+from app.api.v1.whatif import router as whatif_router
 from app.core.config import settings
 
 tags_metadata = [
@@ -43,8 +44,9 @@ tags_metadata = [
     {"name": "Персонал"},
     {"name": "Честный Знак"},
     {"name": "Настройки"},
-    {"name": "What-if сценарии"},       # Итерация 12
-    {"name": "Аудит"},                  # ← Итерация 13.3
+    {"name": "Настройки плана"},        # ← НОВОЕ
+    {"name": "What-if сценарии"},
+    {"name": "Аудит"},
     {"name": "Система"},
 ]
 
@@ -86,8 +88,9 @@ app.include_router(lab_router)
 app.include_router(personnel_router)
 app.include_router(cz_router)
 app.include_router(settings_router)
-app.include_router(whatif_router)      # Итерация 12
-app.include_router(audit_router)       # ← Итерация 13.3
+app.include_router(plan_settings_router)   # ← НОВОЕ
+app.include_router(whatif_router)
+app.include_router(audit_router)
 
 
 @app.get("/health", tags=["Система"])

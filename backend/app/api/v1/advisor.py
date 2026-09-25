@@ -6,13 +6,15 @@ API для Advisor — подсказки планировщика и оценк
 Итерация 7: cooling_degradation_factor + приоритет БД над in-memory.
 Итерация 8: cz_status, cz_marked_qty, planned_qty + cz_completion_threshold.
 Итерация 11 (Шаг 5): чтение настроек через settings_reader (app_settings).
+Итерация 13.14: опциональный version_id — настройки читаются из plan_settings
+                конкретного плана (с fallback на app_settings).
 """
 
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,22 +40,32 @@ router = APIRouter(prefix="/api/v1/schedule", tags=["Advisor"])
 async def _load_schedule_from_db(
         db: AsyncSession,
         org_id: UUID,
+        version_id: Optional[UUID] = None,
 ) -> Optional[dict]:
     """
-    Загружает задачи последней активной версии из БД.
+    Загружает задачи активной или указанной версии из БД.
     Возвращает dict вида {"tasks": [...], "version_id": "..."} или None.
 
-    Итерация 8: добавлены cz_status, cz_marked_qty, planned_qty
-    для подсказки CZ_INCOMPLETE.
+    Итерация 13.14: если version_id задан — берём именно эту версию,
+    иначе — последнюю активную.
     """
-    version_result = await db.execute(
-        text("""
-            SELECT id, name FROM schedule_version
-            WHERE organization_id = :org_id AND is_active = TRUE
-            ORDER BY created_at DESC LIMIT 1
-        """),
-        {"org_id": org_id},
-    )
+    if version_id is not None:
+        version_result = await db.execute(
+            text("""
+                SELECT id, name FROM schedule_version
+                WHERE id = :vid AND organization_id = :org_id
+            """),
+            {"vid": version_id, "org_id": org_id},
+        )
+    else:
+        version_result = await db.execute(
+            text("""
+                SELECT id, name FROM schedule_version
+                WHERE organization_id = :org_id AND is_active = TRUE
+                ORDER BY created_at DESC LIMIT 1
+            """),
+            {"org_id": org_id},
+        )
     v_row = version_result.fetchone()
     if not v_row:
         return None
@@ -109,7 +121,6 @@ async def _load_schedule_from_db(
             "duration": duration,
             "operator_pool": row.operator_pool,
             "cooling_mode": row.cooling_mode,
-            # Итерация 8
             "role": row.task_role,
             "task_role": row.task_role,
             "status": row.status,
@@ -127,21 +138,26 @@ async def _load_schedule_from_db(
 
 @router.get("/advice", response_model=AdvisorResponse)
 async def get_advice(
+        version_id: Optional[UUID] = Query(
+            default=None,
+            description="ID плана. Если не задан — активный.",
+        ),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
     """
     Возвращает подсказки Advisor'а.
 
-    Итерация 11 (Шаг 5): настройки читаются из app_settings.
+    Итерация 13.14: если version_id задан — настройки читаются из
+    plan_settings этого плана. Иначе — из app_settings.
     """
-    loader = DataLoader(org_id=org_id)
+    loader = DataLoader(org_id=org_id, version_id=version_id)
     data = await loader.load_all()
 
     flags = FeatureFlags(data.get("org_settings", {}))
 
     # ==========================================
-    # Итерация 11 (Шаг 5): читаем настройки из app_settings.
+    # Итерация 13.14: читаем настройки из plan_settings (если version_id)
     # ==========================================
     settings = await read_settings_dict(
         db, org_id,
@@ -150,6 +166,7 @@ async def get_advice(
             "cooling_degradation_factor",
             "cz_completion_threshold",
         ],
+        version_id=version_id,
     )
 
     max_fill = read_float(settings.get("max_fill_percent"), 0.70)
@@ -163,7 +180,7 @@ async def get_advice(
     # ==========================================
     # Итерация 7 (fix): приоритет БД над in-memory.
     # ==========================================
-    schedule_result = await _load_schedule_from_db(db, org_id)
+    schedule_result = await _load_schedule_from_db(db, org_id, version_id)
 
     if not schedule_result:
         from .schedule import _last_schedule_result
@@ -181,7 +198,7 @@ async def get_advice(
         schedule_result=schedule_result,
         max_fill_percent=max_fill,
         cooling_degradation_factor=cooling_factor,
-        cz_completion_threshold=cz_threshold,     # Итерация 8
+        cz_completion_threshold=cz_threshold,
         enable_material_constraints=flags.enable_material_constraints,
         enable_advisor=flags.enable_advisor,
     )
@@ -206,11 +223,15 @@ async def get_advice(
 
 @router.post("/feasibility", response_model=FeasibilityResponse)
 async def check_plan_feasibility(
+        version_id: Optional[UUID] = Query(
+            default=None,
+            description="ID плана. Если не задан — активный.",
+        ),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
     """Проверяет исполнимость текущего плана."""
-    loader = DataLoader(org_id=org_id)
+    loader = DataLoader(org_id=org_id, version_id=version_id)
     data = await loader.load_all()
 
     result = check_feasibility(

@@ -79,6 +79,7 @@ class ProductionScheduler:
             timeout_seconds: int = 600,
             org_id: UUID = None,
             session: Optional[AsyncSession] = None,   # Итерация 12 (fix)
+            version_id: Optional[UUID] = None,        # Итерация 13.14
     ):
         """
         Итерация 10: horizon_hours по умолчанию 720 (30 дней),
@@ -87,11 +88,21 @@ class ProductionScheduler:
         Итерация 12 (fix): опциональная session.
         Если передана — DataLoader использует её (для what-if),
         чтобы видеть незакоммиченные изменения из транзакции №1.
+
+        Итерация 13.14: опциональный version_id.
+        Если задан — настройки читаются из plan_settings этого плана,
+        а не из глобальных app_settings.
         """
         self.horizon_minutes = horizon_hours * 60
         self.timeout_seconds = timeout_seconds
         self.org_id = org_id
-        self.data_loader = DataLoader(org_id=org_id, session=session)
+        self.version_id = version_id
+
+        self.data_loader = DataLoader(
+            org_id=org_id,
+            session=session,
+            version_id=version_id,   # ← прокидываем
+        )
         self.tasks: Dict[Tuple[str, str], Dict] = {}
         self.t0: Optional[datetime] = None
         self.flags: Optional[FeatureFlags] = None

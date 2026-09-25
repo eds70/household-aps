@@ -13,6 +13,8 @@ API сменного планирования и РМ мастера (Итера
 Итерация 7: в задачи добавлено поле cooling_mode.
 Итерация 11 (fix): сравнение по МСК-дате вместо UTC-даты.
 Итерация 11 (Шаг 5): чтение флага enable_shift_planning через settings_reader.
+Итерация 13.14: опциональный version_id — флаг читается из plan_settings
+                плана (fallback на app_settings).
 """
 
 import logging
@@ -46,14 +48,17 @@ MSK_TZ = "Europe/Moscow"
 
 
 async def _check_shift_planning_enabled(
-        db: AsyncSession, org_id: UUID
+        db: AsyncSession,
+        org_id: UUID,
+        version_id: Optional[UUID] = None,
 ) -> None:
     """
     Проверяет feature-флаг enable_shift_planning.
 
-    Итерация 11 (Шаг 5): читает из app_settings через settings_reader.
+    Итерация 13.14: если version_id задан — флаг читается из plan_settings
+    этого плана. Иначе — из app_settings.
     """
-    flags = await read_feature_flags(db, org_id)
+    flags = await read_feature_flags(db, org_id, version_id=version_id)
     if not flags.enable_shift_planning:
         raise HTTPException(
             status_code=400,
@@ -130,6 +135,11 @@ async def list_shifts(
         date_from: Optional[date] = Query(default=None),
         date_to: Optional[date] = Query(default=None),
         only_working: bool = Query(default=False),
+        version_id: Optional[UUID] = Query(
+            default=None,
+            description="ID плана (для чтения feature-флага). "
+                        "Если не задан — из app_settings.",
+        ),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
@@ -138,8 +148,11 @@ async def list_shifts(
 
     Итерация 11 (fix): сравнение по МСК-дате через
     (starts_at AT TIME ZONE 'Europe/Moscow')::date.
+
+    Итерация 13.14: version_id — для чтения флага из plan_settings.
     """
-    await _check_shift_planning_enabled(db, org_id)
+    resolved_version_id = await _resolve_version_id(db, org_id, version_id)
+    await _check_shift_planning_enabled(db, org_id, version_id=resolved_version_id)
 
     if date_from is None:
         date_from = date(2026, 9, 1)
@@ -186,6 +199,7 @@ async def list_shifts(
 @router.get("/by-date/{shift_date}", response_model=List[ShiftResponse])
 async def get_shifts_by_date(
         shift_date: date,
+        version_id: Optional[UUID] = Query(default=None),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
@@ -193,8 +207,10 @@ async def get_shifts_by_date(
     Все смены на конкретную дату (по МСК).
 
     Итерация 11 (fix): возвращает СПИСОК смен, а не одну.
+    Итерация 13.14: version_id — для чтения флага из plan_settings.
     """
-    await _check_shift_planning_enabled(db, org_id)
+    resolved_version_id = await _resolve_version_id(db, org_id, version_id)
+    await _check_shift_planning_enabled(db, org_id, version_id=resolved_version_id)
 
     result = await db.execute(
         text(f"""
@@ -238,10 +254,13 @@ async def get_shift_tasks(
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """Задания смены, сгруппированные по рабочим центрам."""
-    await _check_shift_planning_enabled(db, org_id)
+    """
+    Задания смены, сгруппированные по рабочим центрам.
 
+    Итерация 13.14: флаг читается из plan_settings указанного плана.
+    """
     resolved_version_id = await _resolve_version_id(db, org_id, version_id)
+    await _check_shift_planning_enabled(db, org_id, version_id=resolved_version_id)
 
     shift_result = await db.execute(
         text("""
@@ -490,10 +509,14 @@ async def get_carryover(
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """Переходящие задания из предыдущей рабочей смены."""
-    await _check_shift_planning_enabled(db, org_id)
+    """
+    Переходящие задания из предыдущей рабочей смены.
 
+    Итерация 13.14: флаг читается из plan_settings указанного плана.
+    """
     resolved_version_id = await _resolve_version_id(db, org_id, version_id)
+    await _check_shift_planning_enabled(db, org_id, version_id=resolved_version_id)
+
     if resolved_version_id is None:
         return []
 
@@ -593,11 +616,17 @@ async def get_carryover(
 async def update_task_fact(
         task_id: UUID,
         fact: TaskFactRequest,
+        version_id: Optional[UUID] = Query(default=None),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """Мастер вносит факт выполнения задания."""
-    await _check_shift_planning_enabled(db, org_id)
+    """
+    Мастер вносит факт выполнения задания.
+
+    Итерация 13.14: флаг читается из plan_settings указанного плана.
+    """
+    resolved_version_id = await _resolve_version_id(db, org_id, version_id)
+    await _check_shift_planning_enabled(db, org_id, version_id=resolved_version_id)
 
     check_result = await db.execute(
         text("""

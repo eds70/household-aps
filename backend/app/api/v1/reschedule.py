@@ -9,9 +9,12 @@ API перепланирования (Итерация 4).
   PUT  /api/v1/schedule/task/{id}/move    — переместить задачу (C2)
 
 Итерация 11 (Шаг 5): чтение флага enable_rescheduling через settings_reader.
+Итерация 13.14: опциональный version_id — флаг читается из plan_settings
+                плана (fallback на app_settings).
 """
 
 import logging
+from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Depends, Query
@@ -37,13 +40,18 @@ router = APIRouter(prefix="/api/v1/schedule", tags=["Перепланирова�
 logger = setup_scheduler_logging(level=logging.INFO)
 
 
-async def _check_rescheduling_enabled(db: AsyncSession, org_id: UUID) -> None:
+async def _check_rescheduling_enabled(
+        db: AsyncSession,
+        org_id: UUID,
+        version_id: Optional[UUID] = None,
+) -> None:
     """
     Проверяет feature-флаг enable_rescheduling.
 
-    Итерация 11 (Шаг 5): читает из app_settings через settings_reader.
+    Итерация 13.14: если version_id задан — флаг читается из plan_settings
+    этого плана. Иначе — из app_settings.
     """
-    flags = await read_feature_flags(db, org_id)
+    flags = await read_feature_flags(db, org_id, version_id=version_id)
     if not flags.enable_rescheduling:
         raise HTTPException(
             status_code=400,
@@ -69,8 +77,14 @@ async def reschedule(
         changes = {affected_batch_ids: [UUID, ...]}
       - MANUAL: ручное изменение.
         changes = {affected_batch_ids: [UUID, ...]}
+
+    Итерация 13.14: флаг enable_rescheduling читается из plan_settings
+    плана from_version_id (то есть того плана, который перепланируем).
     """
-    await _check_rescheduling_enabled(db, org_id)
+    # Итерация 13.14: version_id = from_version_id из запроса
+    await _check_rescheduling_enabled(
+        db, org_id, version_id=request.from_version_id,
+    )
 
     rescheduler = Rescheduler(org_id=org_id)
 
@@ -145,11 +159,22 @@ async def compare_versions(
 async def pin_task(
         task_id: UUID,
         request: PinTaskRequest,
+        version_id: Optional[UUID] = Query(
+            default=None,
+            description="ID плана (для чтения feature-флага). "
+                        "Если не задан — из app_settings.",
+        ),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """Закрепить или открепить задачу (не будет двигаться при перепланировании)."""
-    await _check_rescheduling_enabled(db, org_id)
+    """
+    Закрепить или открепить задачу
+    (не будет двигаться при перепланировании).
+
+    Итерация 13.14: version_id — опциональный query-параметр для
+    чтения feature-флага из plan_settings плана.
+    """
+    await _check_rescheduling_enabled(db, org_id, version_id=version_id)
 
     result = await db.execute(
         text("""
@@ -180,6 +205,11 @@ async def pin_task(
 async def move_task(
         task_id: UUID,
         request: MoveTaskRequest,
+        version_id: Optional[UUID] = Query(
+            default=None,
+            description="ID плана (для чтения feature-флага). "
+                        "Если не задан — из app_settings.",
+        ),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
@@ -194,9 +224,13 @@ async def move_task(
       5. Ставит is_pinned = TRUE (пользователь явно зафиксировал).
       6. Возвращает обновлённую задачу.
 
-    Не пересчитывает остальной план. Для этого — POST /schedule/reschedule.
+    Не пересчитывает остальной план.
+    Для этого — POST /schedule/reschedule.
+
+    Итерация 13.14: version_id — опциональный query-параметр для
+    чтения feature-флага из plan_settings плана.
     """
-    await _check_rescheduling_enabled(db, org_id)
+    await _check_rescheduling_enabled(db, org_id, version_id=version_id)
 
     # 1. Проверяем, что задача существует и принадлежит орг
     check = await db.execute(

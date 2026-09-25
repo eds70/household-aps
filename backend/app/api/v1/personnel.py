@@ -12,6 +12,9 @@ API персонала (Итерация 6).
 и BOILER.
 
 Итерация 11 (Шаг 5): чтение флага enable_operator_pools через settings_reader.
+
+Итерация 13.14: опциональный version_id — флаг читается из plan_settings
+                плана (fallback на app_settings).
 """
 
 import logging
@@ -59,13 +62,18 @@ EDIT_ALLOWED_ROLES = {"ADMIN", "PLANNER"}
 # ПРОВЕРКА FEATURE-ФЛАГА
 # ==========================================
 
-async def _check_feature_flag(db: AsyncSession, org_id: UUID) -> None:
+async def _check_feature_flag(
+        db: AsyncSession,
+        org_id: UUID,
+        version_id: Optional[UUID] = None,
+) -> None:
     """
     Проверяет, включён ли enable_operator_pools.
 
-    Итерация 11 (Шаг 5): читает из app_settings через settings_reader.
+    Итерация 13.14: если version_id задан — флаг читается из plan_settings
+    этого плана. Иначе — из app_settings.
     """
-    flags = await read_feature_flags(db, org_id)
+    flags = await read_feature_flags(db, org_id, version_id=version_id)
     if not flags.enable_operator_pools:
         raise HTTPException(
             status_code=400,
@@ -82,7 +90,9 @@ async def _resolve_version_id(
         org_id: UUID,
         version_id: Optional[UUID],
 ) -> Optional[UUID]:
-    """Определяет версию плана (последняя активная, если не задана)."""
+    """
+    Определяет версию плана (последняя активная, если не задана).
+    """
     if version_id is not None:
         result = await db.execute(
             text("""
@@ -202,10 +212,16 @@ async def list_pools(
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """Возвращает список пулов операторов с загрузкой в текущем плане."""
-    await _check_feature_flag(db, org_id)
+    """
+    Возвращает список пулов операторов с загрузкой в текущем плане.
 
+    Итерация 13.14: флаг enable_operator_pools читается из plan_settings
+    указанного плана (или активного).
+    """
     resolved_version_id = await _resolve_version_id(db, org_id, version_id)
+
+    # Итерация 13.14: флаг читаем с учётом version_id
+    await _check_feature_flag(db, org_id, version_id=resolved_version_id)
 
     version_name = None
     if resolved_version_id:
@@ -275,8 +291,13 @@ async def get_pool(
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """Возвращает один пул по ID с загрузкой."""
-    await _check_feature_flag(db, org_id)
+    """
+    Возвращает один пул по ID с загрузкой.
+
+    Итерация 13.14: флаг читается с учётом version_id.
+    """
+    resolved_version_id = await _resolve_version_id(db, org_id, version_id)
+    await _check_feature_flag(db, org_id, version_id=resolved_version_id)
 
     result = await db.execute(
         text("""
@@ -290,7 +311,6 @@ async def get_pool(
     if not row:
         raise HTTPException(status_code=404, detail="Пул не найден")
 
-    resolved_version_id = await _resolve_version_id(db, org_id, version_id)
     scheduled_count, peak = await _compute_pool_load(
         db, org_id, resolved_version_id, row.type
     )
@@ -319,6 +339,7 @@ async def get_pool(
 async def update_pool(
         pool_id: UUID,
         payload: PersonnelPoolUpdate,
+        version_id: Optional[UUID] = Query(default=None),
         current_user: dict = Depends(get_current_user),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
@@ -327,8 +348,11 @@ async def update_pool(
     Обновляет capacity / name / comment пула.
 
     Доступно ролям: ADMIN, PLANNER.
+
+    Итерация 13.14: флаг читается с учётом version_id.
     """
-    await _check_feature_flag(db, org_id)
+    resolved_version_id = await _resolve_version_id(db, org_id, version_id)
+    await _check_feature_flag(db, org_id, version_id=resolved_version_id)
 
     role = current_user.get("role")
     if role not in EDIT_ALLOWED_ROLES:
@@ -385,7 +409,12 @@ async def update_pool(
         stage="personnel_update", org_id=str(org_id),
     )
 
-    return await get_pool(pool_id=pool_id, version_id=None, org_id=org_id, db=db)
+    return await get_pool(
+        pool_id=pool_id,
+        version_id=version_id,
+        org_id=org_id,
+        db=db,
+    )
 
 
 # ==========================================
@@ -406,10 +435,11 @@ async def get_load(
       {"type": "REACTOR_OPERATOR", "capacity": 3, "peak": 3, "load_percent": 100.0},
       ...
     ]
-    """
-    await _check_feature_flag(db, org_id)
 
+    Итерация 13.14: флаг читается с учётом version_id.
+    """
     resolved_version_id = await _resolve_version_id(db, org_id, version_id)
+    await _check_feature_flag(db, org_id, version_id=resolved_version_id)
 
     result = await db.execute(
         text(f"""
@@ -424,7 +454,9 @@ async def get_load(
 
     response = []
     for row in result.fetchall():
-        _, peak = await _compute_pool_load(db, org_id, resolved_version_id, row.type)
+        _, peak = await _compute_pool_load(
+            db, org_id, resolved_version_id, row.type
+        )
         capacity = int(row.capacity or 0)
         load_percent = (peak / capacity * 100.0) if capacity > 0 else 0.0
         response.append({

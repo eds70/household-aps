@@ -13,11 +13,18 @@ export interface PlanVersion {
     comment?: string | null;
 }
 
+// Текущий план: либо конкретный план, либо null (режим редактирования)
+export interface CurrentPlan {
+    id: string;
+    name: string;
+}
+
 interface PlanContextType {
     currentVersionId: string | null;
     currentPlanName: string;
     versions: PlanVersion[];
     setPlan: (versionId: string | null, name: string) => void;
+    clearPlan: () => void;
     loadVersions: () => Promise<void>;
     createPlan: (name: string, versionType: string, comment?: string) => Promise<PlanVersion>;
     deletePlan: (versionId: string) => Promise<void>;
@@ -25,20 +32,63 @@ interface PlanContextType {
 
 export const PlanContext = createContext<PlanContextType | undefined>(undefined);
 
+const STORAGE_KEY = 'aps_current_plan';
+
 export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-    const [currentVersionId, setCurrentVersionId] = useState<string | null>(null);
-    const [currentPlanName, setCurrentPlanName] = useState<string>("Режим редактирования");
+    // Итерация 13.13: храним id и name в одном объекте,
+    // чтобы они не могли рассинхронизироваться.
+    // Также сохраняем в localStorage — чтобы план не сбрасывался при F5.
+    const [currentPlan, setCurrentPlan] = useState<CurrentPlan | null>(() => {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (parsed && parsed.id && parsed.name) {
+                    return parsed as CurrentPlan;
+                }
+            }
+        } catch {
+            // ignore
+        }
+        return null;
+    });
     const [versions, setVersions] = useState<PlanVersion[]>([]);
 
-    // ✅ Итерация 11 (fix): используем useAuth, чтобы не грузить версии
-    // до аутентификации пользователя.
     const {isAuthenticated, isLoading} = useAuth();
 
-    // ✅ Итерация 11 (fix): useCallback для стабильной ссылки.
+    // Сохраняем currentPlan в localStorage при каждом изменении
+    useEffect(() => {
+        try {
+            if (currentPlan) {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(currentPlan));
+            } else {
+                localStorage.removeItem(STORAGE_KEY);
+            }
+        } catch {
+            // ignore
+        }
+    }, [currentPlan]);
+
     const loadVersions = useCallback(async () => {
         try {
             const response = await axios.get(`${API_BASE_URL}/api/v1/schedule/versions`);
-            setVersions(Array.isArray(response.data) ? response.data : []);
+            const list: PlanVersion[] = Array.isArray(response.data) ? response.data : [];
+            setVersions(list);
+
+            // Синхронизация: если сохранённый план больше не существует в БД — сбрасываем его.
+            setCurrentPlan((prev) => {
+                if (!prev) return prev;
+                const stillExists = list.some((v) => v.id === prev.id);
+                if (!stillExists) {
+                    return null;
+                }
+                // Обновляем имя, если оно изменилось (например, после перепланирования)
+                const fresh = list.find((v) => v.id === prev.id);
+                if (fresh && fresh.name !== prev.name) {
+                    return {id: prev.id, name: fresh.name};
+                }
+                return prev;
+            });
         } catch (err: any) {
             if (err.response?.status !== 401) {
                 console.error("Ошибка загрузки версий планов:", err);
@@ -46,21 +96,24 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
     }, []);
 
-    // ✅ Итерация 11 (fix): загружаем версии ТОЛЬКО когда пользователь
-    // аутентифицирован и загрузка auth завершена.
     useEffect(() => {
         if (!isLoading && isAuthenticated) {
             loadVersions();
         }
     }, [isLoading, isAuthenticated, loadVersions]);
 
-    // ✅ useCallback для setPlan.
     const setPlan = useCallback((versionId: string | null, name: string) => {
-        setCurrentVersionId(versionId);
-        setCurrentPlanName(name || "Режим редактирования");
+        if (!versionId) {
+            setCurrentPlan(null);
+            return;
+        }
+        setCurrentPlan({id: versionId, name: name || 'План без названия'});
     }, []);
 
-    // ✅ useCallback для createPlan.
+    const clearPlan = useCallback(() => {
+        setCurrentPlan(null);
+    }, []);
+
     const createPlan = useCallback(async (
         name: string,
         versionType: string,
@@ -76,19 +129,20 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return newVersion;
     }, []);
 
-    // ✅ useCallback для deletePlan.
     const deletePlan = useCallback(async (versionId: string): Promise<void> => {
         await axios.delete(`${API_BASE_URL}/api/v1/schedule/versions/${versionId}`);
         setVersions((prev) => prev.filter((v) => v.id !== versionId));
 
-        setCurrentVersionId((prevId) => {
-            if (prevId === versionId) {
-                setCurrentPlanName("Режим редактирования");
+        setCurrentPlan((prev) => {
+            if (prev && prev.id === versionId) {
                 return null;
             }
-            return prevId;
+            return prev;
         });
     }, []);
+
+    const currentVersionId = currentPlan?.id ?? null;
+    const currentPlanName = currentPlan?.name ?? "Режим редактирования";
 
     return (
         <PlanContext.Provider value={{
@@ -96,6 +150,7 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
             currentPlanName,
             versions,
             setPlan,
+            clearPlan,
             loadVersions,
             createPlan,
             deletePlan,

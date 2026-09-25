@@ -24,6 +24,11 @@ QTY_CHANGE не влияли на план, а поле parent_version_id у н�
   6. Присваиваем новой версии parent_version_id = from_version_id.
   7. Пишем запись в reschedule_log.
 
+Итерация 13.14: ProductionScheduler получает version_id=from_version_id,
+чтобы прочитать plan_settings исходного плана (а не глобальные app_settings).
+Это гарантирует, что перепланирование использует ТЕ ЖЕ настройки,
+с которыми план был построен.
+
 Ключевые гарантии:
   - Явно помеченные is_pinned=TRUE не двигаются.
   - Начатые задачи (actual_start IS NOT NULL) не двигаются.
@@ -406,6 +411,11 @@ class Rescheduler:
           7. Присвоить parent_version_id новой версии.
           8. Записать в reschedule_log.
 
+        Итерация 13.14: ProductionScheduler получает version_id=from_version_id,
+        чтобы прочитать plan_settings исходного плана (а не глобальные
+        app_settings). Это гарантирует, что перепланирование использует
+        ТЕ ЖЕ настройки, с которыми план был построен.
+
         Args:
             from_version_id: Исходная версия.
             reason: DELAY | BREAKDOWN | QTY_CHANGE | MANUAL.
@@ -491,10 +501,12 @@ class Rescheduler:
                 stage="reschedule", org_id=str(self.org_id),
             )
 
-            # 5. Запускаем ProductionScheduler заново с pinned
+            # 5. Запускаем ProductionScheduler с version_id=from_version_id
+            #    (Итерация 13.14: настройки читаются из plan_settings плана)
             scheduler = ProductionScheduler(
                 horizon_hours=2160,
                 org_id=self.org_id,
+                version_id=from_version_id,
             )
             schedule_result = await scheduler.build_schedule(
                 pinned_tasks=pinned_tasks,
@@ -514,6 +526,7 @@ class Rescheduler:
                 scheduler2 = ProductionScheduler(
                     horizon_hours=2160,
                     org_id=self.org_id,
+                    version_id=from_version_id,
                 )
                 schedule_result = await scheduler2.build_schedule(
                     pinned_tasks=None,

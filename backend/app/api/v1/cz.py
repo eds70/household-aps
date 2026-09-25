@@ -15,6 +15,8 @@ API интеграции с Честным Знаком (Итерация 8).
 Остальные эндпоинты — через JWT.
 
 Итерация 11 (Шаг 5): чтение настроек через settings_reader (app_settings).
+Итерация 13.14: опциональный version_id — настройки ЧЗ читаются
+                из plan_settings плана (fallback на app_settings).
 """
 
 import logging
@@ -64,13 +66,18 @@ logger = setup_scheduler_logging(level=logging.INFO)
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ==========================================
 
-async def _check_cz_enabled(db: AsyncSession, org_id: UUID) -> FeatureFlags:
+async def _check_cz_enabled(
+        db: AsyncSession,
+        org_id: UUID,
+        version_id: Optional[UUID] = None,
+) -> FeatureFlags:
     """
     Проверяет feature-флаг enable_cz_integration.
 
-    Итерация 11 (Шаг 5): читает из app_settings через settings_reader.
+    Итерация 13.14: если version_id задан — флаг читается из plan_settings
+    этого плана. Иначе — из app_settings.
     """
-    flags = await read_feature_flags(db, org_id)
+    flags = await read_feature_flags(db, org_id, version_id=version_id)
     if not flags.enable_cz_integration:
         raise HTTPException(
             status_code=400,
@@ -79,11 +86,15 @@ async def _check_cz_enabled(db: AsyncSession, org_id: UUID) -> FeatureFlags:
     return flags
 
 
-async def _get_cz_settings(db: AsyncSession, org_id: UUID) -> dict:
+async def _get_cz_settings(
+        db: AsyncSession,
+        org_id: UUID,
+        version_id: Optional[UUID] = None,
+) -> dict:
     """
     Возвращает словарь настроек ЧЗ.
 
-    Итерация 11 (Шаг 5): читает из app_settings через settings_reader.
+    Итерация 13.14: если version_id задан — читаем из plan_settings.
     """
     settings = await read_settings_dict(
         db, org_id,
@@ -93,6 +104,7 @@ async def _get_cz_settings(db: AsyncSession, org_id: UUID) -> dict:
             "cz_api_key",
             "enable_cz_auto_close",
         ],
+        version_id=version_id,
     )
 
     flags = FeatureFlags({
@@ -111,9 +123,10 @@ async def _check_api_key(
         db: AsyncSession,
         org_id: UUID,
         x_cz_api_key: Optional[str],
+        version_id: Optional[UUID] = None,
 ) -> None:
     """Проверяет API-ключ для вебхука от камер."""
-    settings = await _get_cz_settings(db, org_id)
+    settings = await _get_cz_settings(db, org_id, version_id=version_id)
     expected = settings["api_key"]
 
     if not expected:
@@ -142,6 +155,10 @@ async def _check_api_key(
 async def receive_scan(
         payload: CzScanRequest,
         x_cz_api_key: Optional[str] = Header(default=None, alias="X-CZ-Api-Key"),
+        version_id: Optional[UUID] = Query(
+            default=None,
+            description="ID плана. Если не задан — настройки из app_settings.",
+        ),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
@@ -152,10 +169,10 @@ async def receive_scan(
     Идемпотентность: повторный cz_code вернёт duplicate=true без
     изменения cz_marked_qty.
     """
-    await _check_cz_enabled(db, org_id)
-    await _check_api_key(db, org_id, x_cz_api_key)
+    await _check_cz_enabled(db, org_id, version_id=version_id)
+    await _check_api_key(db, org_id, x_cz_api_key, version_id=version_id)
 
-    settings = await _get_cz_settings(db, org_id)
+    settings = await _get_cz_settings(db, org_id, version_id=version_id)
 
     # Время скана
     scanned_at = payload.scanned_at or datetime.now(timezone.utc)
@@ -303,12 +320,13 @@ async def receive_scan(
 @router.get("/batch/{batch_id}/progress", response_model=CzProgressResponse)
 async def get_batch_cz_progress(
         batch_id: UUID,
+        version_id: Optional[UUID] = Query(default=None),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
     """Возвращает прогресс маркировки партии."""
-    await _check_cz_enabled(db, org_id)
-    settings = await _get_cz_settings(db, org_id)
+    await _check_cz_enabled(db, org_id, version_id=version_id)
+    settings = await _get_cz_settings(db, org_id, version_id=version_id)
 
     progress = await get_batch_progress(
         session=db,
@@ -331,6 +349,7 @@ async def get_batch_cz_progress(
 async def list_pending_batches(
         include_completed: bool = Query(default=False),
         limit: int = Query(default=100, ge=1, le=500),
+        version_id: Optional[UUID] = Query(default=None),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
@@ -340,8 +359,8 @@ async def list_pending_batches(
     include_completed=false (по умолчанию) — только PENDING + IN_PROGRESS.
     include_completed=true — все, включая COMPLETED.
     """
-    await _check_cz_enabled(db, org_id)
-    settings = await _get_cz_settings(db, org_id)
+    await _check_cz_enabled(db, org_id, version_id=version_id)
+    settings = await _get_cz_settings(db, org_id, version_id=version_id)
     threshold = settings["threshold"]
 
     statuses = ["PENDING", "IN_PROGRESS"]
@@ -422,11 +441,12 @@ async def get_scan_log(
         camera_id: Optional[str] = Query(default=None),
         only_unresolved: bool = Query(default=False),
         limit: int = Query(default=100, ge=1, le=1000),
+        version_id: Optional[UUID] = Query(default=None),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
     """Журнал сканирований с фильтрами."""
-    await _check_cz_enabled(db, org_id)
+    await _check_cz_enabled(db, org_id, version_id=version_id)
 
     where_clauses = ["cz.organization_id = :org_id"]
     params: dict = {"org_id": org_id, "limit": limit}
@@ -487,12 +507,13 @@ async def get_scan_log(
 
 @router.get("/stats", response_model=CzStatsResponse)
 async def get_cz_stats(
+        version_id: Optional[UUID] = Query(default=None),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
     """Сводная статистика по маркировке."""
-    await _check_cz_enabled(db, org_id)
-    settings = await _get_cz_settings(db, org_id)
+    await _check_cz_enabled(db, org_id, version_id=version_id)
+    settings = await _get_cz_settings(db, org_id, version_id=version_id)
 
     # Статусы партий
     statuses_result = await db.execute(
@@ -546,6 +567,7 @@ ALLOWED_ATTACH_ROLES = {"ADMIN", "PLANNER", "MASTER"}
 async def attach_scan(
         scan_id: UUID,
         payload: CzAttachRequest,
+        version_id: Optional[UUID] = Query(default=None),
         current_user: dict = Depends(get_current_user),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
@@ -555,7 +577,7 @@ async def attach_scan(
 
     Доступно: ADMIN, PLANNER, MASTER.
     """
-    await _check_cz_enabled(db, org_id)
+    await _check_cz_enabled(db, org_id, version_id=version_id)
 
     role = current_user.get("role")
     if role not in ALLOWED_ATTACH_ROLES:
@@ -652,7 +674,7 @@ async def attach_scan(
         {"qty": qty, "batch_id": batch_id, "org_id": org_id},
     )
 
-    settings = await _get_cz_settings(db, org_id)
+    settings = await _get_cz_settings(db, org_id, version_id=version_id)
     await recalc_batch_cz_status(
         session=db,
         org_id=org_id,
@@ -683,6 +705,7 @@ async def attach_scan(
 @router.delete("/scan/{scan_id}", response_model=CzActionResponse)
 async def delete_scan(
         scan_id: UUID,
+        version_id: Optional[UUID] = Query(default=None),
         current_user: dict = Depends(get_current_user),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
@@ -693,7 +716,7 @@ async def delete_scan(
     Если скан был привязан к партии — уменьшает cz_marked_qty
     и пересчитывает статус.
     """
-    await _check_cz_enabled(db, org_id)
+    await _check_cz_enabled(db, org_id, version_id=version_id)
 
     if current_user.get("role") != "ADMIN":
         raise HTTPException(
@@ -730,7 +753,7 @@ async def delete_scan(
             {"qty": qty, "batch_id": batch_id, "org_id": org_id},
         )
 
-        settings = await _get_cz_settings(db, org_id)
+        settings = await _get_cz_settings(db, org_id, version_id=version_id)
         await recalc_batch_cz_status(
             session=db,
             org_id=org_id,

@@ -136,8 +136,6 @@ export const materialsApi = {
         const response = await api.put(`/api/v1/materials/${materialId}/stock`, data);
         return response.data;
     },
-
-    // ----- Итерация 13.2: журнал изменений -----
     getStockLog: async (params?: {
         material_id?: string;
         source?: string;
@@ -157,8 +155,6 @@ export const materialsApi = {
         });
         return response.data;
     },
-
-    // ----- Итерация 13.2: импорт/экспорт Excel -----
     importExcel: async (
         file: File,
     ): Promise<import('../types').MaterialImportResponse> => {
@@ -181,8 +177,6 @@ export const materialsApi = {
         });
         return response.data;
     },
-
-    // ----- Итерация 13.3: rollback + cleanup -----
     revertStockLog: async (logId: string) => {
         const response = await api.post(`/api/v1/materials/stock-log/${logId}/revert`);
         return response.data;
@@ -378,62 +372,75 @@ export const ganttApi = {
 };
 
 // ==========================================
-// Advisor API
+// Advisor API (Итерация 13.14: + version_id)
 // ==========================================
 export const advisorApi = {
-    getAdvice: async (): Promise<import('../types').AdvisorResponse> => {
-        const response = await api.get('/api/v1/schedule/advice');
+    getAdvice: async (versionId?: string): Promise<import('../types').AdvisorResponse> => {
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.get('/api/v1/schedule/advice', { params });
         return response.data;
     },
-    checkFeasibility: async (): Promise<import('../types').FeasibilityResponse> => {
-        const response = await api.post('/api/v1/schedule/feasibility');
+    checkFeasibility: async (versionId?: string): Promise<import('../types').FeasibilityResponse> => {
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.post('/api/v1/schedule/feasibility', null, { params });
         return response.data;
     },
 };
 
 // ==========================================
-// Shift API
+// Shift API (Итерация 13.14: + version_id)
 // ==========================================
 export const shiftApi = {
     list: async (params?: {
         date_from?: string;
         date_to?: string;
         only_working?: boolean;
+        version_id?: string;
     }): Promise<import('../types').Shift[]> => {
         const response = await api.get('/api/v1/shift/list', { params });
         return response.data;
     },
-
-    /**
-     * Итерация 11: возвращает МАССИВ смен за день
-     * (для режимов 3x8 и 2x12 в день несколько смен).
-     */
-    getByDate: async (shiftDate: string): Promise<import('../types').Shift[]> => {
-        const response = await api.get(`/api/v1/shift/by-date/${shiftDate}`);
+    getByDate: async (
+        shiftDate: string,
+        versionId?: string,
+    ): Promise<import('../types').Shift[]> => {
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.get(`/api/v1/shift/by-date/${shiftDate}`, { params });
         return response.data;
     },
-
-    getTasks: async (shiftId: string): Promise<import('../types').ShiftTasksResponse> => {
-        const response = await api.get(`/api/v1/shift/${shiftId}/tasks`);
+    getTasks: async (
+        shiftId: string,
+        versionId?: string,
+    ): Promise<import('../types').ShiftTasksResponse> => {
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.get(`/api/v1/shift/${shiftId}/tasks`, { params });
         return response.data;
     },
-
-    getCarryover: async (shiftId: string): Promise<import('../types').ShiftTask[]> => {
-        const response = await api.get(`/api/v1/shift/${shiftId}/carryover`);
+    getCarryover: async (
+        shiftId: string,
+        versionId?: string,
+    ): Promise<import('../types').ShiftTask[]> => {
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.get(`/api/v1/shift/${shiftId}/carryover`, { params });
         return response.data;
     },
-
     updateTaskFact: async (
         taskId: string,
         fact: import('../types').TaskFactRequest,
+        versionId?: string,
     ): Promise<import('../types').TaskFactResponse> => {
-        const response = await api.post(`/api/v1/shift/task/${taskId}/fact`, fact);
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.post(
+            `/api/v1/shift/task/${taskId}/fact`,
+            fact,
+            { params },
+        );
         return response.data;
     },
 };
 
 // ==========================================
-// Reschedule API
+// Reschedule API (Итерация 13.14: + version_id)
 // ==========================================
 export const rescheduleApi = {
     reschedule: async (
@@ -442,100 +449,124 @@ export const rescheduleApi = {
         const response = await api.post('/api/v1/schedule/reschedule', data);
         return response.data;
     },
-
     compare: async (v1: string, v2: string): Promise<import('../types').CompareResponse> => {
         const response = await api.get('/api/v1/schedule/compare', {
             params: { v1, v2 },
         });
         return response.data;
     },
-
     pinTask: async (
         taskId: string,
-        isPinned: boolean
+        isPinned: boolean,
+        versionId?: string,
     ): Promise<import('../types').PinTaskResponse> => {
-        const response = await api.put(`/api/v1/schedule/task/${taskId}/pin`, {
-            is_pinned: isPinned,
-        });
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.put(
+            `/api/v1/schedule/task/${taskId}/pin`,
+            { is_pinned: isPinned },
+            { params },
+        );
         return response.data;
     },
-
-    // Итерация 9 (C2): перемещение задачи drag-and-drop на Ганте.
-    // Меняет planned_start/planned_end и ставит is_pinned=TRUE.
-    // Валидация на backend: длительность не должна меняться.
     moveTask: async (
         taskId: string,
         newStart: string,
         newEnd: string,
+        versionId?: string,
     ): Promise<import('../types').MoveTaskResponse> => {
-        const response = await api.put(`/api/v1/schedule/task/${taskId}/move`, {
-            new_start: newStart,
-            new_end: newEnd,
-        });
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.put(
+            `/api/v1/schedule/task/${taskId}/move`,
+            {
+                new_start: newStart,
+                new_end: newEnd,
+            },
+            { params },
+        );
         return response.data;
     },
 };
 
 // ==========================================
-// Lab API (Итерация 5)
+// Lab API (Итерация 5; 13.14: + version_id)
 // ==========================================
 export const labApi = {
-    /** Партии, ожидающие анализа или заблокированные */
     getPending: async (params?: {
         include_blocked?: boolean;
         include_pending?: boolean;
+        version_id?: string;
     }): Promise<import('../types').LabPendingBatch[]> => {
         const response = await api.get('/api/v1/lab/pending', { params });
         return response.data;
     },
-
-    /** Статус партии по лаборатории */
-    getBatchStatus: async (batchId: string): Promise<import('../types').BatchLabStatus> => {
-        const response = await api.get(`/api/v1/lab/batch/${batchId}`);
+    getBatchStatus: async (
+        batchId: string,
+        versionId?: string,
+    ): Promise<import('../types').BatchLabStatus> => {
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.get(`/api/v1/lab/batch/${batchId}`, { params });
         return response.data;
     },
-
-    /** Журнал проверок партии */
-    getBatchLog: async (batchId: string, limit = 50): Promise<import('../types').LabAnalysisLogEntry[]> => {
-        const response = await api.get(`/api/v1/lab/batch/${batchId}/log`, {
-            params: { limit },
-        });
+    getBatchLog: async (
+        batchId: string,
+        limit = 50,
+        versionId?: string,
+    ): Promise<import('../types').LabAnalysisLogEntry[]> => {
+        const params: any = { limit };
+        if (versionId) params.version_id = versionId;
+        const response = await api.get(`/api/v1/lab/batch/${batchId}/log`, { params });
         return response.data;
     },
-
-    /** Заблокировать партию */
     blockBatch: async (
         batchId: string,
-        data: import('../types').BlockBatchRequest
+        data: import('../types').BlockBatchRequest,
+        versionId?: string,
     ): Promise<import('../types').LabActionResponse> => {
-        const response = await api.post(`/api/v1/lab/batch/${batchId}/block`, data);
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.post(
+            `/api/v1/lab/batch/${batchId}/block`,
+            data,
+            { params },
+        );
         return response.data;
     },
-
-    /** Разблокировать партию */
     unblockBatch: async (
         batchId: string,
-        data: import('../types').UnblockBatchRequest
+        data: import('../types').UnblockBatchRequest,
+        versionId?: string,
     ): Promise<import('../types').LabActionResponse> => {
-        const response = await api.post(`/api/v1/lab/batch/${batchId}/unblock`, data);
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.post(
+            `/api/v1/lab/batch/${batchId}/unblock`,
+            data,
+            { params },
+        );
         return response.data;
     },
-
-    /** Одобрить партию после анализа */
     approveBatch: async (
         batchId: string,
-        data: import('../types').ApproveBatchRequest
+        data: import('../types').ApproveBatchRequest,
+        versionId?: string,
     ): Promise<import('../types').LabActionResponse> => {
-        const response = await api.post(`/api/v1/lab/batch/${batchId}/approve`, data);
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.post(
+            `/api/v1/lab/batch/${batchId}/approve`,
+            data,
+            { params },
+        );
         return response.data;
     },
-
-    /** Запросить анализ для партии */
     requestAnalysis: async (
         batchId: string,
-        data: import('../types').RequestAnalysisRequest
+        data: import('../types').RequestAnalysisRequest,
+        versionId?: string,
     ): Promise<import('../types').LabActionResponse> => {
-        const response = await api.post(`/api/v1/lab/batch/${batchId}/request`, data);
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.post(
+            `/api/v1/lab/batch/${batchId}/request`,
+            data,
+            { params },
+        );
         return response.data;
     },
 };
@@ -544,14 +575,11 @@ export const labApi = {
 // Personnel API (Итерация 6)
 // ==========================================
 export const personnelApi = {
-    /** Список пулов операторов с загрузкой */
     listPools: async (versionId?: string): Promise<import('../types').PersonnelPoolList> => {
         const params = versionId ? { version_id: versionId } : {};
         const response = await api.get('/api/v1/personnel/pools', { params });
         return response.data;
     },
-
-    /** Один пул */
     getPool: async (
         poolId: string,
         versionId?: string,
@@ -560,17 +588,19 @@ export const personnelApi = {
         const response = await api.get(`/api/v1/personnel/pools/${poolId}`, { params });
         return response.data;
     },
-
-    /** Обновить capacity / name / comment */
     updatePool: async (
         poolId: string,
         data: import('../types').PersonnelPoolUpdate,
+        versionId?: string,
     ): Promise<import('../types').PersonnelPool> => {
-        const response = await api.put(`/api/v1/personnel/pools/${poolId}`, data);
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.put(
+            `/api/v1/personnel/pools/${poolId}`,
+            data,
+            { params },
+        );
         return response.data;
     },
-
-    /** Краткая информация о загрузке */
     getLoad: async (versionId?: string): Promise<import('../types').PersonnelLoadItem[]> => {
         const params = versionId ? { version_id: versionId } : {};
         const response = await api.get('/api/v1/personnel/load', { params });
@@ -579,68 +609,72 @@ export const personnelApi = {
 };
 
 // ==========================================
-// CZ API (Честный Знак, Итерация 8)
+// CZ API (Честный Знак, Итерация 8; 13.14: + version_id)
 // ==========================================
 export const czApi = {
-    /**
-     * Приём скана от камеры.
-     * Требует заголовок X-CZ-Api-Key.
-     */
     scan: async (
         data: import('../types').CzScanRequest,
         apiKey: string,
+        versionId?: string,
     ): Promise<import('../types').CzScanResponse> => {
+        const params = versionId ? { version_id: versionId } : {};
         const response = await api.post('/api/v1/cz/scan', data, {
             headers: { 'X-CZ-Api-Key': apiKey },
+            params,
         });
         return response.data;
     },
-
-    /** Прогресс маркировки партии */
-    getBatchProgress: async (batchId: string): Promise<import('../types').CzProgress> => {
-        const response = await api.get(`/api/v1/cz/batch/${batchId}/progress`);
+    getBatchProgress: async (
+        batchId: string,
+        versionId?: string,
+    ): Promise<import('../types').CzProgress> => {
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.get(`/api/v1/cz/batch/${batchId}/progress`, { params });
         return response.data;
     },
-
-    /** Партии, ожидающие маркировки */
     getPending: async (params?: {
         include_completed?: boolean;
         limit?: number;
+        version_id?: string;
     }): Promise<import('../types').CzPendingBatch[]> => {
         const response = await api.get('/api/v1/cz/pending', { params });
         return response.data;
     },
-
-    /** Журнал сканирований */
     getLog: async (params?: {
         batch_id?: string;
         line_code?: string;
         camera_id?: string;
         only_unresolved?: boolean;
         limit?: number;
+        version_id?: string;
     }): Promise<import('../types').CzScanLogEntry[]> => {
         const response = await api.get('/api/v1/cz/log', { params });
         return response.data;
     },
-
-    /** Сводная статистика */
-    getStats: async (): Promise<import('../types').CzStats> => {
-        const response = await api.get('/api/v1/cz/stats');
+    getStats: async (versionId?: string): Promise<import('../types').CzStats> => {
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.get('/api/v1/cz/stats', { params });
         return response.data;
     },
-
-    /** Ручное сопоставление скана-сироты (ADMIN, PLANNER, MASTER) */
     attachScan: async (
         scanId: string,
         data: import('../types').CzAttachRequest,
+        versionId?: string,
     ): Promise<import('../types').CzActionResponse> => {
-        const response = await api.post(`/api/v1/cz/scan/${scanId}/attach`, data);
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.post(
+            `/api/v1/cz/scan/${scanId}/attach`,
+            data,
+            { params },
+        );
         return response.data;
     },
-
-    /** Удаление скана (только ADMIN) */
-    deleteScan: async (scanId: string): Promise<import('../types').CzActionResponse> => {
-        const response = await api.delete(`/api/v1/cz/scan/${scanId}`);
+    deleteScan: async (
+        scanId: string,
+        versionId?: string,
+    ): Promise<import('../types').CzActionResponse> => {
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.delete(`/api/v1/cz/scan/${scanId}`, { params });
         return response.data;
     },
 };
@@ -649,43 +683,30 @@ export const czApi = {
 // Settings API (Итерация 11)
 // ==========================================
 export const settingsApi = {
-    /** Полный реестр настроек с метаданными */
     getSchema: async (): Promise<import('../types').SettingsSchema> => {
         const response = await api.get('/api/v1/settings/schema');
         return response.data;
     },
-
-    /** Список категорий */
     getCategories: async (): Promise<import('../types').SettingsCategory[]> => {
         const response = await api.get('/api/v1/settings/categories');
         return response.data;
     },
-
-    /** Все настройки организации */
     getAll: async (): Promise<Record<string, any>> => {
         const response = await api.get('/api/v1/settings/');
         return response.data;
     },
-
-    /** Настройки одной категории */
     getCategory: async (category: string): Promise<Record<string, any>> => {
         const response = await api.get(`/api/v1/settings/category/${category}`);
         return response.data;
     },
-
-    /** Массовое обновление */
     updateBulk: async (settings: Record<string, any>): Promise<any> => {
         const response = await api.put('/api/v1/settings/', { settings });
         return response.data;
     },
-
-    /** Обновление одной настройки */
     updateSingle: async (key: string, value: any): Promise<any> => {
         const response = await api.put(`/api/v1/settings/${key}`, { value });
         return response.data;
     },
-
-    /** Смена режима смен (ADMIN) */
     changeShiftMode: async (shiftMode: string): Promise<any> => {
         const response = await api.post('/api/v1/settings/shift-mode', {
             shift_mode: shiftMode,
@@ -695,10 +716,52 @@ export const settingsApi = {
 };
 
 // ==========================================
+// Plan Settings API (Итерация 13.14)
+// ==========================================
+export const planSettingsApi = {
+    /**
+     * Настройки конкретного плана (snapshot).
+     *
+     * Возвращает:
+     *   - settings: {key: value} — для чтения
+     *   - schema: полный реестр с метаданными
+     *   - categories: список категорий с label
+     */
+    getForVersion: async (versionId: string): Promise<{
+        version_id: string;
+        settings: Record<string, any>;
+        schema: any[];
+        categories: {key: string; label: string}[];
+    }> => {
+        const response = await api.get(`/api/v1/plan-settings/version/${versionId}`);
+        return response.data;
+    },
+
+    /** Массовое обновление настроек плана. */
+    updateForVersion: async (
+        versionId: string,
+        settings: Record<string, any>,
+    ): Promise<any> => {
+        const response = await api.put(
+            `/api/v1/plan-settings/version/${versionId}`,
+            {settings},
+        );
+        return response.data;
+    },
+
+    /** Сброс настроек плана к глобальным app_settings. */
+    resetForVersion: async (versionId: string): Promise<any> => {
+        const response = await api.post(
+            `/api/v1/plan-settings/version/${versionId}/reset`,
+        );
+        return response.data;
+    },
+};
+
+// ==========================================
 // What-If API (Итерация 12)
 // ==========================================
 export const whatifApi = {
-    /** Список сценариев (с фильтром по статусу) */
     listScenarios: async (
         status?: import('../types').WhatIfStatus,
         limit: number = 100,
@@ -708,24 +771,18 @@ export const whatifApi = {
         const response = await api.get('/api/v1/whatif/scenarios', { params });
         return response.data;
     },
-
-    /** Один сценарий по ID */
     getScenario: async (
         id: string,
     ): Promise<import('../types').WhatIfScenario> => {
         const response = await api.get(`/api/v1/whatif/scenarios/${id}`);
         return response.data;
     },
-
-    /** Создать сценарий */
     createScenario: async (
         data: import('../types').WhatIfScenarioCreate,
     ): Promise<import('../types').WhatIfScenario> => {
         const response = await api.post('/api/v1/whatif/scenarios', data);
         return response.data;
     },
-
-    /** Обновить сценарий (только DRAFT) */
     updateScenario: async (
         id: string,
         data: import('../types').WhatIfScenarioUpdate,
@@ -736,22 +793,12 @@ export const whatifApi = {
         );
         return response.data;
     },
-
-    /** Удалить сценарий (DRAFT/FAILED) */
     deleteScenario: async (id: string): Promise<{ message: string }> => {
         const response = await api.delete(
             `/api/v1/whatif/scenarios/${id}`,
         );
         return response.data;
     },
-
-    /**
-     * Запустить сценарий.
-     *
-     * Итерация 12 (async): endpoint возвращает 202 Accepted сразу,
-     * расчёт идёт в фоне. Frontend поллит статус через getScenario().
-     * Время расчёта: 60–120 сек.
-     */
     runScenario: async (
         id: string,
         data?: import('../types').WhatIfRunRequest,
@@ -759,13 +806,10 @@ export const whatifApi = {
         const response = await api.post(
             `/api/v1/whatif/scenarios/${id}/run`,
             data || {},
-            // Долгий таймаут на случай, если backend всё же синхронный.
             { timeout: 300_000 },
         );
         return response.data;
     },
-
-    /** Сравнить сценарий с базовым планом */
     compareScenario: async (
         id: string,
     ): Promise<import('../types').WhatIfCompareResponse> => {
@@ -776,9 +820,12 @@ export const whatifApi = {
     },
 };
 
+// ==========================================
+// Audit API (Итерация 13.3)
+// ==========================================
 export const auditApi = {
     getLog: async (params?: {
-        sources?: string;       // "STOCK,LAB"
+        sources?: string;
         date_from?: string;
         date_to?: string;
         severity?: string;
@@ -788,12 +835,10 @@ export const auditApi = {
         const response = await api.get('/api/v1/audit/log', { params });
         return response.data;
     },
-
     getStats: async (days: number = 7): Promise<import('../types').AuditStatsResponse> => {
         const response = await api.get('/api/v1/audit/stats', { params: { days } });
         return response.data;
     },
-
     getSources: async (): Promise<{ sources: import('../types').AuditSourceInfo[] }> => {
         const response = await api.get('/api/v1/audit/sources');
         return response.data;

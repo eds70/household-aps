@@ -28,6 +28,12 @@ What-if сценарии для планировщика (Итерация 12).
       (session передаётся извне, saver не делает commit).
     - Обновляем статус сценария и result_version_id.
     - Commit.
+
+Итерация 13.14:
+  ProductionScheduler получает version_id=base_version_id, чтобы
+  прочитать plan_settings базового плана (а не глобальные app_settings).
+  Это гарантирует, что what-if использует ТЕ ЖЕ настройки, с которыми
+  был построен базовый план, — иначе сравнение метрик некорректно.
 """
 
 import logging
@@ -339,6 +345,11 @@ class WhatIfRunner:
         Итерация 12 (fix #2): убраны явные session.begin().
         В SQLAlchemy 2.0 async-сессия автоматически начинает транзакцию
         при первом execute(). Двойной begin() падает с InvalidRequestError.
+
+        Итерация 13.14: ProductionScheduler получает version_id=base_version_id,
+        чтобы прочитать plan_settings базового плана (а не глобальные
+        app_settings). Это гарантирует, что сравнение base vs result
+        использует одни и те же настройки.
         """
         import time
 
@@ -390,7 +401,6 @@ class WhatIfRunner:
                     f"{str(scenario_id)[:8]}: {e}",
                     stage="whatif_run", org_id=str(self.org_id),
                 )
-                # После ошибки — откатим, чтобы не остаться в странном состоянии.
                 try:
                     await self.session.rollback()
                 except Exception:
@@ -442,7 +452,7 @@ class WhatIfRunner:
             log_with_context(
                 logger, logging.INFO,
                 f"[Phase 1] scheduler: horizon={horizon_hours}ч, "
-                f"timeout={timeout_seconds}с",
+                f"timeout={timeout_seconds}с, base_version={str(base_version_id)[:8]}",
                 stage="whatif_run", org_id=str(self.org_id),
             )
 
@@ -452,11 +462,14 @@ class WhatIfRunner:
             # Итерация 12 (fix): передаём self.session, чтобы
             # DataLoader использовал ту же сессию и видел
             # незакоммиченные изменения из транзакции №1.
+            # Итерация 13.14: передаём version_id=base_version_id,
+            # чтобы прочитать plan_settings базового плана.
             scheduler = ProductionScheduler(
                 horizon_hours=horizon_hours,
                 timeout_seconds=timeout_seconds,
                 org_id=self.org_id,
-                session=self.session,   # ← НОВОЕ
+                session=self.session,
+                version_id=base_version_id,   # ← НОВОЕ (Итерация 13.14)
             )
             schedule_result = await scheduler.build_schedule()
 

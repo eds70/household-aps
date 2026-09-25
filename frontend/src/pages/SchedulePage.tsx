@@ -1,8 +1,9 @@
-// src/pages/SchedulePage.tsx
+// frontend/src/pages/SchedulePage.tsx
 import React, {useCallback, useEffect, useState} from 'react';
+import {useNavigate} from 'react-router-dom';
 import {type PlanVersion, usePlan} from '../context/PlainContext';
 import {AgGridReact} from 'ag-grid-react';
-import type {ColDef, GridReadyEvent} from 'ag-grid-community';
+import type {ColDef, GridReadyEvent, RowStyle} from 'ag-grid-community';
 import {AllCommunityModule, ModuleRegistry} from 'ag-grid-community';
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-alpine.css';
@@ -34,6 +35,7 @@ import {
 import {
     Add as AddIcon,
     Autorenew as RescheduleIcon,
+    Close as CloseIcon,
     Delete as DeleteIcon,
     Error as ErrorIcon,
     ExpandMore as ExpandMoreIcon,
@@ -42,6 +44,8 @@ import {
     PlayArrow as PlayIcon,
     Refresh as RefreshIcon,
     Save as SaveIcon,
+    Settings as SettingsIcon,
+    Timeline as TimelineIcon,
     Visibility as ViewIcon,
     Warning as WarningIcon,
 } from '@mui/icons-material';
@@ -49,6 +53,7 @@ import {Allotment} from 'allotment';
 import 'allotment/dist/style.css';
 import {advisorApi, rescheduleApi, scheduleApi, settingsApi} from '../services/api';
 import type {AdvisorResponse, AdvisorSeverity, RescheduleReason, RescheduleResponse,} from '../types';
+import PlanSettingsWizard from './PlanSettingsWizard';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -76,16 +81,13 @@ const SEVERITY_ICONS: Record<AdvisorSeverity, React.ReactNode> = {
     INFO: <InfoIcon fontSize="small" />,
 };
 
-// ==========================================
-// Дефолты (используются, если настройки ещё не созданы в БД)
-// ==========================================
 const DEFAULT_HORIZON_HOURS = 720;
 const DEFAULT_TIMEOUT_SECONDS = 600;
 
 const SchedulePage: React.FC = () => {
-    const { versions, setPlan, loadVersions, currentVersionId } = usePlan();
+    const { versions, setPlan, clearPlan, loadVersions, currentVersionId } = usePlan();
+    const navigate = useNavigate();
 
-    // Параметры расчёта — читаются из app_settings
     const [horizonHours, setHorizonHours] = useState<number>(DEFAULT_HORIZON_HOURS);
     const [solverTimeout, setSolverTimeout] = useState<number>(DEFAULT_TIMEOUT_SECONDS);
     const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -95,12 +97,10 @@ const SchedulePage: React.FC = () => {
     const [result, setResult] = useState<any>(null);
     const [error, setError] = useState<string | null>(null);
 
-    // Advisor
     const [advisorData, setAdvisorData] = useState<AdvisorResponse | null>(null);
     const [advisorLoading, setAdvisorLoading] = useState(false);
     const [advisorError, setAdvisorError] = useState<string | null>(null);
 
-    // Новый план
     const [newPlanDialogOpen, setNewPlanDialogOpen] = useState(false);
     const [newPlanForm, setNewPlanForm] = useState({
         name: '',
@@ -109,7 +109,6 @@ const SchedulePage: React.FC = () => {
     });
     const [creatingPlan, setCreatingPlan] = useState(false);
 
-    // Перепланирование
     const [rescheduleDialogOpen, setRescheduleDialogOpen] = useState(false);
     const [rescheduleForm, setRescheduleForm] = useState<{
         reason: RescheduleReason;
@@ -123,9 +122,10 @@ const SchedulePage: React.FC = () => {
     const [rescheduling, setRescheduling] = useState(false);
     const [rescheduleResult, setRescheduleResult] = useState<RescheduleResponse | null>(null);
 
-    // ==========================================
-    // Шаг 6: Загрузка настроек планирования из app_settings
-    // ==========================================
+    // Итерация 13.14: мастер настроек плана
+    const [wizardOpen, setWizardOpen] = useState(false);
+    const [wizardVersionId, setWizardVersionId] = useState<string | null>(null);
+
     const loadPlanningSettings = useCallback(async () => {
         try {
             const settings = await settingsApi.getCategory('planning');
@@ -136,16 +136,12 @@ const SchedulePage: React.FC = () => {
                 setSolverTimeout(settings.timeout_seconds);
             }
         } catch (err: any) {
-            // Если настройки ещё не созданы — используем дефолты
-            console.warn('[SchedulePage] Не удалось загрузить настройки planning, используются дефолты:', err);
+            console.warn('[SchedulePage] Не удалось загрузить настройки planning:', err);
         } finally {
             setSettingsLoaded(true);
         }
     }, []);
 
-    // ==========================================
-    // Шаг 6: Сохранение настроек в app_settings
-    // ==========================================
     const savePlanningSettings = useCallback(async (
         horizon: number,
         timeout: number,
@@ -159,8 +155,7 @@ const SchedulePage: React.FC = () => {
             return true;
         } catch (err: any) {
             const detail = err.response?.data?.detail;
-            const msg = typeof detail === 'string' ? detail : 'Ошибка сохранения настроек';
-            setError(msg);
+            setError(typeof detail === 'string' ? detail : 'Ошибка сохранения настроек');
             return false;
         } finally {
             setSettingsSaving(false);
@@ -181,8 +176,7 @@ const SchedulePage: React.FC = () => {
             setAdvisorData(data);
         } catch (err: any) {
             const detail = err.response?.data?.detail;
-            const errorMsg = typeof detail === 'string' ? detail : 'Ошибка загрузки подсказок';
-            setAdvisorError(errorMsg);
+            setAdvisorError(typeof detail === 'string' ? detail : 'Ошибка загрузки подсказок');
         } finally {
             setAdvisorLoading(false);
         }
@@ -193,10 +187,7 @@ const SchedulePage: React.FC = () => {
         setError(null);
         setResult(null);
         try {
-            // Шаг 6: сохраняем текущие параметры в app_settings ПЕРЕД расчётом.
-            // Так пользователь не забудет их сохранить.
             await savePlanningSettings(horizonHours, solverTimeout);
-
             const data = await scheduleApi.build({
                 horizon_hours: horizonHours,
                 timeout_seconds: solverTimeout,
@@ -219,10 +210,7 @@ const SchedulePage: React.FC = () => {
 
     const handleSaveSettings = async () => {
         const ok = await savePlanningSettings(horizonHours, solverTimeout);
-        if (ok) {
-            // Небольшая визуальная обратная связь
-            setError(null);
-        }
+        if (ok) setError(null);
     };
 
     const handleCreatePlan = async () => {
@@ -250,7 +238,7 @@ const SchedulePage: React.FC = () => {
         try {
             await scheduleApi.deleteVersion(version.id);
             if (currentVersionId === version.id) {
-                setPlan(null, "Режим редактирования");
+                clearPlan();
             }
             await loadVersions();
         } catch (err: any) {
@@ -260,9 +248,21 @@ const SchedulePage: React.FC = () => {
 
     const handleOpenPlan = (version: PlanVersion) => {
         setPlan(version.id, version.name);
+        navigate('/gantt');
     };
 
-    // ---------- Перепланирование ----------
+    const handleClosePlan = () => {
+        clearPlan();
+    };
+
+    // ============================================
+    // Итерация 13.14: открыть мастер настроек плана
+    // ============================================
+    const handleOpenWizard = (versionId: string) => {
+        setWizardVersionId(versionId);
+        setWizardOpen(true);
+    };
+
     const handleOpenReschedule = () => {
         if (!currentVersionId) {
             setError('Сначала откройте сохранённую версию плана');
@@ -325,24 +325,50 @@ const SchedulePage: React.FC = () => {
         },
         {
             headerName: 'Действия',
-            width: 140,
+            width: 220,
             editable: false,
             cellRenderer: (params: any) => {
                 const version = params.data as PlanVersion;
                 const isCurrent = version.id === currentVersionId;
                 return (
-                    <Box sx={{ display: 'flex', gap: 0.5 }}>
-                        <Tooltip title={isCurrent ? 'Текущий план' : 'Открыть план'}>
-                            <span>
+                    <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
+                        {isCurrent ? (
+                            <Tooltip title="Закрыть план (вернуться в режим редактирования)">
                                 <IconButton
                                     size="small"
-                                    color={isCurrent ? 'success' : 'primary'}
+                                    color="warning"
+                                    onClick={handleClosePlan}
+                                >
+                                    <CloseIcon fontSize="small" />
+                                </IconButton>
+                            </Tooltip>
+                        ) : (
+                            <Tooltip title="Открыть план (перейти на диаграмму Ганта)">
+                                <IconButton
+                                    size="small"
+                                    color="primary"
                                     onClick={() => handleOpenPlan(version)}
-                                    disabled={isCurrent}
                                 >
                                     <ViewIcon fontSize="small" />
                                 </IconButton>
-                            </span>
+                            </Tooltip>
+                        )}
+                        <Tooltip title="Открыть диаграмму Ганта (без смены активного плана)">
+                            <IconButton
+                                size="small"
+                                onClick={() => navigate(`/gantt?version_id=${version.id}`)}
+                            >
+                                <TimelineIcon fontSize="small" />
+                            </IconButton>
+                        </Tooltip>
+                        <Tooltip title="Настройки этого плана">
+                            <IconButton
+                                size="small"
+                                color="info"
+                                onClick={() => handleOpenWizard(version.id)}
+                            >
+                                <SettingsIcon fontSize="small" />
+                            </IconButton>
                         </Tooltip>
                         <Tooltip title="Удалить план">
                             <IconButton
@@ -359,9 +385,6 @@ const SchedulePage: React.FC = () => {
         },
     ];
 
-    // ==========================================
-    // Advisor Panel
-    // ==========================================
     const renderAdvisorPanel = () => {
         return (
             <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column', m: 0.5 }}>
@@ -453,9 +476,6 @@ const SchedulePage: React.FC = () => {
         );
     };
 
-    // ==========================================
-    // AgGrid Panel
-    // ==========================================
     const renderPlansGrid = () => {
         return (
             <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column', m: 0.5 }}>
@@ -465,6 +485,16 @@ const SchedulePage: React.FC = () => {
                         <Typography variant="h6" sx={{ fontWeight: 600, fontSize: '1rem' }}>
                             История планов ({versions.length})
                         </Typography>
+                        {currentVersionId && (
+                            <Chip
+                                icon={<TimelineIcon />}
+                                label="Один из планов открыт"
+                                size="small"
+                                color="info"
+                                variant="outlined"
+                                sx={{ ml: 'auto' }}
+                            />
+                        )}
                     </Box>
                     <Box className="ag-theme-alpine" sx={{ flexGrow: 1, width: '100%', minHeight: 0 }}>
                         <AgGridReact
@@ -472,11 +502,25 @@ const SchedulePage: React.FC = () => {
                             columnDefs={columnDefs}
                             defaultColDef={{ sortable: true, filter: true, resizable: true }}
                             onGridReady={(params: GridReadyEvent) => params.api.sizeColumnsToFit()}
-                            getRowStyle={(params: any) =>
-                                params.data?.id === currentVersionId
-                                    ? { backgroundColor: '#e3f2fd', fontWeight: 'bold' }
-                                    : undefined
-                            }
+                            getRowStyle={(params: any): RowStyle | undefined => {
+                                const isCurrent = params.data?.id === currentVersionId;
+                                const isActive = params.data?.is_active;
+                                if (isCurrent) {
+                                    return {
+                                        backgroundColor: '#e3f2fd',
+                                        fontWeight: 'bold',
+                                        borderLeft: '4px solid #1976d2',
+                                        color: '#0d47a1',
+                                    } as RowStyle;
+                                }
+                                if (isActive) {
+                                    return {
+                                        backgroundColor: '#f1f8e9',
+                                        color: '#33691e',
+                                    } as RowStyle;
+                                }
+                                return undefined;
+                            }}
                         />
                     </Box>
                 </CardContent>
@@ -484,12 +528,8 @@ const SchedulePage: React.FC = () => {
         );
     };
 
-    // ==========================================
-    // Основной рендер
-    // ==========================================
     return (
         <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-            {/* Заголовок */}
             <Box
                 sx={{
                     display: 'flex',
@@ -529,7 +569,6 @@ const SchedulePage: React.FC = () => {
                 </Alert>
             )}
 
-            {/* Параметры расчёта */}
             <Card sx={{ mb: 2, flexShrink: 0 }}>
                 <CardContent sx={{ py: 2, '&:last-child': { pb: 2 } }}>
                     <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
@@ -538,12 +577,7 @@ const SchedulePage: React.FC = () => {
                         </Typography>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                             {settingsLoaded && (
-                                <Chip
-                                    label="Из настроек"
-                                    size="small"
-                                    color="info"
-                                    variant="outlined"
-                                />
+                                <Chip label="Из настроек" size="small" color="info" variant="outlined" />
                             )}
                             <Button
                                 size="small"
@@ -597,7 +631,6 @@ const SchedulePage: React.FC = () => {
                 </CardContent>
             </Card>
 
-            {/* Allotment: Advisor сверху, планы снизу */}
             <Box sx={{ flexGrow: 1, minHeight: 0, mx: -0.5 }}>
                 <Allotment vertical defaultSizes={[30, 70]}>
                     <Allotment.Pane minSize={180} preferredSize="30%">
@@ -609,7 +642,6 @@ const SchedulePage: React.FC = () => {
                 </Allotment>
             </Box>
 
-            {/* ---------- Диалог нового плана ---------- */}
             <Dialog open={newPlanDialogOpen} onClose={() => setNewPlanDialogOpen(false)} maxWidth="sm" fullWidth>
                 <DialogTitle sx={{ fontWeight: 600 }}>Создать новый план</DialogTitle>
                 <DialogContent>
@@ -620,11 +652,12 @@ const SchedulePage: React.FC = () => {
                             value={newPlanForm.name}
                             onChange={(e) => setNewPlanForm({ ...newPlanForm, name: e.target.value })}
                         />
-                        <FormControl fullWidth>
+                        <FormControl fullWidth variant="outlined">
                             <InputLabel>Тип плана</InputLabel>
                             <Select
                                 value={newPlanForm.version_type}
                                 label="Тип плана"
+                                variant="outlined"
                                 onChange={(e) => setNewPlanForm({ ...newPlanForm, version_type: e.target.value })}
                             >
                                 <MenuItem value="MONTHLY">Месячный (ОКП)</MenuItem>
@@ -654,7 +687,6 @@ const SchedulePage: React.FC = () => {
                 </DialogActions>
             </Dialog>
 
-            {/* ---------- Диалог перепланирования ---------- */}
             <Dialog
                 open={rescheduleDialogOpen}
                 onClose={() => setRescheduleDialogOpen(false)}
@@ -669,11 +701,12 @@ const SchedulePage: React.FC = () => {
                                 Перепланирование создаст новую версию плана. Задачи до <b>frozen_before</b> и
                                 задачи с флагом <b>is_pinned</b> не будут двигаться.
                             </Alert>
-                            <FormControl fullWidth>
+                            <FormControl fullWidth variant="outlined">
                                 <InputLabel>Причина перепланирования</InputLabel>
                                 <Select
                                     value={rescheduleForm.reason}
                                     label="Причина перепланирования"
+                                    variant="outlined"
                                     onChange={(e) =>
                                         setRescheduleForm({ ...rescheduleForm, reason: e.target.value as RescheduleReason })
                                     }
@@ -745,6 +778,19 @@ const SchedulePage: React.FC = () => {
                     )}
                 </DialogActions>
             </Dialog>
+
+            {/* Итерация 13.14: мастер настроек плана */}
+            <PlanSettingsWizard
+                open={wizardOpen}
+                onClose={() => setWizardOpen(false)}
+                versionId={wizardVersionId}
+                onSaved={(vid, action) => {
+                    if (action === 'save-and-build') {
+                        setWizardOpen(false);
+                        navigate(`/gantt?version_id=${vid}`);
+                    }
+                }}
+            />
         </Box>
     );
 };

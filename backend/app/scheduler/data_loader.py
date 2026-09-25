@@ -11,6 +11,8 @@
 Итерация 12: order_due_date в batch (для tardiness).
 Итерация 12 (fix): опциональная session — для what-if сценариев
   (чтобы DataLoader видел незакоммиченные изменения).
+Итерация 13.14: опциональный version_id — настройки читаются из
+  plan_settings конкретного плана, а не из глобальных app_settings.
 """
 
 from typing import List, Dict, Any, Optional
@@ -24,6 +26,9 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
+from .logging_config import setup_scheduler_logging, log_with_context
+
+logger = setup_scheduler_logging(level=__import__("logging").INFO)
 
 
 class DataLoader:
@@ -31,27 +36,28 @@ class DataLoader:
             self,
             org_id: UUID,
             session: Optional[AsyncSession] = None,
+            version_id: Optional[UUID] = None,
     ):
         """
         Итерация 12 (fix): опциональная session.
+        Итерация 13.14: опциональный version_id.
 
         Args:
             org_id: UUID организации.
-            session: если передана — используем её (для what-if).
+            session: если передана — используем её (для what-if, plan_settings).
                      Если None — создаём свою (обратная совместимость).
+            version_id: если задан — настройки читаются из plan_settings
+                        этого плана. Если None — из глобальных app_settings.
         """
         self.org_id = org_id
+        self.version_id = version_id
 
         if session is not None:
-            # Итерация 12 (fix): используем переданную сессию.
-            # Это позволяет what-if сценариям видеть незакоммиченные
-            # изменения из транзакции №1.
             self.session = session
             self.engine = None
             self._session_maker = None
             self._owns_session = False
         else:
-            # Обратная совместимость: создаём свою сессию.
             self.engine = create_async_engine(
                 settings.DATABASE_URL, echo=False
             )
@@ -64,12 +70,7 @@ class DataLoader:
             self._owns_session = True
 
     async def load_all(self) -> Dict[str, Any]:
-        """
-        Загружает все данные.
-
-        Итерация 12 (fix): если session передана извне — используем её.
-        Иначе — открываем свою.
-        """
+        """Загружает все данные."""
         if self._owns_session:
             async with self._session_maker() as session:
                 return await self._load_all_with_session(session)
@@ -81,9 +82,6 @@ class DataLoader:
     ) -> Dict[str, Any]:
         """Внутренняя логика загрузки с переданной сессией."""
         return {
-            # ==========================================
-            # Основные справочники
-            # ==========================================
             "batches": await self._load_batches(session),
             "equipment": await self._load_equipment(session),
             "products": await self._load_products(session),
@@ -108,12 +106,7 @@ class DataLoader:
     # ==========================================
 
     async def _load_batches(self, session) -> List[Dict]:
-        """
-        Загружает партии.
-
-        Итерация 5: + lab_status, is_lab_blocked.
-        Итерация 12: + order_due_date.
-        """
+        """Загружает партии."""
         result = await session.execute(
             text("""
                 SELECT b.id, b.product_id, b.volume_kg, b.assigned_equipment_id,
@@ -222,6 +215,41 @@ class DataLoader:
         return [dict(row._mapping) for row in result.fetchall()]
 
     async def _load_app_settings(self, session) -> Dict[str, Any]:
+        """
+        Итерация 13.14: если version_id задан — читаем из plan_settings.
+        Иначе — из app_settings.
+
+        Приоритет:
+          1. Если version_id задан → plan_settings этого плана.
+          2. Если plan_settings пуст → app_settings (fallback).
+          3. Если version_id не задан → app_settings.
+        """
+        if self.version_id is not None:
+            result = await session.execute(
+                text("""
+                    SELECT setting_key, setting_value
+                    FROM plan_settings
+                    WHERE organization_id = :org_id
+                      AND schedule_version_id = :version_id
+                """),
+                {"org_id": self.org_id, "version_id": self.version_id},
+            )
+            settings_dict = {
+                row.setting_key: row.setting_value
+                for row in result.fetchall()
+            }
+            if settings_dict:
+                return settings_dict
+
+            # Fallback: у плана нет plan_settings (старый план) → app_settings
+            log_with_context(
+                logger, __import__("logging").WARNING,
+                f"У плана {self.version_id} нет plan_settings — "
+                f"используем глобальные app_settings",
+                stage="load", org_id=str(self.org_id),
+            )
+
+        # Глобальные app_settings
         result = await session.execute(
             text("""
                 SELECT setting_key, setting_value
