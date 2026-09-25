@@ -1,21 +1,34 @@
 // src/pages/OperationsPage.tsx
-import React, { useState, useEffect } from 'react';
+import React, {useEffect, useState} from 'react';
 import {
-    Box, Button, Card, CardContent, Dialog, DialogActions,
-    DialogContent, DialogTitle, FormControl, InputLabel,
-    MenuItem, Select, TextField, Typography, IconButton,
-    CircularProgress, Alert, Chip, FormControlLabel, Checkbox,
+    Alert,
+    Box,
+    Button,
+    Card,
+    CardContent,
+    Checkbox,
+    Chip,
+    CircularProgress,
+    FormControl,
+    FormControlLabel,
+    IconButton,
+    InputLabel,
+    MenuItem,
+    Select,
+    TextField,
+    Typography,
 } from '@mui/material';
-import { Add as AddIcon, Delete as DeleteIcon, Lock as LockIcon } from '@mui/icons-material';
-import { AgGridReact } from 'ag-grid-react';
-import { ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
+import {Add as AddIcon, Delete as DeleteIcon, Lock as LockIcon} from '@mui/icons-material';
+import {AgGridReact} from 'ag-grid-react';
+import type {ColDef, GridReadyEvent} from 'ag-grid-community';
+import {AllCommunityModule, ModuleRegistry} from 'ag-grid-community';
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-alpine.css';
-import type { ColDef, GridReadyEvent } from 'ag-grid-community';
-import type { Operation, ProductOption } from '../types';
+import type {Operation, ProductOption} from '../types';
 import axios from 'axios';
-import { API_BASE_URL } from '../config';
-import { usePlan } from '../context/PlainContext';
+import {API_BASE_URL} from '../config';
+import {usePlan} from '../context/PlainContext';
+import DraggableDialog from '../components/common/DraggableDialog';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -45,7 +58,6 @@ const OperationsPage: React.FC = () => {
         setLoading(true);
         setError(null);
         try {
-            // ✅ Передаем version_id если выбран план
             const params = currentVersionId ? { version_id: currentVersionId } : {};
             const [opsRes, prodRes] = await Promise.all([
                 axios.get(`${API_BASE_URL}/api/v1/operations/`, { params }),
@@ -224,59 +236,66 @@ const OperationsPage: React.FC = () => {
 
             {/* Диалог добавления (только для режима редактирования) */}
             {!isReadOnly && (
-                <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="md" fullWidth>
-                    <DialogTitle sx={{ fontWeight: 600 }}>Добавить операцию</DialogTitle>
-                    <DialogContent>
-                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
-                            <Box sx={{ display: 'flex', gap: 2 }}>
-                                <FormControl fullWidth>
-                                    <InputLabel>Продукт (ПФ)</InputLabel>
-                                    <Select value={formData.product_id} label="Продукт (ПФ)" onChange={(e) => setFormData({ ...formData, product_id: e.target.value })}>
-                                        {products.map((p) => (
-                                            <MenuItem key={p.id} value={p.id}>{p.code} - {p.name}</MenuItem>
-                                        ))}
-                                    </Select>
-                                </FormControl>
-                                <TextField label="№ этапа" type="number" fullWidth value={formData.stage_order} onChange={(e) => setFormData({ ...formData, stage_order: Number(e.target.value) })} />
-                            </Box>
-                            <TextField label="Наименование операции" fullWidth value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} />
-                            <Box sx={{ display: 'flex', gap: 2 }}>
-                                <TextField label="Длительность (мин)" type="number" fullWidth value={formData.base_duration_mins} onChange={(e) => setFormData({ ...formData, base_duration_mins: Number(e.target.value) })} />
-                                <FormControl fullWidth>
-                                    <InputLabel>Формула расчёта</InputLabel>
-                                    <Select value={formData.duration_formula || ''} label="Формула расчёта" onChange={(e) => setFormData({ ...formData, duration_formula: e.target.value })}>
-                                        <MenuItem value="">— Не выбрана —</MenuItem>
-                                        <MenuItem value="water_loading">Загрузка воды</MenuItem>
-                                        <MenuItem value="heating">Нагрев</MenuItem>
-                                        <MenuItem value="mixing">Перемешивание</MenuItem>
-                                        <MenuItem value="cooling">Охлаждение</MenuItem>
-                                        <MenuItem value="pumping">Перекачка</MenuItem>
-                                        <MenuItem value="washing">Промывка</MenuItem>
-                                    </Select>
-                                </FormControl>
-                            </Box>
-                            <Typography variant="subtitle2" sx={{ mt: 1 }}>Ресурсы:</Typography>
-                            <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-                                <FormControlLabel control={<Checkbox checked={formData.needs_boiler || false} onChange={(e) => setFormData({ ...formData, needs_boiler: e.target.checked })} />} label="Бойлер" />
-                                <FormControlLabel control={<Checkbox checked={formData.needs_cooling_zone || false} onChange={(e) => setFormData({ ...formData, needs_cooling_zone: e.target.checked })} />} label="Зона охлаждения" />
-                                <FormControlLabel control={<Checkbox checked={formData.needs_operator || false} onChange={(e) => setFormData({ ...formData, needs_operator: e.target.checked })} />} label="Оператор" />
-                                <FormControlLabel control={<Checkbox checked={formData.needs_lab || false} onChange={(e) => setFormData({ ...formData, needs_lab: e.target.checked })} />} label="Лаборант" />
-                            </Box>
-                            <Box sx={{ display: 'flex', gap: 2 }}>
-                                <FormControlLabel control={<Checkbox checked={formData.is_setup || false} onChange={(e) => setFormData({ ...formData, is_setup: e.target.checked })} />} label="Это замывка/переналадка" />
-                                <FormControlLabel control={<Checkbox checked={formData.is_parallel_group || false} onChange={(e) => setFormData({ ...formData, is_parallel_group: e.target.checked })} />} label="Параллельная группа" />
-                            </Box>
-                            {formData.is_parallel_group && (
-                                <TextField label="ID параллельной группы" fullWidth value={formData.parallel_group_id || ''} onChange={(e) => setFormData({ ...formData, parallel_group_id: e.target.value })} helperText="Например: GROUP1, GROUP2" />
-                            )}
-                            <TextField label="Комментарий" fullWidth multiline rows={2} value={formData.comment || ''} onChange={(e) => setFormData({ ...formData, comment: e.target.value })} />
+                <DraggableDialog
+                    open={dialogOpen}
+                    onClose={() => setDialogOpen(false)}
+                    title="Добавить операцию"
+                    initialWidth={800}
+                    initialHeight="auto"
+                    minWidth={480}
+                    minHeight={400}
+                    actions={
+                        <>
+                            <Button onClick={() => setDialogOpen(false)}>Отмена</Button>
+                            <Button onClick={handleSave} variant="contained">Сохранить</Button>
+                        </>
+                    }
+                >
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        <Box sx={{ display: 'flex', gap: 2 }}>
+                            <FormControl fullWidth>
+                                <InputLabel>Продукт (ПФ)</InputLabel>
+                                <Select value={formData.product_id} label="Продукт (ПФ)" onChange={(e) => setFormData({ ...formData, product_id: e.target.value })}>
+                                    {products.map((p) => (
+                                        <MenuItem key={p.id} value={p.id}>{p.code} - {p.name}</MenuItem>
+                                    ))}
+                                </Select>
+                            </FormControl>
+                            <TextField label="№ этапа" type="number" fullWidth value={formData.stage_order} onChange={(e) => setFormData({ ...formData, stage_order: Number(e.target.value) })} />
                         </Box>
-                    </DialogContent>
-                    <DialogActions>
-                        <Button onClick={() => setDialogOpen(false)}>Отмена</Button>
-                        <Button onClick={handleSave} variant="contained">Сохранить</Button>
-                    </DialogActions>
-                </Dialog>
+                        <TextField label="Наименование операции" fullWidth value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} />
+                        <Box sx={{ display: 'flex', gap: 2 }}>
+                            <TextField label="Длительность (мин)" type="number" fullWidth value={formData.base_duration_mins} onChange={(e) => setFormData({ ...formData, base_duration_mins: Number(e.target.value) })} />
+                            <FormControl fullWidth>
+                                <InputLabel>Формула расчёта</InputLabel>
+                                <Select value={formData.duration_formula || ''} label="Формула расчёта" onChange={(e) => setFormData({ ...formData, duration_formula: e.target.value })}>
+                                    <MenuItem value="">— Не выбрана —</MenuItem>
+                                    <MenuItem value="water_loading">Загрузка воды</MenuItem>
+                                    <MenuItem value="heating">Нагрев</MenuItem>
+                                    <MenuItem value="mixing">Перемешивание</MenuItem>
+                                    <MenuItem value="cooling">Охлаждение</MenuItem>
+                                    <MenuItem value="pumping">Перекачка</MenuItem>
+                                    <MenuItem value="washing">Промывка</MenuItem>
+                                </Select>
+                            </FormControl>
+                        </Box>
+                        <Typography variant="subtitle2" sx={{ mt: 1 }}>Ресурсы:</Typography>
+                        <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+                            <FormControlLabel control={<Checkbox checked={formData.needs_boiler || false} onChange={(e) => setFormData({ ...formData, needs_boiler: e.target.checked })} />} label="Бойлер" />
+                            <FormControlLabel control={<Checkbox checked={formData.needs_cooling_zone || false} onChange={(e) => setFormData({ ...formData, needs_cooling_zone: e.target.checked })} />} label="Зона охлаждения" />
+                            <FormControlLabel control={<Checkbox checked={formData.needs_operator || false} onChange={(e) => setFormData({ ...formData, needs_operator: e.target.checked })} />} label="Оператор" />
+                            <FormControlLabel control={<Checkbox checked={formData.needs_lab || false} onChange={(e) => setFormData({ ...formData, needs_lab: e.target.checked })} />} label="Лаборант" />
+                        </Box>
+                        <Box sx={{ display: 'flex', gap: 2 }}>
+                            <FormControlLabel control={<Checkbox checked={formData.is_setup || false} onChange={(e) => setFormData({ ...formData, is_setup: e.target.checked })} />} label="Это замывка/переналадка" />
+                            <FormControlLabel control={<Checkbox checked={formData.is_parallel_group || false} onChange={(e) => setFormData({ ...formData, is_parallel_group: e.target.checked })} />} label="Параллельная группа" />
+                        </Box>
+                        {formData.is_parallel_group && (
+                            <TextField label="ID параллельной группы" fullWidth value={formData.parallel_group_id || ''} onChange={(e) => setFormData({ ...formData, parallel_group_id: e.target.value })} helperText="Например: GROUP1, GROUP2" />
+                        )}
+                        <TextField label="Комментарий" fullWidth multiline rows={2} value={formData.comment || ''} onChange={(e) => setFormData({ ...formData, comment: e.target.value })} />
+                    </Box>
+                </DraggableDialog>
             )}
         </Box>
     );

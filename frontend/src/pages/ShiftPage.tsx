@@ -12,10 +12,6 @@ import {
     CardContent,
     Chip,
     CircularProgress,
-    Dialog,
-    DialogActions,
-    DialogContent,
-    DialogTitle,
     Divider,
     FormControl,
     IconButton,
@@ -55,6 +51,7 @@ import type {
     ShiftTaskStatus,
     TaskFactRequest,
 } from '../types';
+import DraggableDialog from '../components/common/DraggableDialog';
 
 // ==========================================
 // КОНСТАНТЫ
@@ -120,9 +117,6 @@ const ShiftPage: React.FC = () => {
         new Date().toISOString().split('T')[0]
     );
 
-    // ==========================================
-    // Итерация 11: список смен дня + выбранная смена
-    // ==========================================
     const [shiftsOfDay, setShiftsOfDay] = useState<Shift[]>([]);
     const [selectedShiftId, setSelectedShiftId] = useState<string | null>(null);
     const [currentShift, setCurrentShift] = useState<Shift | null>(null);
@@ -161,7 +155,6 @@ const ShiftPage: React.FC = () => {
         setLoading(true);
         setError(null);
         try {
-            // 1. Загружаем ВСЕ смены за день
             const shifts = await shiftApi.getByDate(dateStr);
 
             if (!shifts || shifts.length === 0) {
@@ -175,9 +168,6 @@ const ShiftPage: React.FC = () => {
 
             setShiftsOfDay(shifts);
 
-            // 2. Выбираем смену:
-            //    - если передан shiftIdToSelect — его
-            //    - иначе — первую рабочую, либо первую из списка
             let shift: Shift;
             if (shiftIdToSelect) {
                 shift = shifts.find((s) => s.id === shiftIdToSelect) || shifts[0];
@@ -188,11 +178,9 @@ const ShiftPage: React.FC = () => {
             setSelectedShiftId(shift.id);
             setCurrentShift(shift);
 
-            // 3. Загружаем задачи выбранной смены
             const tasks = await shiftApi.getTasks(shift.id);
             setTasksData(tasks);
 
-            // 4. Итерация 8: подгружаем прогресс ЧЗ
             await loadCzProgressForTasks(tasks);
         } catch (err: any) {
             const detail = err.response?.data?.detail;
@@ -245,16 +233,10 @@ const ShiftPage: React.FC = () => {
         }
     };
 
-    // ==========================================
-    // Первичная загрузка и загрузка при смене даты
-    // ==========================================
     useEffect(() => {
         loadShift(selectedDate);
     }, [selectedDate, loadShift]);
 
-    // ==========================================
-    // Итерация 11: смена выбранной смены
-    // ==========================================
     const handleShiftChange = async (newShiftId: string) => {
         setSelectedShiftId(newShiftId);
         const shift = shiftsOfDay.find((s) => s.id === newShiftId);
@@ -271,9 +253,6 @@ const ShiftPage: React.FC = () => {
         }
     };
 
-    // ==========================================
-    // Обработчики задач
-    // ==========================================
     const handleOpenFactDialog = (task: ShiftTask) => {
         setSelectedTask(task);
         setFactForm({
@@ -333,9 +312,6 @@ const ShiftPage: React.FC = () => {
         }
     };
 
-    // ==========================================
-    // Итерация 5: блокировка
-    // ==========================================
     const handleOpenBlockDialog = (task: ShiftTask) => {
         if (!task.batch_id) {
             setError('Задача не привязана к партии');
@@ -397,9 +373,6 @@ const ShiftPage: React.FC = () => {
         }
     };
 
-    // ==========================================
-    // Итерация 8: рендер прогресса ЧЗ
-    // ==========================================
     const renderCzProgress = (task: ShiftTask) => {
         if (task.task_role !== 'LINE_FILL' || !task.batch_id) return null;
 
@@ -445,9 +418,6 @@ const ShiftPage: React.FC = () => {
         );
     };
 
-    // ==========================================
-    // Рендер задачи
-    // ==========================================
     const renderTask = (task: ShiftTask) => {
         const startTime = new Date(task.planned_start).toLocaleTimeString('ru-RU', {
             hour: '2-digit', minute: '2-digit',
@@ -650,9 +620,6 @@ const ShiftPage: React.FC = () => {
         );
     };
 
-    // ==========================================
-    // Рендер
-    // ==========================================
     return (
         <Box sx={{height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0}}>
             {/* ====== ФИКСИРОВАННАЯ ШАПКА ====== */}
@@ -672,7 +639,6 @@ const ShiftPage: React.FC = () => {
                         </Typography>
                     </Box>
                     <Box sx={{display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap'}}>
-                        {/* Итерация 11: селектор смены */}
                         {shiftsOfDay.length > 0 && (
                             <FormControl size="small" sx={{minWidth: 260}}>
                                 <InputLabel>Смена</InputLabel>
@@ -772,7 +738,6 @@ const ShiftPage: React.FC = () => {
                 )}
             </Box>
 
-            {/* ====== ПРОКРУЧИВАЕМЫЙ СПИСОК ЗАДАЧ ====== */}
             {!loading && currentShift && tasksData && (
                 <Box sx={{flexGrow: 1, minHeight: 0, overflow: 'auto', pr: 1}}>
                     {tasksData.groups.length === 0 ? (
@@ -840,207 +805,218 @@ const ShiftPage: React.FC = () => {
                 </Card>
             )}
 
-            {/* ====== ДИАЛОГИ ====== */}
-
-            {/* Диалог внесения факта */}
-            <Dialog open={editDialogOpen} onClose={() => setEditDialogOpen(false)} maxWidth="sm" fullWidth>
-                <DialogTitle sx={{fontWeight: 600}}>
-                    {selectedTask && `${selectedTask.operation_name} — внести факт`}
-                </DialogTitle>
-                <DialogContent>
-                    {selectedTask && (
-                        <Box sx={{display: 'flex', flexDirection: 'column', gap: 2, mt: 1}}>
-                            <Box>
-                                <Typography variant="body2" color="text.secondary">
-                                    <b>Продукт:</b> {selectedTask.product_code} — {selectedTask.product_name}<br/>
-                                    <b>Оборудование:</b> {selectedTask.equipment_name}
-                                    {selectedTask.linked_equipment_name && ` + ${selectedTask.linked_equipment_name}`}<br/>
-                                    <b>План:</b> {new Date(selectedTask.planned_start).toLocaleString('ru-RU')} — {new Date(selectedTask.planned_end).toLocaleString('ru-RU')}
-                                </Typography>
-                                {selectedTask.cooling_mode && (
-                                    <Alert
-                                        severity={selectedTask.cooling_mode === 'slow' ? 'warning' : 'info'}
-                                        sx={{mt: 1}}
-                                        icon={selectedTask.cooling_mode === 'slow' ? <HourglassIcon/> : <AcUnitIcon/>}
-                                    >
-                                        <Typography variant="caption">
-                                            {selectedTask.cooling_mode === 'slow'
-                                                ? 'Режим охлаждения: замедленный (×1.3) — зона охлаждения была перегружена.'
-                                                : 'Режим охлаждения: обычный.'}
-                                        </Typography>
-                                    </Alert>
-                                )}
-                                {selectedTask.task_role === 'LINE_FILL' && selectedTask.batch_id && czProgress[selectedTask.batch_id] && (
-                                    <Alert severity="info" sx={{mt: 1}} icon={<QrCodeScannerIcon/>}>
-                                        <Typography variant="caption">
-                                            <b>ЧЗ:</b> {CZ_STATUS_LABELS[czProgress[selectedTask.batch_id].cz_status]}
-                                            {' — '}
-                                            {czProgress[selectedTask.batch_id].marked_qty.toFixed(0)}
-                                            {czProgress[selectedTask.batch_id].planned_qty
-                                                ? ` из ${czProgress[selectedTask.batch_id].planned_qty!.toFixed(0)}`
-                                                : ''}
-                                            {' '}({czProgress[selectedTask.batch_id].progress_percent.toFixed(0)}%)
-                                        </Typography>
-                                    </Alert>
-                                )}
-                            </Box>
-
-                            <Divider/>
-
-                            <TextField
-                                label="Факт. начало"
-                                type="datetime-local"
-                                fullWidth
-                                value={factForm.actual_start?.slice(0, 16) || ''}
-                                onChange={(e) => setFactForm({...factForm, actual_start: e.target.value ? new Date(e.target.value).toISOString() : undefined})}
-                                slotProps={{inputLabel: {shrink: true}}}
-                            />
-
-                            <TextField
-                                label="Факт. окончание"
-                                type="datetime-local"
-                                fullWidth
-                                value={factForm.actual_end?.slice(0, 16) || ''}
-                                onChange={(e) => setFactForm({...factForm, actual_end: e.target.value ? new Date(e.target.value).toISOString() : undefined})}
-                                slotProps={{inputLabel: {shrink: true}}}
-                            />
-
-                            <TextField
-                                label="Загрузка сырья в реактор"
-                                type="datetime-local"
-                                fullWidth
-                                value={factForm.material_load_at?.slice(0, 16) || ''}
-                                onChange={(e) => setFactForm({...factForm, material_load_at: e.target.value ? new Date(e.target.value).toISOString() : undefined})}
-                                slotProps={{inputLabel: {shrink: true}}}
-                            />
-
-                            <TextField
-                                label="Факт. количество (бутылок)"
-                                type="number"
-                                fullWidth
-                                value={factForm.actual_qty || ''}
-                                onChange={(e) => setFactForm({...factForm, actual_qty: e.target.value ? Number(e.target.value) : undefined})}
-                            />
-
-                            <FormControl fullWidth variant="outlined">
-                                <InputLabel>Статус</InputLabel>
-                                <Select
-                                    value={factForm.status || 'PLANNED'}
-                                    label="Статус"
-                                    variant="outlined"
-                                    onChange={(e) => setFactForm({...factForm, status: e.target.value as ShiftTaskStatus})}
+            {/* Диалог внесения факта (DraggableDialog) */}
+            <DraggableDialog
+                open={editDialogOpen}
+                onClose={() => setEditDialogOpen(false)}
+                title={selectedTask ? `${selectedTask.operation_name} — внести факт` : 'Внести факт'}
+                initialWidth={600}
+                initialHeight="auto"
+                minWidth={480}
+                minHeight={400}
+                actions={
+                    <>
+                        <Button onClick={() => setEditDialogOpen(false)}>Отмена</Button>
+                        <Button onClick={handleSaveFact} variant="contained" startIcon={<SaveIcon/>}>
+                            Сохранить
+                        </Button>
+                    </>
+                }
+            >
+                {selectedTask && (
+                    <Box sx={{display: 'flex', flexDirection: 'column', gap: 2}}>
+                        <Box>
+                            <Typography variant="body2" color="text.secondary">
+                                <b>Продукт:</b> {selectedTask.product_code} — {selectedTask.product_name}<br/>
+                                <b>Оборудование:</b> {selectedTask.equipment_name}
+                                {selectedTask.linked_equipment_name && ` + ${selectedTask.linked_equipment_name}`}<br/>
+                                <b>План:</b> {new Date(selectedTask.planned_start).toLocaleString('ru-RU')} — {new Date(selectedTask.planned_end).toLocaleString('ru-RU')}
+                            </Typography>
+                            {selectedTask.cooling_mode && (
+                                <Alert
+                                    severity={selectedTask.cooling_mode === 'slow' ? 'warning' : 'info'}
+                                    sx={{mt: 1}}
+                                    icon={selectedTask.cooling_mode === 'slow' ? <HourglassIcon/> : <AcUnitIcon/>}
                                 >
-                                    <MenuItem value="PLANNED">Запланировано</MenuItem>
-                                    <MenuItem value="IN_PROGRESS">В работе</MenuItem>
-                                    <MenuItem value="DONE">Выполнено</MenuItem>
-                                    <MenuItem value="CANCELLED">Отменено</MenuItem>
-                                </Select>
-                            </FormControl>
-                        </Box>
-                    )}
-                </DialogContent>
-                <DialogActions>
-                    <Button onClick={() => setEditDialogOpen(false)}>Отмена</Button>
-                    <Button onClick={handleSaveFact} variant="contained" startIcon={<SaveIcon/>}>
-                        Сохранить
-                    </Button>
-                </DialogActions>
-            </Dialog>
-
-            {/* Диалог блокировки */}
-            <Dialog open={blockDialogOpen} onClose={() => setBlockDialogOpen(false)} maxWidth="sm" fullWidth>
-                <DialogTitle sx={{fontWeight: 600, display: 'flex', alignItems: 'center', gap: 1}}>
-                    <LockIcon color="error"/>
-                    Заблокировать партию лабораторией
-                </DialogTitle>
-                <DialogContent>
-                    {blockingTask && (
-                        <Box sx={{display: 'flex', flexDirection: 'column', gap: 2, mt: 1}}>
-                            <Alert severity="warning">
-                                Партия <b>{blockingTask.batch_name || blockingTask.batch_id?.substring(0, 8)}</b>{' '}
-                                ({blockingTask.product_name}) не будет участвовать в дальнейшем
-                                планировании до разблокировки.
-                            </Alert>
-
-                            <TextField
-                                label="Причина блокировки"
-                                fullWidth
-                                required
-                                multiline
-                                rows={2}
-                                value={blockReason}
-                                onChange={(e) => setBlockReason(e.target.value)}
-                                placeholder="Например: не соответствует вязкость, pH вне нормы..."
-                            />
-
-                            <TextField
-                                label="Комментарий (опционально)"
-                                fullWidth
-                                multiline
-                                rows={2}
-                                value={blockComment}
-                                onChange={(e) => setBlockComment(e.target.value)}
-                            />
-                        </Box>
-                    )}
-                </DialogContent>
-                <DialogActions>
-                    <Button onClick={() => setBlockDialogOpen(false)}>Отмена</Button>
-                    <Button
-                        onClick={handleDoBlock}
-                        variant="contained"
-                        color="error"
-                        disabled={blockBusy || blockReason.trim().length < 3}
-                        startIcon={<LockIcon/>}
-                    >
-                        {blockBusy ? 'Блокировка...' : 'Заблокировать'}
-                    </Button>
-                </DialogActions>
-            </Dialog>
-
-            {/* Диалог разблокировки */}
-            <Dialog open={unblockDialogOpen} onClose={() => setUnblockDialogOpen(false)} maxWidth="sm" fullWidth>
-                <DialogTitle sx={{fontWeight: 600, display: 'flex', alignItems: 'center', gap: 1}}>
-                    <LockOpenIcon color="success"/>
-                    Разблокировать партию
-                </DialogTitle>
-                <DialogContent>
-                    {unblockingTask && (
-                        <Box sx={{display: 'flex', flexDirection: 'column', gap: 2, mt: 1}}>
-                            <Alert severity="info">
-                                Партия <b>{unblockingTask.batch_name || unblockingTask.batch_id?.substring(0, 8)}</b>{' '}
-                                будет снова участвовать в планировании.
-                            </Alert>
-
-                            {unblockingTask.lab_block_reason && (
-                                <Alert severity="error">
-                                    <b>Причина блокировки:</b> {unblockingTask.lab_block_reason}
+                                    <Typography variant="caption">
+                                        {selectedTask.cooling_mode === 'slow'
+                                            ? 'Режим охлаждения: замедленный (×1.3) — зона охлаждения была перегружена.'
+                                            : 'Режим охлаждения: обычный.'}
+                                    </Typography>
                                 </Alert>
                             )}
-
-                            <TextField
-                                label="Комментарий (опционально)"
-                                fullWidth
-                                multiline
-                                rows={2}
-                                value={unblockComment}
-                                onChange={(e) => setUnblockComment(e.target.value)}
-                            />
+                            {selectedTask.task_role === 'LINE_FILL' && selectedTask.batch_id && czProgress[selectedTask.batch_id] && (
+                                <Alert severity="info" sx={{mt: 1}} icon={<QrCodeScannerIcon/>}>
+                                    <Typography variant="caption">
+                                        <b>ЧЗ:</b> {CZ_STATUS_LABELS[czProgress[selectedTask.batch_id].cz_status]}
+                                        {' — '}
+                                        {czProgress[selectedTask.batch_id].marked_qty.toFixed(0)}
+                                        {czProgress[selectedTask.batch_id].planned_qty
+                                            ? ` из ${czProgress[selectedTask.batch_id].planned_qty!.toFixed(0)}`
+                                            : ''}
+                                        {' '}({czProgress[selectedTask.batch_id].progress_percent.toFixed(0)}%)
+                                    </Typography>
+                                </Alert>
+                            )}
                         </Box>
-                    )}
-                </DialogContent>
-                <DialogActions>
-                    <Button onClick={() => setUnblockDialogOpen(false)}>Отмена</Button>
-                    <Button
-                        onClick={handleDoUnblock}
-                        variant="contained"
-                        color="success"
-                        startIcon={<LockOpenIcon/>}
-                    >
-                        Разблокировать
-                    </Button>
-                </DialogActions>
-            </Dialog>
+
+                        <Divider/>
+
+                        <TextField
+                            label="Факт. начало"
+                            type="datetime-local"
+                            fullWidth
+                            value={factForm.actual_start?.slice(0, 16) || ''}
+                            onChange={(e) => setFactForm({...factForm, actual_start: e.target.value ? new Date(e.target.value).toISOString() : undefined})}
+                            slotProps={{inputLabel: {shrink: true}}}
+                        />
+
+                        <TextField
+                            label="Факт. окончание"
+                            type="datetime-local"
+                            fullWidth
+                            value={factForm.actual_end?.slice(0, 16) || ''}
+                            onChange={(e) => setFactForm({...factForm, actual_end: e.target.value ? new Date(e.target.value).toISOString() : undefined})}
+                            slotProps={{inputLabel: {shrink: true}}}
+                        />
+
+                        <TextField
+                            label="Загрузка сырья в реактор"
+                            type="datetime-local"
+                            fullWidth
+                            value={factForm.material_load_at?.slice(0, 16) || ''}
+                            onChange={(e) => setFactForm({...factForm, material_load_at: e.target.value ? new Date(e.target.value).toISOString() : undefined})}
+                            slotProps={{inputLabel: {shrink: true}}}
+                        />
+
+                        <TextField
+                            label="Факт. количество (бутылок)"
+                            type="number"
+                            fullWidth
+                            value={factForm.actual_qty || ''}
+                            onChange={(e) => setFactForm({...factForm, actual_qty: e.target.value ? Number(e.target.value) : undefined})}
+                        />
+
+                        <FormControl fullWidth variant="outlined">
+                            <InputLabel>Статус</InputLabel>
+                            <Select
+                                value={factForm.status || 'PLANNED'}
+                                label="Статус"
+                                variant="outlined"
+                                onChange={(e) => setFactForm({...factForm, status: e.target.value as ShiftTaskStatus})}
+                            >
+                                <MenuItem value="PLANNED">Запланировано</MenuItem>
+                                <MenuItem value="IN_PROGRESS">В работе</MenuItem>
+                                <MenuItem value="DONE">Выполнено</MenuItem>
+                                <MenuItem value="CANCELLED">Отменено</MenuItem>
+                            </Select>
+                        </FormControl>
+                    </Box>
+                )}
+            </DraggableDialog>
+
+            {/* Диалог блокировки (DraggableDialog) */}
+            <DraggableDialog
+                open={blockDialogOpen}
+                onClose={() => setBlockDialogOpen(false)}
+                title="Заблокировать партию лабораторией"
+                initialWidth={600}
+                initialHeight="auto"
+                minWidth={480}
+                minHeight={320}
+                actions={
+                    <>
+                        <Button onClick={() => setBlockDialogOpen(false)}>Отмена</Button>
+                        <Button
+                            onClick={handleDoBlock}
+                            variant="contained"
+                            color="error"
+                            disabled={blockBusy || blockReason.trim().length < 3}
+                            startIcon={<LockIcon/>}
+                        >
+                            {blockBusy ? 'Блокировка...' : 'Заблокировать'}
+                        </Button>
+                    </>
+                }
+            >
+                {blockingTask && (
+                    <Box sx={{display: 'flex', flexDirection: 'column', gap: 2}}>
+                        <Alert severity="warning">
+                            Партия <b>{blockingTask.batch_name || blockingTask.batch_id?.substring(0, 8)}</b>{' '}
+                            ({blockingTask.product_name}) не будет участвовать в дальнейшем
+                            планировании до разблокировки.
+                        </Alert>
+
+                        <TextField
+                            label="Причина блокировки"
+                            fullWidth
+                            required
+                            multiline
+                            rows={2}
+                            value={blockReason}
+                            onChange={(e) => setBlockReason(e.target.value)}
+                            placeholder="Например: не соответствует вязкость, pH вне нормы..."
+                        />
+
+                        <TextField
+                            label="Комментарий (опционально)"
+                            fullWidth
+                            multiline
+                            rows={2}
+                            value={blockComment}
+                            onChange={(e) => setBlockComment(e.target.value)}
+                        />
+                    </Box>
+                )}
+            </DraggableDialog>
+
+            {/* Диалог разблокировки (DraggableDialog) */}
+            <DraggableDialog
+                open={unblockDialogOpen}
+                onClose={() => setUnblockDialogOpen(false)}
+                title="Разблокировать партию"
+                initialWidth={600}
+                initialHeight="auto"
+                minWidth={480}
+                minHeight={320}
+                actions={
+                    <>
+                        <Button onClick={() => setUnblockDialogOpen(false)}>Отмена</Button>
+                        <Button
+                            onClick={handleDoUnblock}
+                            variant="contained"
+                            color="success"
+                            startIcon={<LockOpenIcon/>}
+                        >
+                            Разблокировать
+                        </Button>
+                    </>
+                }
+            >
+                {unblockingTask && (
+                    <Box sx={{display: 'flex', flexDirection: 'column', gap: 2}}>
+                        <Alert severity="info">
+                            Партия <b>{unblockingTask.batch_name || unblockingTask.batch_id?.substring(0, 8)}</b>{' '}
+                            будет снова участвовать в планировании.
+                        </Alert>
+
+                        {unblockingTask.lab_block_reason && (
+                            <Alert severity="error">
+                                <b>Причина блокировки:</b> {unblockingTask.lab_block_reason}
+                            </Alert>
+                        )}
+
+                        <TextField
+                            label="Комментарий (опционально)"
+                            fullWidth
+                            multiline
+                            rows={2}
+                            value={unblockComment}
+                            onChange={(e) => setUnblockComment(e.target.value)}
+                        />
+                    </Box>
+                )}
+            </DraggableDialog>
         </Box>
     );
 };

@@ -8,10 +8,6 @@ import {
     CardContent,
     Chip,
     CircularProgress,
-    Dialog,
-    DialogActions,
-    DialogContent,
-    DialogTitle,
     FormControl,
     IconButton,
     InputLabel,
@@ -31,6 +27,7 @@ import type {Product} from '../types';
 import axios from 'axios';
 import {API_BASE_URL} from '../config';
 import {usePlan} from '../context/PlainContext';
+import DraggableDialog from '../components/common/DraggableDialog';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -63,7 +60,6 @@ const ProductsPage: React.FC = () => {
         setLoading(true);
         setError(null);
         try {
-            // ✅ Передаем version_id если выбран план
             const params = currentVersionId ? { version_id: currentVersionId } : {};
             const response = await axios.get(`${API_BASE_URL}/api/v1/products/`, { params });
             setProducts(response.data);
@@ -251,55 +247,98 @@ const ProductsPage: React.FC = () => {
 
             {/* Диалог добавления (только для режима редактирования) */}
             {!isReadOnly && (
-                <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="md" fullWidth>
-                    <DialogTitle sx={{ fontWeight: 600 }}>Добавить продукт</DialogTitle>
-                    <DialogContent>
-                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
-                            <Box sx={{ display: 'flex', gap: 2 }}>
-                                <TextField label="Код продукта" fullWidth value={formData.code} onChange={(e) => setFormData({ ...formData, code: e.target.value })} />
-                                <FormControl fullWidth>
-                                    <InputLabel>Тип</InputLabel>
-                                    <Select value={formData.type} label="Тип" onChange={(e) => setFormData({ ...formData, type: e.target.value })}>
-                                        <MenuItem value="PF">Полуфабрикат</MenuItem>
-                                        <MenuItem value="GP">Готовая продукция</MenuItem>
-                                    </Select>
-                                </FormControl>
-                            </Box>
-                            <TextField label="Наименование" fullWidth value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} />
-                            <Box sx={{ display: 'flex', gap: 2 }}>
-                                <TextField label="Коэф. вязкости" type="number" fullWidth value={formData.viscosity_coeff} onChange={(e) => setFormData({ ...formData, viscosity_coeff: Number(e.target.value) })} />
-                                <FormControl fullWidth>
-                                    <InputLabel>Требует нагрева</InputLabel>
-                                    <Select value={formData.requires_heating ? 'true' : 'false'} label="Требует нагрева" onChange={(e) => setFormData({ ...formData, requires_heating: e.target.value === 'true' })}>
-                                        <MenuItem value="true">Да</MenuItem>
-                                        <MenuItem value="false">Нет</MenuItem>
-                                    </Select>
-                                </FormControl>
-                            </Box>
-                            {formData.type === 'GP' && (
-                                <Box sx={{ display: 'flex', gap: 2 }}>
-                                    <TextField label="Объем тары (л)" type="number" fullWidth value={formData.bottle_volume_l || ''} onChange={(e) => setFormData({ ...formData, bottle_volume_l: Number(e.target.value) })} />
-                                    <TextField label="Скорость розлива (шт/мин)" type="number" fullWidth value={formData.fill_speed_per_min || ''} onChange={(e) => setFormData({ ...formData, fill_speed_per_min: Number(e.target.value) })} />
-                                </Box>
-                            )}
-                            {formData.type === 'GP' && (
-                                <FormControl fullWidth>
-                                    <InputLabel>Родительский ПФ</InputLabel>
-                                    <Select value={formData.parent_pf_id || ''} label="Родительский ПФ" onChange={(e) => setFormData({ ...formData, parent_pf_id: e.target.value })}>
-                                        <MenuItem value="">— Не выбран —</MenuItem>
-                                        {products.filter(p => p.type === 'PF').map(p => (
-                                            <MenuItem key={p.id} value={p.id}>{p.code} - {p.name}</MenuItem>
-                                        ))}
-                                    </Select>
-                                </FormControl>
-                            )}
+                <DraggableDialog
+                    open={dialogOpen}
+                    onClose={() => setDialogOpen(false)}
+                    title="Добавить продукт"
+                    initialWidth={700}
+                    initialHeight="auto"
+                    minWidth={480}
+                    minHeight={400}
+                    actions={
+                        <>
+                            <Button onClick={() => setDialogOpen(false)}>Отмена</Button>
+                            <Button onClick={handleSave} variant="contained">Сохранить</Button>
+                        </>
+                    }
+                >
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        <Box sx={{ display: 'flex', gap: 2 }}>
+                            <TextField
+                                label="Код продукта"
+                                fullWidth
+                                value={formData.code}
+                                onChange={(e) => setFormData({ ...formData, code: e.target.value })}
+                            />
+                            <FormControl fullWidth>
+                                <InputLabel>Тип</InputLabel>
+                                <Select value={formData.type} label="Тип" onChange={(e) => setFormData({ ...formData, type: e.target.value })}>
+                                    <MenuItem value="PF">Полуфабрикат</MenuItem>
+                                    <MenuItem value="GP">Готовая продукция</MenuItem>
+                                </Select>
+                            </FormControl>
                         </Box>
-                    </DialogContent>
-                    <DialogActions>
-                        <Button onClick={() => setDialogOpen(false)}>Отмена</Button>
-                        <Button onClick={handleSave} variant="contained">Сохранить</Button>
-                    </DialogActions>
-                </Dialog>
+                        <TextField
+                            label="Наименование"
+                            fullWidth
+                            value={formData.name}
+                            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                        />
+                        <Box sx={{ display: 'flex', gap: 2 }}>
+                            <TextField
+                                label="Коэф. вязкости"
+                                type="number"
+                                fullWidth
+                                value={formData.viscosity_coeff}
+                                onChange={(e) => setFormData({ ...formData, viscosity_coeff: Number(e.target.value) })}
+                            />
+                            <FormControl fullWidth>
+                                <InputLabel>Требует нагрева</InputLabel>
+                                <Select
+                                    value={formData.requires_heating ? 'true' : 'false'}
+                                    label="Требует нагрева"
+                                    onChange={(e) => setFormData({ ...formData, requires_heating: e.target.value === 'true' })}
+                                >
+                                    <MenuItem value="true">Да</MenuItem>
+                                    <MenuItem value="false">Нет</MenuItem>
+                                </Select>
+                            </FormControl>
+                        </Box>
+                        {formData.type === 'GP' && (
+                            <Box sx={{ display: 'flex', gap: 2 }}>
+                                <TextField
+                                    label="Объем тары (л)"
+                                    type="number"
+                                    fullWidth
+                                    value={formData.bottle_volume_l || ''}
+                                    onChange={(e) => setFormData({ ...formData, bottle_volume_l: Number(e.target.value) })}
+                                />
+                                <TextField
+                                    label="Скорость розлива (шт/мин)"
+                                    type="number"
+                                    fullWidth
+                                    value={formData.fill_speed_per_min || ''}
+                                    onChange={(e) => setFormData({ ...formData, fill_speed_per_min: Number(e.target.value) })}
+                                />
+                            </Box>
+                        )}
+                        {formData.type === 'GP' && (
+                            <FormControl fullWidth>
+                                <InputLabel>Родительский ПФ</InputLabel>
+                                <Select
+                                    value={formData.parent_pf_id || ''}
+                                    label="Родительский ПФ"
+                                    onChange={(e) => setFormData({ ...formData, parent_pf_id: e.target.value })}
+                                >
+                                    <MenuItem value="">— Не выбран —</MenuItem>
+                                    {products.filter(p => p.type === 'PF').map(p => (
+                                        <MenuItem key={p.id} value={p.id}>{p.code} - {p.name}</MenuItem>
+                                    ))}
+                                </Select>
+                            </FormControl>
+                        )}
+                    </Box>
+                </DraggableDialog>
             )}
         </Box>
     );

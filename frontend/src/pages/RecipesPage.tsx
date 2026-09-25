@@ -8,10 +8,6 @@ import {
     CardContent,
     Chip,
     CircularProgress,
-    Dialog,
-    DialogActions,
-    DialogContent,
-    DialogTitle,
     FormControl,
     IconButton,
     InputLabel,
@@ -41,6 +37,7 @@ import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-alpine.css';
 import type {Material, Recipe, RecipeItem} from '../types';
 import {materialsApi, recipesApi} from '../services/api';
+import DraggableDialog from '../components/common/DraggableDialog';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -293,103 +290,112 @@ const RecipesPage: React.FC = () => {
                 </CardContent>
             </Card>
 
-            {/* Диалог добавления рецепта */}
-            <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="sm" fullWidth>
-                <DialogTitle sx={{ fontWeight: 600 }}>Добавить рецепт</DialogTitle>
-                <DialogContent>
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
-                        <FormControl fullWidth>
-                            <InputLabel>Продукт (ПФ)</InputLabel>
-                            <Select
-                                value={formData.product_id}
-                                label="Продукт (ПФ)"
-                                onChange={(e) => setFormData({ ...formData, product_id: e.target.value })}
-                            >
-                                <MenuItem value="">— Выберите продукт —</MenuItem>
-                                {materials
-                                    .filter((m) => m.category === 'RAW')
-                                    .map((m) => (
-                                        <MenuItem key={m.id} value={m.id}>
-                                            {m.code} - {m.name}
-                                        </MenuItem>
-                                    ))}
-                            </Select>
-                        </FormControl>
-                        <TextField
-                            label="Базовый объём (кг)"
-                            type="number"
-                            fullWidth
-                            value={formData.base_volume_kg}
-                            onChange={(e) =>
-                                setFormData({ ...formData, base_volume_kg: Number(e.target.value) })
-                            }
-                            helperText="Обычно 100 кг"
-                        />
-                        <TextField
-                            label="Комментарий"
-                            fullWidth
-                            multiline
-                            rows={2}
-                            value={formData.comment}
-                            onChange={(e) => setFormData({ ...formData, comment: e.target.value })}
-                        />
-                    </Box>
-                </DialogContent>
-                <DialogActions>
-                    <Button onClick={() => setDialogOpen(false)}>Отмена</Button>
-                    <Button onClick={handleSave} variant="contained">
-                        Сохранить
-                    </Button>
-                </DialogActions>
-            </Dialog>
+            {/* Диалог добавления рецепта (DraggableDialog) */}
+            <DraggableDialog
+                open={dialogOpen}
+                onClose={() => setDialogOpen(false)}
+                title="Добавить рецепт"
+                initialWidth={600}
+                initialHeight="auto"
+                minWidth={480}
+                minHeight={320}
+                actions={
+                    <>
+                        <Button onClick={() => setDialogOpen(false)}>Отмена</Button>
+                        <Button onClick={handleSave} variant="contained">
+                            Сохранить
+                        </Button>
+                    </>
+                }
+            >
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <FormControl fullWidth>
+                        <InputLabel>Продукт (ПФ)</InputLabel>
+                        <Select
+                            value={formData.product_id}
+                            label="Продукт (ПФ)"
+                            onChange={(e) => setFormData({ ...formData, product_id: e.target.value })}
+                        >
+                            <MenuItem value="">— Выберите продукт —</MenuItem>
+                            {materials
+                                .filter((m) => m.category === 'RAW')
+                                .map((m) => (
+                                    <MenuItem key={m.id} value={m.id}>
+                                        {m.code} - {m.name}
+                                    </MenuItem>
+                                ))}
+                        </Select>
+                    </FormControl>
+                    <TextField
+                        label="Базовый объём (кг)"
+                        type="number"
+                        fullWidth
+                        value={formData.base_volume_kg}
+                        onChange={(e) =>
+                            setFormData({ ...formData, base_volume_kg: Number(e.target.value) })
+                        }
+                        helperText="Обычно 100 кг"
+                    />
+                    <TextField
+                        label="Комментарий"
+                        fullWidth
+                        multiline
+                        rows={2}
+                        value={formData.comment}
+                        onChange={(e) => setFormData({ ...formData, comment: e.target.value })}
+                    />
+                </Box>
+            </DraggableDialog>
 
-            {/* Диалог просмотра состава рецепта */}
-            <Dialog
+            {/* Диалог просмотра состава рецепта (DraggableDialog) */}
+            <DraggableDialog
                 open={selectedRecipe !== null}
                 onClose={() => setSelectedRecipe(null)}
-                maxWidth="md"
-                fullWidth
-            >
-                <DialogTitle sx={{ fontWeight: 600 }}>
-                    {selectedRecipe && `Состав: ${selectedRecipe.product_name} (${selectedRecipe.base_volume_kg} кг)`}
-                </DialogTitle>
-                <DialogContent>
-                    {selectedRecipe && (
-                        <TableContainer component={Paper} variant="outlined">
-                            <Table size="small">
-                                <TableHead>
-                                    <TableRow>
-                                        <TableCell>Код</TableCell>
-                                        <TableCell>Наименование</TableCell>
-                                        <TableCell align="right">Кол-во на базу</TableCell>
-                                        <TableCell>Ед.</TableCell>
-                                    </TableRow>
-                                </TableHead>
-                                <TableBody>
-                                    {selectedRecipe.items.map((item: RecipeItem) => (
-                                        <TableRow key={item.id}>
-                                            <TableCell>{item.material_code}</TableCell>
-                                            <TableCell>{item.material_name}</TableCell>
-                                            <TableCell align="right">{item.qty_per_base}</TableCell>
-                                            <TableCell>{item.material_unit}</TableCell>
-                                        </TableRow>
-                                    ))}
-                                    {selectedRecipe.items.length === 0 && (
-                                        <TableRow>
-                                            <TableCell colSpan={4} align="center">
-                                                Компоненты не добавлены
-                                            </TableCell>
-                                        </TableRow>
-                                    )}
-                                </TableBody>
-                            </Table>
-                        </TableContainer>
-                    )}
-                </DialogContent>
-                <DialogActions>
+                title={
+                    selectedRecipe
+                        ? `Состав: ${selectedRecipe.product_name} (${selectedRecipe.base_volume_kg} кг)`
+                        : 'Состав рецепта'
+                }
+                initialWidth={700}
+                initialHeight="auto"
+                minWidth={480}
+                minHeight={320}
+                actions={
                     <Button onClick={() => setSelectedRecipe(null)}>Закрыть</Button>
-                </DialogActions>
-            </Dialog>
+                }
+            >
+                {selectedRecipe && (
+                    <TableContainer component={Paper} variant="outlined">
+                        <Table size="small">
+                            <TableHead>
+                                <TableRow>
+                                    <TableCell>Код</TableCell>
+                                    <TableCell>Наименование</TableCell>
+                                    <TableCell align="right">Кол-во на базу</TableCell>
+                                    <TableCell>Ед.</TableCell>
+                                </TableRow>
+                            </TableHead>
+                            <TableBody>
+                                {selectedRecipe.items.map((item: RecipeItem) => (
+                                    <TableRow key={item.id}>
+                                        <TableCell>{item.material_code}</TableCell>
+                                        <TableCell>{item.material_name}</TableCell>
+                                        <TableCell align="right">{item.qty_per_base}</TableCell>
+                                        <TableCell>{item.material_unit}</TableCell>
+                                    </TableRow>
+                                ))}
+                                {selectedRecipe.items.length === 0 && (
+                                    <TableRow>
+                                        <TableCell colSpan={4} align="center">
+                                            Компоненты не добавлены
+                                        </TableCell>
+                                    </TableRow>
+                                )}
+                            </TableBody>
+                        </Table>
+                    </TableContainer>
+                )}
+            </DraggableDialog>
         </Box>
     );
 };

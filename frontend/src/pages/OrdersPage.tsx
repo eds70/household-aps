@@ -1,47 +1,44 @@
 // frontend/src/pages/OrdersPage.tsx
-import React, { useState, useEffect } from 'react';
+import React, {useEffect, useState} from 'react';
 import {
+    Alert,
     Box,
     Button,
     Card,
     CardContent,
-    Dialog,
-    DialogActions,
-    DialogContent,
-    DialogTitle,
+    Chip,
+    CircularProgress,
     FormControl,
+    IconButton,
     InputLabel,
     MenuItem,
+    Paper,
     Select,
-    TextField,
-    Typography,
-    IconButton,
-    CircularProgress,
-    Alert,
-    Chip,
     Table,
     TableBody,
     TableCell,
     TableContainer,
     TableHead,
     TableRow,
-    Paper,
+    TextField,
+    Typography,
 } from '@mui/material';
 import {
     Add as AddIcon,
-    Delete as DeleteIcon,
-    ShoppingCart as CartIcon,
-    ExpandMore as ExpandMoreIcon,
-    ExpandLess as ExpandLessIcon,
     AutoFixHigh as AutoSplitIcon,
+    Delete as DeleteIcon,
+    ExpandLess as ExpandLessIcon,
+    ExpandMore as ExpandMoreIcon,
+    ShoppingCart as CartIcon,
 } from '@mui/icons-material';
-import { AgGridReact } from 'ag-grid-react';
-import { ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
+import {AgGridReact} from 'ag-grid-react';
+import type {ColDef, GridReadyEvent} from 'ag-grid-community';
+import {AllCommunityModule, ModuleRegistry} from 'ag-grid-community';
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-alpine.css';
-import type { ColDef, GridReadyEvent } from 'ag-grid-community';
-import type { ProductionOrder, Batch, OrderStatus } from '../types';
-import { ordersApi, productsApi, equipmentApi } from '../services/api';
+import type {Batch, OrderStatus, ProductionOrder} from '../types';
+import {equipmentApi, ordersApi, productsApi} from '../services/api';
+import DraggableDialog from '../components/common/DraggableDialog';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -404,130 +401,139 @@ const OrdersPage: React.FC = () => {
                 </CardContent>
             </Card>
 
-            {/* Диалог создания заказа */}
-            <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="sm" fullWidth>
-                <DialogTitle sx={{ fontWeight: 600 }}>Новый производственный заказ</DialogTitle>
-                <DialogContent>
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
-                        <FormControl fullWidth>
-                            <InputLabel>Продукт (ГП)</InputLabel>
-                            <Select
-                                value={formData.product_id}
-                                label="Продукт (ГП)"
-                                onChange={(e) => setFormData({ ...formData, product_id: e.target.value })}
-                            >
-                                <MenuItem value="">— Выберите продукт —</MenuItem>
-                                {products
-                                    .filter((p: any) => p.type === 'GP')
-                                    .map((p: any) => (
-                                        <MenuItem key={p.id} value={p.id}>
-                                            {p.code} - {p.name}
-                                        </MenuItem>
-                                    ))}
-                            </Select>
-                        </FormControl>
-                        <TextField
-                            label="Целевое количество"
-                            type="number"
-                            fullWidth
-                            value={formData.target_qty}
-                            onChange={(e) =>
-                                setFormData({ ...formData, target_qty: Number(e.target.value) })
-                            }
-                        />
-                        <TextField
-                            label="Дедлайн"
-                            type="datetime-local"
-                            fullWidth
-                            value={formData.due_date}
-                            onChange={(e) => setFormData({ ...formData, due_date: e.target.value })}
-                            slotProps={{ inputLabel: { shrink: true } }}
-                        />
-                        <TextField
-                            label="Приоритет (1 - высший, 10 - низший)"
-                            type="number"
-                            fullWidth
-                            value={formData.priority}
-                            onChange={(e) =>
-                                setFormData({ ...formData, priority: Number(e.target.value) })
-                            }
-                            slotProps={{
-                                htmlInput: {
-                                    min: 1,
-                                    max: 10,
-                                    step: 1,
-                                },
-                            }}
-                        />
-                        <TextField
-                            label="Комментарий"
-                            fullWidth
-                            multiline
-                            rows={2}
-                            value={formData.comment}
-                            onChange={(e) => setFormData({ ...formData, comment: e.target.value })}
-                        />
-                    </Box>
-                </DialogContent>
-                <DialogActions>
-                    <Button onClick={() => setDialogOpen(false)}>Отмена</Button>
-                    <Button onClick={handleSave} variant="contained">
-                        Создать
-                    </Button>
-                </DialogActions>
-            </Dialog>
+            {/* Диалог создания заказа (DraggableDialog) */}
+            <DraggableDialog
+                open={dialogOpen}
+                onClose={() => setDialogOpen(false)}
+                title="Новый производственный заказ"
+                initialWidth={600}
+                initialHeight="auto"
+                minWidth={480}
+                minHeight={400}
+                actions={
+                    <>
+                        <Button onClick={() => setDialogOpen(false)}>Отмена</Button>
+                        <Button onClick={handleSave} variant="contained">
+                            Создать
+                        </Button>
+                    </>
+                }
+            >
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <FormControl fullWidth>
+                        <InputLabel>Продукт (ГП)</InputLabel>
+                        <Select
+                            value={formData.product_id}
+                            label="Продукт (ГП)"
+                            onChange={(e) => setFormData({ ...formData, product_id: e.target.value })}
+                        >
+                            <MenuItem value="">— Выберите продукт —</MenuItem>
+                            {products
+                                .filter((p: any) => p.type === 'GP')
+                                .map((p: any) => (
+                                    <MenuItem key={p.id} value={p.id}>
+                                        {p.code} - {p.name}
+                                    </MenuItem>
+                                ))}
+                        </Select>
+                    </FormControl>
+                    <TextField
+                        label="Целевое количество"
+                        type="number"
+                        fullWidth
+                        value={formData.target_qty}
+                        onChange={(e) =>
+                            setFormData({ ...formData, target_qty: Number(e.target.value) })
+                        }
+                    />
+                    <TextField
+                        label="Дедлайн"
+                        type="datetime-local"
+                        fullWidth
+                        value={formData.due_date}
+                        onChange={(e) => setFormData({ ...formData, due_date: e.target.value })}
+                        slotProps={{ inputLabel: { shrink: true } }}
+                    />
+                    <TextField
+                        label="Приоритет (1 - высший, 10 - низший)"
+                        type="number"
+                        fullWidth
+                        value={formData.priority}
+                        onChange={(e) =>
+                            setFormData({ ...formData, priority: Number(e.target.value) })
+                        }
+                        slotProps={{
+                            htmlInput: {
+                                min: 1,
+                                max: 10,
+                                step: 1,
+                            },
+                        }}
+                    />
+                    <TextField
+                        label="Комментарий"
+                        fullWidth
+                        multiline
+                        rows={2}
+                        value={formData.comment}
+                        onChange={(e) => setFormData({ ...formData, comment: e.target.value })}
+                    />
+                </Box>
+            </DraggableDialog>
 
-            {/* Диалог автоматического разбиения */}
-            <Dialog
+            {/* Диалог автоматического разбиения (DraggableDialog) */}
+            <DraggableDialog
                 open={splitDialogOpen}
                 onClose={() => setSplitDialogOpen(false)}
-                maxWidth="sm"
-                fullWidth
+                title="Автоматическое разбиение на партии"
+                initialWidth={600}
+                initialHeight="auto"
+                minWidth={480}
+                minHeight={320}
+                actions={
+                    <>
+                        <Button onClick={() => setSplitDialogOpen(false)}>Отмена</Button>
+                        <Button onClick={handleAutoSplit} variant="contained">
+                            Разбить
+                        </Button>
+                    </>
+                }
             >
-                <DialogTitle sx={{ fontWeight: 600 }}>Автоматическое разбиение на партии</DialogTitle>
-                <DialogContent>
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
-                        <FormControl fullWidth>
-                            <InputLabel>Оборудование (реактор)</InputLabel>
-                            <Select
-                                value={splitEquipmentId}
-                                label="Оборудование (реактор)"
-                                onChange={(e) => setSplitEquipmentId(e.target.value)}
-                            >
-                                <MenuItem value="">— Выберите оборудование —</MenuItem>
-                                {equipment
-                                    .filter((e: any) => e.type === 'REACTOR')
-                                    .map((e: any) => (
-                                        <MenuItem key={e.id} value={e.id}>
-                                            {e.name} ({e.volume_kg} кг)
-                                        </MenuItem>
-                                    ))}
-                            </Select>
-                        </FormControl>
-                        <TextField
-                            label="Максимальный % загрузки"
-                            type="number"
-                            fullWidth
-                            value={splitMaxFill}
-                            onChange={(e) => setSplitMaxFill(Number(e.target.value))}
-                            slotProps={{
-                                htmlInput: {
-                                    min: 0.1,
-                                    max: 1.0,
-                                    step: 0.05,
-                                },
-                            }}
-                            helperText="Обычно 0.70 (70%)"
-                        />
-                    </Box>
-                </DialogContent>
-                <DialogActions>
-                    <Button onClick={() => setSplitDialogOpen(false)}>Отмена</Button>
-                    <Button onClick={handleAutoSplit} variant="contained">
-                        Разбить
-                    </Button>
-                </DialogActions>
-            </Dialog>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <FormControl fullWidth>
+                        <InputLabel>Оборудование (реактор)</InputLabel>
+                        <Select
+                            value={splitEquipmentId}
+                            label="Оборудование (реактор)"
+                            onChange={(e) => setSplitEquipmentId(e.target.value)}
+                        >
+                            <MenuItem value="">— Выберите оборудование —</MenuItem>
+                            {equipment
+                                .filter((e: any) => e.type === 'REACTOR')
+                                .map((e: any) => (
+                                    <MenuItem key={e.id} value={e.id}>
+                                        {e.name} ({e.volume_kg} кг)
+                                    </MenuItem>
+                                ))}
+                        </Select>
+                    </FormControl>
+                    <TextField
+                        label="Максимальный % загрузки"
+                        type="number"
+                        fullWidth
+                        value={splitMaxFill}
+                        onChange={(e) => setSplitMaxFill(Number(e.target.value))}
+                        slotProps={{
+                            htmlInput: {
+                                min: 0.1,
+                                max: 1.0,
+                                step: 0.05,
+                            },
+                        }}
+                        helperText="Обычно 0.70 (70%)"
+                    />
+                </Box>
+            </DraggableDialog>
         </Box>
     );
 };

@@ -10,11 +10,6 @@ import {
     Checkbox,
     Chip,
     CircularProgress,
-    Dialog,
-    DialogActions,
-    DialogContent,
-    DialogContentText,
-    DialogTitle,
     FormControl,
     FormControlLabel,
     InputLabel,
@@ -34,6 +29,7 @@ import {
 } from '@mui/icons-material';
 import {settingsApi} from '../services/api';
 import type {SettingSpec, SettingsSchema} from '../types';
+import DraggableDialog from '../components/common/DraggableDialog';
 
 // ==========================================
 // Компонент: отдельное поле настройки
@@ -273,7 +269,6 @@ const SettingsPage: React.FC = () => {
         setError(null);
         setSuccess(null);
         try {
-            // Отправляем только изменённые (кроме shift_mode — он уже применён)
             const updates: Record<string, any> = {};
             for (const [key, val] of Object.entries(values)) {
                 if (key === 'shift_mode') continue;
@@ -317,7 +312,6 @@ const SettingsPage: React.FC = () => {
             if (!groups[s.category]) groups[s.category] = [];
             groups[s.category].push(s);
         }
-        // Сортируем по display_order
         for (const cat of Object.keys(groups)) {
             groups[cat].sort((a, b) => a.display_order - b.display_order);
         }
@@ -458,32 +452,47 @@ const SettingsPage: React.FC = () => {
                 💡 Изменения вступят в силу при следующем построении плана • Смена режима смен пересоздаст смены в БД
             </Typography>
 
-            {/* Диалог смены режима */}
-            <Dialog open={shiftModeDialogOpen} onClose={() => setShiftModeDialogOpen(false)}>
-                <DialogTitle sx={{display: 'flex', alignItems: 'center', gap: 1}}>
-                    <WarningIcon color="warning"/>
-                    Смена режима смен
-                </DialogTitle>
-                <DialogContent>
-                    <DialogContentText>
+            {/* Диалог смены режима (DraggableDialog) */}
+            <DraggableDialog
+                open={shiftModeDialogOpen}
+                onClose={() => setShiftModeDialogOpen(false)}
+                title={
+                    <Box sx={{display: 'flex', alignItems: 'center', gap: 1}}>
+                        <WarningIcon color="warning"/>
+                        <Typography variant="h6" component="div" sx={{fontWeight: 600}}>
+                            Смена режима смен
+                        </Typography>
+                    </Box>
+                }
+                initialWidth={600}
+                initialHeight="auto"
+                minWidth={480}
+                minHeight={280}
+                actions={
+                    <>
+                        <Button onClick={() => setShiftModeDialogOpen(false)}>Отмена</Button>
+                        <Button onClick={handleConfirmShiftMode} variant="contained" color="warning">
+                            Применить
+                        </Button>
+                    </>
+                }
+            >
+                <Box>
+                    <Typography variant="body2" sx={{mb: 2}}>
                         Вы хотите изменить режим смен на <b>{pendingShiftMode}</b>.
                         <br/><br/>
                         Это приведёт к:
-                        <ul>
-                            <li>Пересозданию всех смен в БД на новый горизонт.</li>
-                            <li>Потере текущей привязки задач к сменам.</li>
-                            <li>Необходимости пересчитать план заново.</li>
-                        </ul>
+                    </Typography>
+                    <Box component="ul" sx={{pl: 3, mb: 2}}>
+                        <li><Typography variant="body2">Пересозданию всех смен в БД на новый горизонт.</Typography></li>
+                        <li><Typography variant="body2">Потере текущей привязки задач к сменам.</Typography></li>
+                        <li><Typography variant="body2">Необходимости пересчитать план заново.</Typography></li>
+                    </Box>
+                    <Typography variant="body2" sx={{fontWeight: 600}}>
                         Продолжить?
-                    </DialogContentText>
-                </DialogContent>
-                <DialogActions>
-                    <Button onClick={() => setShiftModeDialogOpen(false)}>Отмена</Button>
-                    <Button onClick={handleConfirmShiftMode} variant="contained" color="warning">
-                        Применить
-                    </Button>
-                </DialogActions>
-            </Dialog>
+                    </Typography>
+                </Box>
+            </DraggableDialog>
         </Box>
     );
 };

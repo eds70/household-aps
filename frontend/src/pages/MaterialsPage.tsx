@@ -8,10 +8,6 @@ import {
     CardContent,
     Chip,
     CircularProgress,
-    Dialog,
-    DialogActions,
-    DialogContent,
-    DialogTitle,
     FormControl,
     IconButton,
     InputLabel,
@@ -46,6 +42,7 @@ import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-alpine.css';
 import type {Material, MaterialCategory, MaterialImportResponse, MaterialStockLogEntry,} from '../types';
 import {materialsApi} from '../services/api';
+import DraggableDialog from '../components/common/DraggableDialog';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -139,7 +136,6 @@ const MaterialsPage: React.FC = () => {
     const [logFilterMaterial, setLogFilterMaterial] = useState<string>('');
     const [logFilterSource, setLogFilterSource] = useState<string>('');
     const [logLimit, setLogLimit] = useState<number>(200);
-    // Итерация 13.3: фильтр по датам
     const [logDateFrom, setLogDateFrom] = useState<string>('');
     const [logDateTo, setLogDateTo] = useState<string>('');
 
@@ -732,7 +728,6 @@ const MaterialsPage: React.FC = () => {
                             </Select>
                         </FormControl>
 
-                        {/* Итерация 13.3: фильтр по датам */}
                         <TextField
                             size="small"
                             type="date"
@@ -772,7 +767,6 @@ const MaterialsPage: React.FC = () => {
                             Обновить
                         </Button>
 
-                        {/* Быстрые пресеты */}
                         <Button
                             size="small"
                             variant="text"
@@ -1048,335 +1042,331 @@ const MaterialsPage: React.FC = () => {
                 </>
             )}
 
-            {/* ====== ДИАЛОГ ДОБАВЛЕНИЯ МАТЕРИАЛА ====== */}
-            <Dialog
+            {/* ====== ДИАЛОГ ДОБАВЛЕНИЯ МАТЕРИАЛА (DraggableDialog) ====== */}
+            <DraggableDialog
                 open={dialogOpen}
                 onClose={() => setDialogOpen(false)}
-                maxWidth="sm"
-                fullWidth
+                title="Добавить материал"
+                initialWidth={700}
+                initialHeight="auto"
+                minWidth={480}
+                minHeight={400}
+                actions={
+                    <>
+                        <Button onClick={() => setDialogOpen(false)}>Отмена</Button>
+                        <Button onClick={handleSave} variant="contained">
+                            Сохранить
+                        </Button>
+                    </>
+                }
             >
-                <DialogTitle sx={{ fontWeight: 600 }}>Добавить материал</DialogTitle>
-                <DialogContent>
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
-                        <Box sx={{ display: 'flex', gap: 2 }}>
-                            <TextField
-                                label="Код материала"
-                                fullWidth
-                                required
-                                value={formData.code}
-                                onChange={(e) =>
-                                    setFormData({ ...formData, code: e.target.value })
-                                }
-                            />
-                            <FormControl fullWidth variant="outlined">
-                                <InputLabel>Категория</InputLabel>
-                                <Select
-                                    value={formData.category}
-                                    label="Категория"
-                                    variant="outlined"
-                                    onChange={(e) =>
-                                        setFormData({
-                                            ...formData,
-                                            category: e.target.value as MaterialCategory,
-                                        })
-                                    }
-                                >
-                                    <MenuItem value="RAW">Сырьё</MenuItem>
-                                    <MenuItem value="PACKAGING">Упаковка</MenuItem>
-                                    <MenuItem value="LABEL">Этикетки</MenuItem>
-                                </Select>
-                            </FormControl>
-                        </Box>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <Box sx={{ display: 'flex', gap: 2 }}>
                         <TextField
-                            label="Наименование"
+                            label="Код материала"
                             fullWidth
                             required
-                            value={formData.name}
-                            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                        />
-                        <FormControl fullWidth variant="outlined">
-                            <InputLabel>Единица измерения</InputLabel>
-                            <Select
-                                value={formData.unit}
-                                label="Единица измерения"
-                                variant="outlined"
-                                onChange={(e) =>
-                                    setFormData({ ...formData, unit: e.target.value })
-                                }
-                            >
-                                <MenuItem value="kg">Килограммы (кг)</MenuItem>
-                                <MenuItem value="pc">Штуки (шт)</MenuItem>
-                                <MenuItem value="l">Литры (л)</MenuItem>
-                            </Select>
-                        </FormControl>
-
-                        <Typography variant="subtitle2" sx={{ mt: 1, fontWeight: 600 }}>
-                            Начальные остатки
-                        </Typography>
-                        <Box sx={{ display: 'flex', gap: 2 }}>
-                            <TextField
-                                label="Остаток на складе"
-                                type="number"
-                                fullWidth
-                                value={formData.initial_qty ?? 0}
-                                onChange={(e) =>
-                                    setFormData({
-                                        ...formData,
-                                        initial_qty: Number(e.target.value),
-                                    })
-                                }
-                                slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
-                            />
-                            <TextField
-                                label="Зарезервировано"
-                                type="number"
-                                fullWidth
-                                value={formData.initial_reserved_qty ?? 0}
-                                onChange={(e) =>
-                                    setFormData({
-                                        ...formData,
-                                        initial_reserved_qty: Number(e.target.value),
-                                    })
-                                }
-                                slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
-                            />
-                        </Box>
-                        <Alert severity="info">
-                            Доступное количество ={' '}
-                            {(
-                                (formData.initial_qty ?? 0) -
-                                (formData.initial_reserved_qty ?? 0)
-                            ).toFixed(2)}{' '}
-                            {formData.unit}
-                        </Alert>
-                        <TextField
-                            label="Комментарий"
-                            fullWidth
-                            multiline
-                            rows={2}
-                            value={formData.comment}
+                            value={formData.code}
                             onChange={(e) =>
-                                setFormData({ ...formData, comment: e.target.value })
+                                setFormData({ ...formData, code: e.target.value })
                             }
                         />
-                    </Box>
-                </DialogContent>
-                <DialogActions>
-                    <Button onClick={() => setDialogOpen(false)}>Отмена</Button>
-                    <Button onClick={handleSave} variant="contained">
-                        Сохранить
-                    </Button>
-                </DialogActions>
-            </Dialog>
-
-            {/* ====== ДИАЛОГ ИМПОРТА ====== */}
-            <Dialog
-                open={importDialogOpen}
-                onClose={() => !importing && setImportDialogOpen(false)}
-                maxWidth="md"
-                fullWidth
-            >
-                <DialogTitle
-                    sx={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 1 }}
-                >
-                    <UploadIcon color="warning" />
-                    Импорт материалов из Excel
-                </DialogTitle>
-                <DialogContent>
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
-                        <Alert severity="info">
-                            <b>Формат:</b> колонки «Код», «Наименование», «Категория», «Ед.изм.»,
-                            «Остаток», «Резерв».
-                            <br />
-                            <b>Логика:</b> если материал с таким «Код» уже есть — обновляем
-                            (справочные поля + остатки). Если нет — создаём.
-                            <br />
-                            Не забудьте сначала <b>скачать шаблон</b> — там уже правильные
-                            заголовки.
-                        </Alert>
-
-                        <Button
-                            variant="outlined"
-                            component="label"
-                            startIcon={<UploadIcon />}
-                            sx={{ alignSelf: 'flex-start', textTransform: 'none' }}
-                            disabled={importing}
-                        >
-                            Выбрать файл .xlsx
-                            <input
-                                type="file"
-                                hidden
-                                accept=".xlsx,.xlsm"
-                                onChange={(e) => {
-                                    const f = e.target.files?.[0] || null;
-                                    setImportFile(f);
-                                    setImportResult(null);
-                                }}
-                            />
-                        </Button>
-
-                        {importFile && (
-                            <Chip
-                                label={`📄 ${importFile.name} (${(
-                                    importFile.size / 1024
-                                ).toFixed(1)} KB)`}
-                                color="primary"
-                                variant="outlined"
-                                onDelete={() => setImportFile(null)}
-                            />
-                        )}
-
-                        {importResult && (
-                            <>
-                                <Alert
-                                    severity={importResult.errors > 0 ? 'warning' : 'success'}
-                                >
-                                    {importResult.message}
-                                </Alert>
-
-                                <TableContainer sx={{ maxHeight: 400 }}>
-                                    <Table size="small" stickyHeader>
-                                        <TableHead>
-                                            <TableRow>
-                                                <TableCell>#</TableCell>
-                                                <TableCell>Код</TableCell>
-                                                <TableCell>Наименование</TableCell>
-                                                <TableCell align="right">Остаток</TableCell>
-                                                <TableCell align="center">Статус</TableCell>
-                                                <TableCell>Сообщение</TableCell>
-                                            </TableRow>
-                                        </TableHead>
-                                        <TableBody>
-                                            {importResult.rows.map((r, i) => (
-                                                <TableRow key={i} hover>
-                                                    <TableCell>{r.row_number}</TableCell>
-                                                    <TableCell>
-                                                        <Typography
-                                                            variant="caption"
-                                                            sx={{ fontFamily: 'monospace' }}
-                                                        >
-                                                            {r.code || '—'}
-                                                        </Typography>
-                                                    </TableCell>
-                                                    <TableCell>{r.name || '—'}</TableCell>
-                                                    <TableCell align="right">
-                                                        {r.qty != null ? r.qty.toFixed(2) : '—'}
-                                                    </TableCell>
-                                                    <TableCell align="center">
-                                                        <Chip
-                                                            label={r.status}
-                                                            color={
-                                                                r.status === 'CREATED'
-                                                                    ? 'success'
-                                                                    : r.status === 'UPDATED'
-                                                                        ? 'info'
-                                                                        : r.status === 'SKIPPED'
-                                                                            ? 'default'
-                                                                            : 'error'
-                                                            }
-                                                            size="small"
-                                                        />
-                                                    </TableCell>
-                                                    <TableCell>
-                                                        <Typography variant="caption">
-                                                            {r.message || ''}
-                                                        </Typography>
-                                                    </TableCell>
-                                                </TableRow>
-                                            ))}
-                                        </TableBody>
-                                    </Table>
-                                </TableContainer>
-                            </>
-                        )}
-                    </Box>
-                </DialogContent>
-                <DialogActions>
-                    <Button
-                        onClick={() => setImportDialogOpen(false)}
-                        disabled={importing}
-                    >
-                        {importResult ? 'Закрыть' : 'Отмена'}
-                    </Button>
-                    <Button
-                        onClick={handleDoImport}
-                        variant="contained"
-                        color="warning"
-                        disabled={!importFile || importing}
-                        startIcon={importing ? <CircularProgress size={18} /> : <UploadIcon />}
-                    >
-                        {importing ? 'Импорт...' : 'Импортировать'}
-                    </Button>
-                </DialogActions>
-            </Dialog>
-
-            {/* ====== ДИАЛОГ ОЧИСТКИ ЖУРНАЛА ====== */}
-            <Dialog
-                open={cleanupDialogOpen}
-                onClose={() => !cleaning && setCleanupDialogOpen(false)}
-                maxWidth="sm"
-                fullWidth
-            >
-                <DialogTitle
-                    sx={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 1 }}
-                >
-                    <DeleteIcon color="error" />
-                    Очистка журнала изменений
-                </DialogTitle>
-                <DialogContent>
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
-                        <Alert severity="warning">
-                            Удаляются <b>записи журнала</b> (не остатки!). Откат удалённых
-                            записей станет невозможен. Сами остатки материалов{' '}
-                            <b>не меняются</b>.
-                        </Alert>
-
-                        <TextField
-                            label="Удалить записи старше (дней)"
-                            type="number"
-                            fullWidth
-                            value={cleanupDays}
-                            onChange={(e) => setCleanupDays(Number(e.target.value) || 90)}
-                            slotProps={{ htmlInput: { min: 1, max: 3650, step: 1 } }}
-                            helperText="Например: 90 — удалить всё старше 3 месяцев"
-                        />
-
                         <FormControl fullWidth variant="outlined">
-                            <InputLabel>Источник (опционально)</InputLabel>
+                            <InputLabel>Категория</InputLabel>
                             <Select
-                                value={cleanupSource}
-                                label="Источник (опционально)"
+                                value={formData.category}
+                                label="Категория"
                                 variant="outlined"
-                                onChange={(e) => setCleanupSource(e.target.value)}
+                                onChange={(e) =>
+                                    setFormData({
+                                        ...formData,
+                                        category: e.target.value as MaterialCategory,
+                                    })
+                                }
                             >
-                                <MenuItem value="">Все источники</MenuItem>
-                                <MenuItem value="MANUAL">Только MANUAL</MenuItem>
-                                <MenuItem value="IMPORT">Только IMPORT</MenuItem>
-                                <MenuItem value="SYSTEM">Только SYSTEM</MenuItem>
+                                <MenuItem value="RAW">Сырьё</MenuItem>
+                                <MenuItem value="PACKAGING">Упаковка</MenuItem>
+                                <MenuItem value="LABEL">Этикетки</MenuItem>
                             </Select>
                         </FormControl>
                     </Box>
-                </DialogContent>
-                <DialogActions>
-                    <Button
-                        onClick={() => setCleanupDialogOpen(false)}
-                        disabled={cleaning}
-                    >
-                        Отмена
-                    </Button>
-                    <Button
-                        onClick={handleCleanup}
-                        variant="contained"
-                        color="error"
-                        disabled={cleaning}
-                        startIcon={
-                            cleaning ? <CircularProgress size={18} /> : <DeleteIcon />
+                    <TextField
+                        label="Наименование"
+                        fullWidth
+                        required
+                        value={formData.name}
+                        onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    />
+                    <FormControl fullWidth variant="outlined">
+                        <InputLabel>Единица измерения</InputLabel>
+                        <Select
+                            value={formData.unit}
+                            label="Единица измерения"
+                            variant="outlined"
+                            onChange={(e) =>
+                                setFormData({ ...formData, unit: e.target.value })
+                            }
+                        >
+                            <MenuItem value="kg">Килограммы (кг)</MenuItem>
+                            <MenuItem value="pc">Штуки (шт)</MenuItem>
+                            <MenuItem value="l">Литры (л)</MenuItem>
+                        </Select>
+                    </FormControl>
+
+                    <Typography variant="subtitle2" sx={{ mt: 1, fontWeight: 600 }}>
+                        Начальные остатки
+                    </Typography>
+                    <Box sx={{ display: 'flex', gap: 2 }}>
+                        <TextField
+                            label="Остаток на складе"
+                            type="number"
+                            fullWidth
+                            value={formData.initial_qty ?? 0}
+                            onChange={(e) =>
+                                setFormData({
+                                    ...formData,
+                                    initial_qty: Number(e.target.value),
+                                })
+                            }
+                            slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
+                        />
+                        <TextField
+                            label="Зарезервировано"
+                            type="number"
+                            fullWidth
+                            value={formData.initial_reserved_qty ?? 0}
+                            onChange={(e) =>
+                                setFormData({
+                                    ...formData,
+                                    initial_reserved_qty: Number(e.target.value),
+                                })
+                            }
+                            slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
+                        />
+                    </Box>
+                    <Alert severity="info">
+                        Доступное количество ={' '}
+                        {(
+                            (formData.initial_qty ?? 0) -
+                            (formData.initial_reserved_qty ?? 0)
+                        ).toFixed(2)}{' '}
+                        {formData.unit}
+                    </Alert>
+                    <TextField
+                        label="Комментарий"
+                        fullWidth
+                        multiline
+                        rows={2}
+                        value={formData.comment}
+                        onChange={(e) =>
+                            setFormData({ ...formData, comment: e.target.value })
                         }
+                    />
+                </Box>
+            </DraggableDialog>
+
+            {/* ====== ДИАЛОГ ИМПОРТА (DraggableDialog) ====== */}
+            <DraggableDialog
+                open={importDialogOpen}
+                onClose={() => !importing && setImportDialogOpen(false)}
+                title="Импорт материалов из Excel"
+                initialWidth={900}
+                initialHeight={600}
+                minWidth={640}
+                minHeight={400}
+                actions={
+                    <>
+                        <Button
+                            onClick={() => setImportDialogOpen(false)}
+                            disabled={importing}
+                        >
+                            {importResult ? 'Закрыть' : 'Отмена'}
+                        </Button>
+                        <Button
+                            onClick={handleDoImport}
+                            variant="contained"
+                            color="warning"
+                            disabled={!importFile || importing}
+                            startIcon={importing ? <CircularProgress size={18} /> : <UploadIcon />}
+                        >
+                            {importing ? 'Импорт...' : 'Импортировать'}
+                        </Button>
+                    </>
+                }
+            >
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <Alert severity="info">
+                        <b>Формат:</b> колонки «Код», «Наименование», «Категория», «Ед.изм.»,
+                        «Остаток», «Резерв».
+                        <br />
+                        <b>Логика:</b> если материал с таким «Код» уже есть — обновляем
+                        (справочные поля + остатки). Если нет — создаём.
+                        <br />
+                        Не забудьте сначала <b>скачать шаблон</b> — там уже правильные
+                        заголовки.
+                    </Alert>
+
+                    <Button
+                        variant="outlined"
+                        component="label"
+                        startIcon={<UploadIcon />}
+                        sx={{ alignSelf: 'flex-start', textTransform: 'none' }}
+                        disabled={importing}
                     >
-                        {cleaning ? 'Очистка...' : 'Очистить'}
+                        Выбрать файл .xlsx
+                        <input
+                            type="file"
+                            hidden
+                            accept=".xlsx,.xlsm"
+                            onChange={(e) => {
+                                const f = e.target.files?.[0] || null;
+                                setImportFile(f);
+                                setImportResult(null);
+                            }}
+                        />
                     </Button>
-                </DialogActions>
-            </Dialog>
+
+                    {importFile && (
+                        <Chip
+                            label={`📄 ${importFile.name} (${(
+                                importFile.size / 1024
+                            ).toFixed(1)} KB)`}
+                            color="primary"
+                            variant="outlined"
+                            onDelete={() => setImportFile(null)}
+                        />
+                    )}
+
+                    {importResult && (
+                        <>
+                            <Alert
+                                severity={importResult.errors > 0 ? 'warning' : 'success'}
+                            >
+                                {importResult.message}
+                            </Alert>
+
+                            <TableContainer sx={{ maxHeight: 400 }}>
+                                <Table size="small" stickyHeader>
+                                    <TableHead>
+                                        <TableRow>
+                                            <TableCell>#</TableCell>
+                                            <TableCell>Код</TableCell>
+                                            <TableCell>Наименование</TableCell>
+                                            <TableCell align="right">Остаток</TableCell>
+                                            <TableCell align="center">Статус</TableCell>
+                                            <TableCell>Сообщение</TableCell>
+                                        </TableRow>
+                                    </TableHead>
+                                    <TableBody>
+                                        {importResult.rows.map((r, i) => (
+                                            <TableRow key={i} hover>
+                                                <TableCell>{r.row_number}</TableCell>
+                                                <TableCell>
+                                                    <Typography
+                                                        variant="caption"
+                                                        sx={{ fontFamily: 'monospace' }}
+                                                    >
+                                                        {r.code || '—'}
+                                                    </Typography>
+                                                </TableCell>
+                                                <TableCell>{r.name || '—'}</TableCell>
+                                                <TableCell align="right">
+                                                    {r.qty != null ? r.qty.toFixed(2) : '—'}
+                                                </TableCell>
+                                                <TableCell align="center">
+                                                    <Chip
+                                                        label={r.status}
+                                                        color={
+                                                            r.status === 'CREATED'
+                                                                ? 'success'
+                                                                : r.status === 'UPDATED'
+                                                                    ? 'info'
+                                                                    : r.status === 'SKIPPED'
+                                                                        ? 'default'
+                                                                        : 'error'
+                                                        }
+                                                        size="small"
+                                                    />
+                                                </TableCell>
+                                                <TableCell>
+                                                    <Typography variant="caption">
+                                                        {r.message || ''}
+                                                    </Typography>
+                                                </TableCell>
+                                            </TableRow>
+                                        ))}
+                                    </TableBody>
+                                </Table>
+                            </TableContainer>
+                        </>
+                    )}
+                </Box>
+            </DraggableDialog>
+
+            {/* ====== ДИАЛОГ ОЧИСТКИ ЖУРНАЛА (DraggableDialog) ====== */}
+            <DraggableDialog
+                open={cleanupDialogOpen}
+                onClose={() => !cleaning && setCleanupDialogOpen(false)}
+                title="Очистка журнала изменений"
+                initialWidth={600}
+                initialHeight="auto"
+                minWidth={480}
+                minHeight={320}
+                actions={
+                    <>
+                        <Button
+                            onClick={() => setCleanupDialogOpen(false)}
+                            disabled={cleaning}
+                        >
+                            Отмена
+                        </Button>
+                        <Button
+                            onClick={handleCleanup}
+                            variant="contained"
+                            color="error"
+                            disabled={cleaning}
+                            startIcon={
+                                cleaning ? <CircularProgress size={18} /> : <DeleteIcon />
+                            }
+                        >
+                            {cleaning ? 'Очистка...' : 'Очистить'}
+                        </Button>
+                    </>
+                }
+            >
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <Alert severity="warning">
+                        Удаляются <b>записи журнала</b> (не остатки!). Откат удалённых
+                        записей станет невозможен. Сами остатки материалов{' '}
+                        <b>не меняются</b>.
+                    </Alert>
+
+                    <TextField
+                        label="Удалить записи старше (дней)"
+                        type="number"
+                        fullWidth
+                        value={cleanupDays}
+                        onChange={(e) => setCleanupDays(Number(e.target.value) || 90)}
+                        slotProps={{ htmlInput: { min: 1, max: 3650, step: 1 } }}
+                        helperText="Например: 90 — удалить всё старше 3 месяцев"
+                    />
+
+                    <FormControl fullWidth variant="outlined">
+                        <InputLabel>Источник (опционально)</InputLabel>
+                        <Select
+                            value={cleanupSource}
+                            label="Источник (опционально)"
+                            variant="outlined"
+                            onChange={(e) => setCleanupSource(e.target.value)}
+                        >
+                            <MenuItem value="">Все источники</MenuItem>
+                            <MenuItem value="MANUAL">Только MANUAL</MenuItem>
+                            <MenuItem value="IMPORT">Только IMPORT</MenuItem>
+                            <MenuItem value="SYSTEM">Только SYSTEM</MenuItem>
+                        </Select>
+                    </FormControl>
+                </Box>
+            </DraggableDialog>
         </Box>
     );
 };

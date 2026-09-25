@@ -18,10 +18,6 @@ import {
     CardContent,
     Chip,
     CircularProgress,
-    Dialog,
-    DialogActions,
-    DialogContent,
-    DialogTitle,
     Divider,
     FormControl,
     IconButton,
@@ -54,6 +50,7 @@ import 'allotment/dist/style.css';
 import {advisorApi, rescheduleApi, scheduleApi, settingsApi} from '../services/api';
 import type {AdvisorResponse, AdvisorSeverity, RescheduleReason, RescheduleResponse,} from '../types';
 import PlanSettingsWizard, {type WizardMode} from './PlanSettingsWizard';
+import DraggableDialog from '../components/common/DraggableDialog';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -103,10 +100,7 @@ const SchedulePage: React.FC = () => {
     const [advisorLoading, setAdvisorLoading] = useState(false);
     const [advisorError, setAdvisorError] = useState<string | null>(null);
 
-    // ==========================================
-    // Итерация 13.14: единый мастер настроек плана
-    // (заменяет старые диалоги «Новый план» и «Настройки плана»)
-    // ==========================================
+    // Мастер настроек плана
     const [wizardOpen, setWizardOpen] = useState(false);
     const [wizardMode, setWizardMode] = useState<WizardMode>('edit');
     const [wizardVersionId, setWizardVersionId] = useState<string | null>(null);
@@ -231,14 +225,6 @@ const SchedulePage: React.FC = () => {
         }
     };
 
-    // ==========================================
-    // Итерация 13.14: открыть план → установить в контекст
-    // и перейти на страницу «Диаграмма Ганта».
-    //
-    // Итерация 13.15: передаём has_snapshot в setPlan. Если план пуст
-    // (создан до 13.15 или не рассчитан), UI покажет предупреждение
-    // вместо пустых справочников.
-    // ==========================================
     const handleOpenPlan = (version: PlanVersion) => {
         setPlan(
             version.id,
@@ -248,19 +234,10 @@ const SchedulePage: React.FC = () => {
         navigate('/gantt');
     };
 
-    // ==========================================
-    // Итерация 13.14: закрыть текущий план → вернуться
-    // в режим редактирования. Остаёмся на «Планировании».
-    // ==========================================
     const handleClosePlan = () => {
         clearPlan();
     };
 
-    // ==========================================
-    // Итерация 13.14: открыть мастер настроек
-    //   - режим 'edit' — для существующего плана
-    //   - режим 'create' — для создания нового плана
-    // ==========================================
     const handleOpenWizardEdit = (versionId: string) => {
         setWizardMode('edit');
         setWizardVersionId(versionId);
@@ -283,9 +260,6 @@ const SchedulePage: React.FC = () => {
             navigate(`/gantt?version_id=${versionId}`);
         }
         if (action === 'create-and-build') {
-            // Триггер БД уже скопировал app_settings в plan_settings,
-            // мастер сохранил поверх него. Снапшоты заполнены
-            // (Итерация 13.15 — в create_schedule_version).
             await loadVersions();
         }
     };
@@ -331,9 +305,6 @@ const SchedulePage: React.FC = () => {
         }
     };
 
-    // ==========================================
-    // Колонки таблицы планов
-    // ==========================================
     const columnDefs: ColDef[] = [
         { headerName: 'Наименование', field: 'name', flex: 2 },
         {
@@ -430,9 +401,6 @@ const SchedulePage: React.FC = () => {
         },
     ];
 
-    // ==========================================
-    // Advisor Panel
-    // ==========================================
     const renderAdvisorPanel = () => {
         return (
             <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column', m: 0.5 }}>
@@ -524,9 +492,6 @@ const SchedulePage: React.FC = () => {
         );
     };
 
-    // ==========================================
-    // AgGrid Panel — история планов
-    // ==========================================
     const renderPlansGrid = () => {
         return (
             <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column', m: 0.5 }}>
@@ -586,9 +551,6 @@ const SchedulePage: React.FC = () => {
         );
     };
 
-    // ==========================================
-    // Основной рендер
-    // ==========================================
     return (
         <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             {/* Заголовок */}
@@ -706,14 +668,7 @@ const SchedulePage: React.FC = () => {
                 </Allotment>
             </Box>
 
-            {/*
-              ============================================
-              Итерация 13.14: единый мастер настроек плана.
-              Заменяет старые диалоги:
-                - «Создать новый план» (удалён)
-                - «Настройки плана» (объединён в этот)
-              ============================================
-            */}
+            {/* Мастер настроек плана */}
             <PlanSettingsWizard
                 open={wizardOpen}
                 onClose={() => setWizardOpen(false)}
@@ -722,98 +677,100 @@ const SchedulePage: React.FC = () => {
                 onSaved={handleWizardSaved}
             />
 
-            {/* ---------- Диалог перепланирования ---------- */}
-            <Dialog
+            {/* ---------- Диалог перепланирования (DraggableDialog) ---------- */}
+            <DraggableDialog
                 open={rescheduleDialogOpen}
                 onClose={() => setRescheduleDialogOpen(false)}
-                maxWidth="sm"
-                fullWidth
-            >
-                <DialogTitle sx={{ fontWeight: 600 }}>Перепланирование</DialogTitle>
-                <DialogContent>
-                    {!rescheduleResult ? (
-                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
-                            <Alert severity="info">
-                                Перепланирование создаст новую версию плана. Задачи до <b>frozen_before</b> и
-                                задачи с флагом <b>is_pinned</b> не будут двигаться.
-                            </Alert>
-                            <FormControl fullWidth variant="outlined">
-                                <InputLabel>Причина перепланирования</InputLabel>
-                                <Select
-                                    value={rescheduleForm.reason}
-                                    label="Причина перепланирования"
-                                    variant="outlined"
-                                    onChange={(e) =>
-                                        setRescheduleForm({ ...rescheduleForm, reason: e.target.value as RescheduleReason })
-                                    }
-                                >
-                                    <MenuItem value="DELAY">Задержка операции</MenuItem>
-                                    <MenuItem value="BREAKDOWN">Поломка оборудования</MenuItem>
-                                    <MenuItem value="QTY_CHANGE">Изменение объёма</MenuItem>
-                                    <MenuItem value="MANUAL">Ручное изменение</MenuItem>
-                                </Select>
-                            </FormControl>
-                            <TextField
-                                label="Заморозить до (frozen_before)"
-                                type="datetime-local"
-                                fullWidth
-                                value={rescheduleForm.frozen_before}
-                                onChange={(e) =>
-                                    setRescheduleForm({ ...rescheduleForm, frozen_before: e.target.value })
-                                }
-                                slotProps={{ inputLabel: { shrink: true } }}
-                                helperText="Задачи, начавшиеся до этого момента, не будут двигаться"
-                            />
-                            <TextField
-                                label="Комментарий"
-                                fullWidth
-                                multiline
-                                rows={2}
-                                value={rescheduleForm.comment}
-                                onChange={(e) =>
-                                    setRescheduleForm({ ...rescheduleForm, comment: e.target.value })
-                                }
-                            />
-                        </Box>
-                    ) : (
-                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
-                            <Alert severity="success">{rescheduleResult.message}</Alert>
-                            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                                <Chip
-                                    label={`Затронуто задач: ${rescheduleResult.affected_tasks}`}
-                                    color="warning"
-                                />
-                                <Chip
-                                    label={`Перенесено: ${rescheduleResult.moved_tasks}`}
-                                    color="primary"
-                                />
-                                <Chip
-                                    label={`Заморожено: ${rescheduleResult.frozen_tasks}`}
-                                    variant="outlined"
-                                />
-                            </Box>
-                            <Typography variant="caption" color="text.secondary">
-                                Новая версия: {rescheduleResult.to_version_id}
-                            </Typography>
-                        </Box>
-                    )}
-                </DialogContent>
-                <DialogActions>
-                    <Button onClick={() => setRescheduleDialogOpen(false)}>
-                        {rescheduleResult ? 'Закрыть' : 'Отмена'}
-                    </Button>
-                    {!rescheduleResult && (
-                        <Button
-                            onClick={handleDoReschedule}
-                            variant="contained"
-                            disabled={rescheduling}
-                            startIcon={rescheduling ? <CircularProgress size={20} /> : <RescheduleIcon />}
-                        >
-                            {rescheduling ? 'Перепланирование...' : 'Перепланировать'}
+                title="Перепланирование"
+                initialWidth={600}
+                initialHeight="auto"
+                minWidth={480}
+                minHeight={320}
+                actions={
+                    <>
+                        <Button onClick={() => setRescheduleDialogOpen(false)}>
+                            {rescheduleResult ? 'Закрыть' : 'Отмена'}
                         </Button>
-                    )}
-                </DialogActions>
-            </Dialog>
+                        {!rescheduleResult && (
+                            <Button
+                                onClick={handleDoReschedule}
+                                variant="contained"
+                                disabled={rescheduling}
+                                startIcon={rescheduling ? <CircularProgress size={20} /> : <RescheduleIcon />}
+                            >
+                                {rescheduling ? 'Перепланирование...' : 'Перепланировать'}
+                            </Button>
+                        )}
+                    </>
+                }
+            >
+                {!rescheduleResult ? (
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        <Alert severity="info">
+                            Перепланирование создаст новую версию плана. Задачи до <b>frozen_before</b> и
+                            задачи с флагом <b>is_pinned</b> не будут двигаться.
+                        </Alert>
+                        <FormControl fullWidth variant="outlined">
+                            <InputLabel>Причина перепланирования</InputLabel>
+                            <Select
+                                value={rescheduleForm.reason}
+                                label="Причина перепланирования"
+                                variant="outlined"
+                                onChange={(e) =>
+                                    setRescheduleForm({ ...rescheduleForm, reason: e.target.value as RescheduleReason })
+                                }
+                            >
+                                <MenuItem value="DELAY">Задержка операции</MenuItem>
+                                <MenuItem value="BREAKDOWN">Поломка оборудования</MenuItem>
+                                <MenuItem value="QTY_CHANGE">Изменение объёма</MenuItem>
+                                <MenuItem value="MANUAL">Ручное изменение</MenuItem>
+                            </Select>
+                        </FormControl>
+                        <TextField
+                            label="Заморозить до (frozen_before)"
+                            type="datetime-local"
+                            fullWidth
+                            value={rescheduleForm.frozen_before}
+                            onChange={(e) =>
+                                setRescheduleForm({ ...rescheduleForm, frozen_before: e.target.value })
+                            }
+                            slotProps={{ inputLabel: { shrink: true } }}
+                            helperText="Задачи, начавшиеся до этого момента, не будут двигаться"
+                        />
+                        <TextField
+                            label="Комментарий"
+                            fullWidth
+                            multiline
+                            rows={2}
+                            value={rescheduleForm.comment}
+                            onChange={(e) =>
+                                setRescheduleForm({ ...rescheduleForm, comment: e.target.value })
+                            }
+                        />
+                    </Box>
+                ) : (
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        <Alert severity="success">{rescheduleResult.message}</Alert>
+                        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                            <Chip
+                                label={`Затронуто задач: ${rescheduleResult.affected_tasks}`}
+                                color="warning"
+                            />
+                            <Chip
+                                label={`Перенесено: ${rescheduleResult.moved_tasks}`}
+                                color="primary"
+                            />
+                            <Chip
+                                label={`Заморожено: ${rescheduleResult.frozen_tasks}`}
+                                variant="outlined"
+                            />
+                        </Box>
+                        <Typography variant="caption" color="text.secondary">
+                            Новая версия: {rescheduleResult.to_version_id}
+                        </Typography>
+                    </Box>
+                )}
+            </DraggableDialog>
         </Box>
     );
 };

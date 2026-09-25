@@ -2,7 +2,7 @@
 
 **Система автоматического планирования производства на базе OR-Tools CP-SAT**
 
-Версия: **4.1.1** (Итерации 0–13.15 завершены)
+Версия: **4.1.2** (Итерации 0–13.16 завершены)
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -653,6 +653,25 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 - ✅ **Старые планы** подсвечены ⚠, при открытии — предупреждение.
 - ✅ **Единый источник правды** для снапшотов — модуль `snapshot.py`.
 - ✅ **Обратная совместимость:** старые планы всё ещё открываются (с предупреждением).
+
+### Итерация 13.16 — Унификация диалогов и UI-полировка
+
+**Что сделано:**
+
+- ✅ **Все 20 диалогов в 12 страницах** переведены на единый компонент
+  `DraggableDialog.tsx`:
+  - Убран дублированный drag/resize-код.
+  - Добавлен проп `centerOnOpen` — диалоги открываются по центру.
+  - Единый стиль заголовков, кнопок закрытия и footer-действий.
+- ✅ **`CzPage.tsx`** — исправлен layout: заголовок `h5`, `gap: 2`,
+  Card-обёртки, единая типографика.
+- ✅ **`MainLayout.tsx`** — пункт «Аудит» временно скрыт из меню
+  (страница в разработке, роут `/audit` оставлен для отладки).
+
+**Затронутые страницы:**
+`EquipmentPage`, `ProductsPage`, `MaterialsPage`, `RecipesPage`,
+`OperationsPage`, `OrdersPage`, `SchedulePage`, `ShiftPage`, `CzPage`,
+`WhatIfPage`, `SettingsPage`, `GanttPage`.
 
 ## 🛠️ Стек технологий
 

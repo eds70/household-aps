@@ -28,7 +28,6 @@ import {
     ChevronLeft as ChevronLeftIcon,
     Edit as EditIcon,
     Factory as FactoryIcon,
-    History as HistoryIcon,
     Inventory as InventoryIcon,
     Lock as LockIcon,
     Logout as LogoutIcon,
@@ -62,7 +61,8 @@ const MENU_ITEMS = [
     { path: '/personnel', label: 'Персонал', icon: <PersonIcon /> },
     { path: '/cz', label: 'Честный Знак', icon: <QrCodeScannerIcon /> },
     { path: '/whatif', label: 'What-if', icon: <ScienceIcon /> },
-    { path: '/audit', label: 'Аудит', icon: <HistoryIcon /> },
+    // Итерация 13.16: пункт «Аудит» временно скрыт — страница в разработке.
+    // { path: '/audit', label: 'Аудит', icon: <HistoryIcon /> },
     { path: '/settings', label: 'Настройки', icon: <SettingsIcon /> },
 ];
 
@@ -109,8 +109,6 @@ const MainLayout: React.FC = () => {
 
     const currentDrawerWidth = collapsed ? DRAWER_WIDTH_COLLAPSED : DRAWER_WIDTH_EXPANDED;
 
-    // Итерация 13.13: есть ли открытый план.
-    // Если план открыт — работаем в режиме просмотра (readonly).
     const isPlanOpen = currentVersionId !== null;
 
     const drawerContent = (
@@ -253,11 +251,6 @@ const MainLayout: React.FC = () => {
                         </IconButton>
                     </Tooltip>
 
-                    {/* ============================================
-                        Итерация 13.13: заголовок страницы + активный план.
-                        Название плана выводится рядом с заголовком страницы,
-                        чтобы было видно на ЛЮБОЙ странице приложения.
-                        ============================================ */}
                     <Box
                         sx={{
                             display: 'flex',
@@ -267,7 +260,6 @@ const MainLayout: React.FC = () => {
                             minWidth: 0,
                         }}
                     >
-                        {/* Заголовок текущей страницы */}
                         <Typography variant="h6" noWrap sx={{ flexShrink: 0 }}>
                             {MENU_ITEMS.find((item) => item.path === location.pathname)?.label || 'APS Scheduler'}
                         </Typography>
@@ -278,11 +270,6 @@ const MainLayout: React.FC = () => {
                             sx={{ bgcolor: 'rgba(255,255,255,0.3)', flexShrink: 0 }}
                         />
 
-                        {/* ============================================
-                            Активный план:
-                            - План открыт: синий Chip + 🔒 (readonly).
-                            - План не открыт: серый Chip + ✏ (редактирование).
-                            ============================================ */}
                         {isPlanOpen ? (
                             <Tooltip
                                 title={`Открыт план: ${currentPlanName}. Режим просмотра (readonly).`}

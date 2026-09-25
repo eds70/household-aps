@@ -1,47 +1,44 @@
-// src/pages/EquipmentPage.tsx
-import React, { useState, useEffect, useRef, useCallback } from "react";
+// frontend/src/pages/EquipmentPage.tsx
+import React, {useCallback, useEffect, useRef, useState} from "react";
 import {
+    Alert,
     Box,
     Button,
     Card,
     CardContent,
-    Dialog,
-    DialogActions,
-    DialogContent,
-    DialogTitle,
+    Chip,
+    CircularProgress,
     FormControl,
+    IconButton,
     InputLabel,
     MenuItem,
     Select,
     TextField,
     Typography,
-    IconButton,
-    CircularProgress,
-    Alert,
-    Chip,
 } from "@mui/material";
 import {
     Add as AddIcon,
-    Delete as DeleteIcon,
     Build as BuildIcon,
-    Refresh as RefreshIcon,
+    Delete as DeleteIcon,
     Lock as LockIcon,
+    Refresh as RefreshIcon,
 } from "@mui/icons-material";
-import { AgGridReact } from "ag-grid-react";
-import { ModuleRegistry, AllCommunityModule } from "ag-grid-community";
+import {AgGridReact} from "ag-grid-react";
+import type {ColDef, GridReadyEvent, RowClickedEvent} from "ag-grid-community";
+import {AllCommunityModule, ModuleRegistry} from "ag-grid-community";
 import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-alpine.css";
-import type { ColDef, GridReadyEvent, RowClickedEvent } from "ag-grid-community";
-import { Timeline } from "vis-timeline/standalone";
-import { DataSet } from "vis-data";
+import {Timeline} from "vis-timeline/standalone";
+import {DataSet} from "vis-data";
 import "vis-timeline/styles/vis-timeline-graph2d.min.css";
-import { Allotment } from "allotment";
+import {Allotment} from "allotment";
 import "allotment/dist/style.css";
-import type { Equipment, CalendarEvent } from "../types";
-import { usePlan } from "../context/PlainContext";
-import { equipmentApi, calendarApi } from "../services/api";
+import type {CalendarEvent, Equipment} from "../types";
+import {usePlan} from "../context/PlainContext";
+import {calendarApi, equipmentApi} from "../services/api";
 import axios from "axios";
-import { API_BASE_URL } from "../config";
+import {API_BASE_URL} from "../config";
+import DraggableDialog from "../components/common/DraggableDialog";
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -139,7 +136,6 @@ const EquipmentPage: React.FC = () => {
         setLoadingEq(true);
         setEqError(null);
         try {
-            // ✅ Передаем version_id если выбран план
             const data = await equipmentApi.getAll(currentVersionId || undefined);
             setEquipment(data);
         } catch (err: any) {
@@ -158,7 +154,6 @@ const EquipmentPage: React.FC = () => {
         setLoadingRepairs(true);
         setRepairsError(null);
         try {
-            // ✅ Передаем version_id если выбран план
             const data = await calendarApi.getByEquipment(eqId, currentVersionId || undefined);
             setRepairs(data);
         } catch (err: any) {
@@ -232,7 +227,7 @@ const EquipmentPage: React.FC = () => {
             groupOrder: "content" as const,
             editable: {
                 add: false,
-                updateTime: !isReadOnly, // ✅ Блокируем перемещение в режиме просмотра
+                updateTime: !isReadOnly,
                 updateGroup: false,
                 remove: false,
             },
@@ -665,12 +660,34 @@ const EquipmentPage: React.FC = () => {
                 </Typography>
             )}
 
-            {/* ========== ДИАЛОГ ДОБАВЛЕНИЯ ОБОРУДОВАНИЯ ========== */}
+            {/* ========== ДИАЛОГ ДОБАВЛЕНИЯ ОБОРУДОВАНИЯ (DraggableDialog) ========== */}
             {!isReadOnly && (
-                <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="sm" fullWidth>
-                    <DialogTitle sx={{ fontWeight: 600 }}>Добавить оборудование</DialogTitle>
-                    <DialogContent>
-                        <TextField autoFocus margin="dense" label="Наименование" fullWidth value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} />
+                <DraggableDialog
+                    open={dialogOpen}
+                    onClose={() => setDialogOpen(false)}
+                    title="Добавить оборудование"
+                    initialWidth={600}
+                    initialHeight="auto"
+                    minWidth={480}
+                    minHeight={300}
+                    actions={
+                        <>
+                            <Button onClick={() => setDialogOpen(false)}>Отмена</Button>
+                            <Button onClick={handleSaveEquipment} variant="contained">
+                                Сохранить
+                            </Button>
+                        </>
+                    }
+                >
+                    <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        <TextField
+                            autoFocus
+                            margin="dense"
+                            label="Наименование"
+                            fullWidth
+                            value={formData.name}
+                            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                        />
                         <FormControl fullWidth margin="dense">
                             <InputLabel>Тип</InputLabel>
                             <Select value={formData.type} label="Тип" onChange={(e) => setFormData({ ...formData, type: e.target.value })}>
@@ -681,8 +698,22 @@ const EquipmentPage: React.FC = () => {
                                 <MenuItem value="MANUAL_STATION">Ручная станция</MenuItem>
                             </Select>
                         </FormControl>
-                        <TextField margin="dense" label="Объем (кг)" type="number" fullWidth value={formData.volume_kg} onChange={(e) => setFormData({ ...formData, volume_kg: Number(e.target.value) })} />
-                        <TextField margin="dense" label="Коэффициент скорости" type="number" fullWidth value={formData.speed_coeff} onChange={(e) => setFormData({ ...formData, speed_coeff: Number(e.target.value) })} />
+                        <TextField
+                            margin="dense"
+                            label="Объем (кг)"
+                            type="number"
+                            fullWidth
+                            value={formData.volume_kg}
+                            onChange={(e) => setFormData({ ...formData, volume_kg: Number(e.target.value) })}
+                        />
+                        <TextField
+                            margin="dense"
+                            label="Коэффициент скорости"
+                            type="number"
+                            fullWidth
+                            value={formData.speed_coeff}
+                            onChange={(e) => setFormData({ ...formData, speed_coeff: Number(e.target.value) })}
+                        />
                         <FormControl fullWidth margin="dense">
                             <InputLabel>Тип мешалки</InputLabel>
                             <Select value={formData.mixer_type} label="Тип мешалки" onChange={(e) => setFormData({ ...formData, mixer_type: e.target.value })}>
@@ -691,24 +722,47 @@ const EquipmentPage: React.FC = () => {
                                 <MenuItem value="low_speed">Низкоскоростная</MenuItem>
                             </Select>
                         </FormControl>
-                    </DialogContent>
-                    <DialogActions>
-                        <Button onClick={() => setDialogOpen(false)}>Отмена</Button>
-                        <Button onClick={handleSaveEquipment} variant="contained">
-                            Сохранить
-                        </Button>
-                    </DialogActions>
-                </Dialog>
+                    </Box>
+                </DraggableDialog>
             )}
 
-            {/* ========== ДИАЛОГ РЕМОНТА ========== */}
+            {/* ========== ДИАЛОГ РЕМОНТА (DraggableDialog) ========== */}
             {!isReadOnly && (
-                <Dialog open={repairDialogOpen} onClose={() => setRepairDialogOpen(false)} maxWidth="sm" fullWidth>
-                    <DialogTitle sx={{ fontWeight: 600 }}>{editingRepair ? "Редактировать ремонт / простой" : "Добавить ремонт / простой"}</DialogTitle>
-                    <DialogContent>
+                <DraggableDialog
+                    open={repairDialogOpen}
+                    onClose={() => setRepairDialogOpen(false)}
+                    title={editingRepair ? "Редактировать ремонт / простой" : "Добавить ремонт / простой"}
+                    initialWidth={600}
+                    initialHeight="auto"
+                    minWidth={480}
+                    minHeight={300}
+                    actions={
+                        <>
+                            {editingRepair && (
+                                <Button
+                                    onClick={handleDeleteRepair}
+                                    color="error"
+                                    startIcon={<DeleteIcon />}
+                                    sx={{ mr: "auto" }}
+                                >
+                                    Удалить
+                                </Button>
+                            )}
+                            <Button onClick={() => setRepairDialogOpen(false)}>Отмена</Button>
+                            <Button onClick={handleSaveRepair} variant="contained" sx={{ ml: 1 }}>
+                                Сохранить
+                            </Button>
+                        </>
+                    }
+                >
+                    <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
                         <FormControl fullWidth margin="dense">
                             <InputLabel>Тип события</InputLabel>
-                            <Select value={repairForm.event_type} label="Тип события" onChange={(e) => setRepairForm({ ...repairForm, event_type: e.target.value })}>
+                            <Select
+                                value={repairForm.event_type}
+                                label="Тип события"
+                                onChange={(e) => setRepairForm({ ...repairForm, event_type: e.target.value })}
+                            >
                                 <MenuItem value="REPAIR">Плановый ремонт</MenuItem>
                                 <MenuItem value="BREAKDOWN">Аварийная остановка</MenuItem>
                                 <MenuItem value="WEEKEND">Выходные</MenuItem>
@@ -716,26 +770,35 @@ const EquipmentPage: React.FC = () => {
                                 <MenuItem value="LUNCH">Обед</MenuItem>
                             </Select>
                         </FormControl>
-                        <TextField margin="dense" label="Начало" type="datetime-local" fullWidth value={repairForm.starts_at} onChange={(e) => setRepairForm({ ...repairForm, starts_at: e.target.value })} slotProps={{ inputLabel: { shrink: true } }} />
-                        <TextField margin="dense" label="Окончание" type="datetime-local" fullWidth value={repairForm.ends_at} onChange={(e) => setRepairForm({ ...repairForm, ends_at: e.target.value })} slotProps={{ inputLabel: { shrink: true } }} />
-                        <TextField margin="dense" label="Комментарий" fullWidth multiline rows={2} value={repairForm.comment} onChange={(e) => setRepairForm({ ...repairForm, comment: e.target.value })} />
-                    </DialogContent>
-                    <DialogActions sx={{ justifyContent: "space-between" }}>
-                        {editingRepair ? (
-                            <Button onClick={handleDeleteRepair} color="error" startIcon={<DeleteIcon />}>
-                                Удалить
-                            </Button>
-                        ) : (
-                            <span />
-                        )}
-                        <Box>
-                            <Button onClick={() => setRepairDialogOpen(false)}>Отмена</Button>
-                            <Button onClick={handleSaveRepair} variant="contained" sx={{ ml: 1 }}>
-                                Сохранить
-                            </Button>
-                        </Box>
-                    </DialogActions>
-                </Dialog>
+                        <TextField
+                            margin="dense"
+                            label="Начало"
+                            type="datetime-local"
+                            fullWidth
+                            value={repairForm.starts_at}
+                            onChange={(e) => setRepairForm({ ...repairForm, starts_at: e.target.value })}
+                            slotProps={{ inputLabel: { shrink: true } }}
+                        />
+                        <TextField
+                            margin="dense"
+                            label="Окончание"
+                            type="datetime-local"
+                            fullWidth
+                            value={repairForm.ends_at}
+                            onChange={(e) => setRepairForm({ ...repairForm, ends_at: e.target.value })}
+                            slotProps={{ inputLabel: { shrink: true } }}
+                        />
+                        <TextField
+                            margin="dense"
+                            label="Комментарий"
+                            fullWidth
+                            multiline
+                            rows={2}
+                            value={repairForm.comment}
+                            onChange={(e) => setRepairForm({ ...repairForm, comment: e.target.value })}
+                        />
+                    </Box>
+                </DraggableDialog>
             )}
         </Box>
     );

@@ -11,6 +11,8 @@ import {Close as CloseIcon} from '@mui/icons-material';
  *   - resizable (по умолчанию true) — изменение размера за угол.
  *   - closeOnBackdropClick (по умолчанию false) — закрытие по клику вне.
  *   - showCloseButton (по умолчанию true) — иконка "✕" в правом верхнем углу.
+ *   - centerOnOpen (по умолчанию true) — открывать по центру экрана.
+ *                                       Если false — по верхнему левому углу.
  *   - initialWidth / initialHeight — стартовый размер.
  *   - minWidth / minHeight — минимальные размеры.
  *
@@ -40,6 +42,7 @@ interface DraggableDialogProps {
     closeOnBackdropClick?: boolean;
     showCloseButton?: boolean;
     disableBackdropClick?: boolean;
+    centerOnOpen?: boolean;
 
     // Размеры
     initialWidth?: number | string;
@@ -69,6 +72,7 @@ const DraggableDialog: React.FC<DraggableDialogProps> = ({
                                                              closeOnBackdropClick = false,
                                                              showCloseButton = true,
                                                              disableBackdropClick,
+                                                             centerOnOpen = true,
                                                              initialWidth = 700,
                                                              initialHeight = 'auto',
                                                              minWidth = 480,
@@ -241,9 +245,9 @@ const DraggableDialog: React.FC<DraggableDialogProps> = ({
                 root: {
                     sx: {
                         '& .MuiDialog-container': {
-                            alignItems: 'flex-start',
-                            justifyContent: 'flex-start',
-                            padding: 0,
+                            alignItems: centerOnOpen ? 'center' : 'flex-start',
+                            justifyContent: centerOnOpen ? 'center' : 'flex-start',
+                            padding: centerOnOpen ? 2 : 0,
                         },
                     },
                 },

@@ -8,10 +8,6 @@ import {
     CardContent,
     Chip,
     CircularProgress,
-    Dialog,
-    DialogActions,
-    DialogContent,
-    DialogTitle,
     Divider,
     FormControl,
     IconButton,
@@ -55,9 +51,9 @@ import type {
     WhatIfScenarioListItem,
     WhatIfStatus,
 } from '../types';
+import DraggableDialog from '../components/common/DraggableDialog';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
-
 
 // ==========================================
 // КОНСТАНТЫ
@@ -79,7 +75,6 @@ const STATUS_COLORS: Record<WhatIfStatus, 'default' | 'warning' | 'info' | 'succ
 
 const POLLING_INTERVAL_MS = 3000;
 const POLLING_MAX_ATTEMPTS = 120;
-
 
 // ==========================================
 // JSON-ШАБЛОНЫ
@@ -136,7 +131,6 @@ const JSON_TEMPLATE_FULL: WhatIfChanges = {
         REACTOR_OPERATOR: 4,
     },
 };
-
 
 // ==========================================
 // КОМПОНЕНТ
@@ -480,11 +474,6 @@ const WhatIfPage: React.FC = () => {
                                 </IconButton>
                             </Tooltip>
                         )}
-                        {/*
-                          Итерация 12 (fix #3): разрешаем удаление для всех
-                          статусов кроме RUNNING. План (result_version_id)
-                          остаётся в истории независимо.
-                        */}
                         {!isRunning && (
                             <Tooltip title={
                                 hasResult
@@ -615,208 +604,213 @@ const WhatIfPage: React.FC = () => {
                 </CardContent>
             </Card>
 
-            {/* Диалог создания/редактирования */}
-            <Dialog
+            {/* Диалог создания/редактирования (DraggableDialog) */}
+            <DraggableDialog
                 open={dialogOpen}
                 onClose={() => !saving && setDialogOpen(false)}
-                maxWidth="md"
-                fullWidth
-            >
-                <DialogTitle sx={{fontWeight: 600}}>
-                    {editingScenario ? `Редактировать: ${editingScenario.name}` : 'Создать What-if сценарий'}
-                </DialogTitle>
-                <DialogContent>
-                    <Box sx={{display: 'flex', flexDirection: 'column', gap: 2, mt: 1}}>
-                        <TextField
-                            label="Название сценария"
-                            fullWidth
-                            required
-                            value={formName}
-                            onChange={(e) => setFormName(e.target.value)}
-                            placeholder="Например: +20% крем-мыло 1л"
-                        />
-
-                        <FormControl fullWidth required disabled={!!editingScenario}>
-                            <InputLabel>Базовый план</InputLabel>
-                            <Select
-                                value={formBaseVersionId}
-                                label="Базовый план"
-                                onChange={(e) => setFormBaseVersionId(e.target.value)}
-                            >
-                                {versions.map((v) => (
-                                    <MenuItem key={v.id} value={v.id}>
-                                        {v.name}
-                                        {v.is_active ? ' (активный)' : ''}
-                                    </MenuItem>
-                                ))}
-                            </Select>
-                        </FormControl>
-
-                        <TextField
-                            label="Комментарий"
-                            fullWidth
-                            multiline
-                            rows={2}
-                            value={formComment}
-                            onChange={(e) => setFormComment(e.target.value)}
-                        />
-
-                        <Divider/>
-
-                        <Typography variant="subtitle2" sx={{fontWeight: 600}}>
-                            Шаблоны изменений
-                        </Typography>
-                        <Box sx={{display: 'flex', gap: 1, flexWrap: 'wrap'}}>
-                            <Button size="small" variant="outlined" onClick={() => handleApplyTemplate(JSON_TEMPLATE_SHIFT_MODE)}>
-                                Режим смен 3x8
-                            </Button>
-                            <Button size="small" variant="outlined" onClick={() => handleApplyTemplate(JSON_TEMPLATE_ADD_ORDER)}>
-                                + Заказ
-                            </Button>
-                            <Button size="small" variant="outlined" onClick={() => handleApplyTemplate(JSON_TEMPLATE_CAPACITY)}>
-                                + Capacity
-                            </Button>
-                            <Button size="small" variant="outlined" onClick={() => handleApplyTemplate(JSON_TEMPLATE_BREAKDOWN)}>
-                                Авария Р4
-                            </Button>
-                            <Button size="small" variant="outlined" onClick={() => handleApplyTemplate(JSON_TEMPLATE_FULL)}>
-                                Полный пример
-                            </Button>
-                        </Box>
-
-                        <Typography variant="subtitle2" sx={{fontWeight: 600}}>
-                            Изменения (JSON)
-                        </Typography>
-                        <TextField
-                            fullWidth
-                            multiline
-                            rows={14}
-                            value={formChangesJson}
-                            onChange={(e) => {
-                                setFormChangesJson(e.target.value);
-                                setFormJsonError(null);
-                            }}
-                            onBlur={validateJson}
-                            error={!!formJsonError}
-                            helperText={formJsonError || 'JSON должен быть валидным'}
-                            slotProps={{
-                                input: {
-                                    style: {
-                                        fontFamily: 'monospace',
-                                        fontSize: '0.85rem',
-                                    },
-                                },
-                            }}
-                        />
-                    </Box>
-                </DialogContent>
-                <DialogActions>
-                    <Button onClick={() => setDialogOpen(false)} disabled={saving}>
-                        Отмена
-                    </Button>
-                    <Button
-                        variant="contained"
-                        onClick={handleSave}
-                        disabled={saving || !!formJsonError}
-                        startIcon={saving ? <CircularProgress size={20}/> : <SaveIcon/>}
-                    >
-                        {saving ? 'Сохранение...' : 'Сохранить'}
-                    </Button>
-                </DialogActions>
-            </Dialog>
-
-            {/* Диалог результата */}
-            <Dialog
-                open={resultDialogOpen}
-                onClose={() => setResultDialogOpen(false)}
-                maxWidth="md"
-                fullWidth
-            >
-                <DialogTitle sx={{fontWeight: 600, display: 'flex', alignItems: 'center', gap: 1}}>
-                    <CheckCircleIcon color="success"/>
-                    Результат сценария
-                </DialogTitle>
-                <DialogContent>
-                    {runResult && (
-                        <Box sx={{display: 'flex', flexDirection: 'column', gap: 2, mt: 1}}>
-                            <Alert severity="info">
-                                <b>{runResult.scenario_name}</b> — сравнение с базовым планом
-                            </Alert>
-
-                            <TableContainer component={Paper} variant="outlined">
-                                <Table size="small">
-                                    <TableHead>
-                                        <TableRow sx={{bgcolor: '#f5f7fa'}}>
-                                            <TableCell><b>Метрика</b></TableCell>
-                                            <TableCell align="right"><b>База</b></TableCell>
-                                            <TableCell align="right"><b>Результат</b></TableCell>
-                                            <TableCell align="right"><b>Δ</b></TableCell>
-                                        </TableRow>
-                                    </TableHead>
-                                    <TableBody>
-                                        <MetricRow
-                                            label="Makespan (мин)"
-                                            base={runResult.base_metrics.makespan_minutes}
-                                            result={runResult.result_metrics?.makespan_minutes}
-                                            delta={runResult.makespan_delta_minutes}
-                                            deltaPercent={runResult.makespan_delta_percent}
-                                            formatValue={(v) => v.toFixed(0)}
-                                        />
-                                        <MetricRow
-                                            label="Всего задач"
-                                            base={runResult.base_metrics.total_tasks}
-                                            result={runResult.result_metrics?.total_tasks}
-                                            delta={runResult.total_tasks_delta}
-                                        />
-                                        <MetricRow
-                                            label="Заблокировано"
-                                            base={runResult.base_metrics.blocked_tasks}
-                                            result={runResult.result_metrics?.blocked_tasks}
-                                            delta={runResult.blocked_tasks_delta}
-                                        />
-                                        <MetricRow
-                                            label="Замедленное охлаждение"
-                                            base={runResult.base_metrics.cooling_slow_tasks}
-                                            result={runResult.result_metrics?.cooling_slow_tasks}
-                                            delta={runResult.cooling_slow_tasks_delta}
-                                        />
-                                        <MetricRow
-                                            label="ЧЗ не завершено"
-                                            base={runResult.base_metrics.cz_incomplete_tasks}
-                                            result={runResult.result_metrics?.cz_incomplete_tasks}
-                                            delta={runResult.cz_incomplete_tasks_delta}
-                                        />
-                                    </TableBody>
-                                </Table>
-                            </TableContainer>
-
-                            {runResult.result_version_id && (
-                                <Alert severity="success" icon={<CheckCircleIcon/>}>
-                                    Новая версия плана создана: <b>{runResult.result_version_id.substring(0, 8)}</b>.
-                                    Нажмите «Открыть план», чтобы увидеть его на диаграмме Ганта.
-                                </Alert>
-                            )}
-                        </Box>
-                    )}
-                </DialogContent>
-                <DialogActions>
-                    <Button onClick={() => setResultDialogOpen(false)}>Закрыть</Button>
-                    {runResult?.result_version_id && (
+                title={editingScenario ? `Редактировать: ${editingScenario.name}` : 'Создать What-if сценарий'}
+                initialWidth={900}
+                initialHeight={700}
+                minWidth={640}
+                minHeight={500}
+                actions={
+                    <>
+                        <Button onClick={() => setDialogOpen(false)} disabled={saving}>
+                            Отмена
+                        </Button>
                         <Button
                             variant="contained"
-                            onClick={() => {
-                                window.open(`/gantt?version_id=${runResult.result_version_id}`, '_blank');
-                            }}
+                            onClick={handleSave}
+                            disabled={saving || !!formJsonError}
+                            startIcon={saving ? <CircularProgress size={20}/> : <SaveIcon/>}
                         >
-                            Открыть план
+                            {saving ? 'Сохранение...' : 'Сохранить'}
                         </Button>
-                    )}
-                </DialogActions>
-            </Dialog>
+                    </>
+                }
+            >
+                <Box sx={{display: 'flex', flexDirection: 'column', gap: 2}}>
+                    <TextField
+                        label="Название сценария"
+                        fullWidth
+                        required
+                        value={formName}
+                        onChange={(e) => setFormName(e.target.value)}
+                        placeholder="Например: +20% крем-мыло 1л"
+                    />
+
+                    <FormControl fullWidth required disabled={!!editingScenario}>
+                        <InputLabel>Базовый план</InputLabel>
+                        <Select
+                            value={formBaseVersionId}
+                            label="Базовый план"
+                            onChange={(e) => setFormBaseVersionId(e.target.value)}
+                        >
+                            {versions.map((v) => (
+                                <MenuItem key={v.id} value={v.id}>
+                                    {v.name}
+                                    {v.is_active ? ' (активный)' : ''}
+                                </MenuItem>
+                            ))}
+                        </Select>
+                    </FormControl>
+
+                    <TextField
+                        label="Комментарий"
+                        fullWidth
+                        multiline
+                        rows={2}
+                        value={formComment}
+                        onChange={(e) => setFormComment(e.target.value)}
+                    />
+
+                    <Divider/>
+
+                    <Typography variant="subtitle2" sx={{fontWeight: 600}}>
+                        Шаблоны изменений
+                    </Typography>
+                    <Box sx={{display: 'flex', gap: 1, flexWrap: 'wrap'}}>
+                        <Button size="small" variant="outlined" onClick={() => handleApplyTemplate(JSON_TEMPLATE_SHIFT_MODE)}>
+                            Режим смен 3x8
+                        </Button>
+                        <Button size="small" variant="outlined" onClick={() => handleApplyTemplate(JSON_TEMPLATE_ADD_ORDER)}>
+                            + Заказ
+                        </Button>
+                        <Button size="small" variant="outlined" onClick={() => handleApplyTemplate(JSON_TEMPLATE_CAPACITY)}>
+                            + Capacity
+                        </Button>
+                        <Button size="small" variant="outlined" onClick={() => handleApplyTemplate(JSON_TEMPLATE_BREAKDOWN)}>
+                            Авария Р4
+                        </Button>
+                        <Button size="small" variant="outlined" onClick={() => handleApplyTemplate(JSON_TEMPLATE_FULL)}>
+                            Полный пример
+                        </Button>
+                    </Box>
+
+                    <Typography variant="subtitle2" sx={{fontWeight: 600}}>
+                        Изменения (JSON)
+                    </Typography>
+                    <TextField
+                        fullWidth
+                        multiline
+                        rows={14}
+                        value={formChangesJson}
+                        onChange={(e) => {
+                            setFormChangesJson(e.target.value);
+                            setFormJsonError(null);
+                        }}
+                        onBlur={validateJson}
+                        error={!!formJsonError}
+                        helperText={formJsonError || 'JSON должен быть валидным'}
+                        slotProps={{
+                            input: {
+                                style: {
+                                    fontFamily: 'monospace',
+                                    fontSize: '0.85rem',
+                                },
+                            },
+                        }}
+                    />
+                </Box>
+            </DraggableDialog>
+
+            {/* Диалог результата (DraggableDialog) */}
+            <DraggableDialog
+                open={resultDialogOpen}
+                onClose={() => setResultDialogOpen(false)}
+                title={
+                    <Box sx={{display: 'flex', alignItems: 'center', gap: 1}}>
+                        <CheckCircleIcon color="success"/>
+                        <Typography variant="h6" component="div" sx={{fontWeight: 600}}>
+                            Результат сценария
+                        </Typography>
+                    </Box>
+                }
+                initialWidth={800}
+                initialHeight="auto"
+                minWidth={640}
+                minHeight={400}
+                actions={
+                    <>
+                        <Button onClick={() => setResultDialogOpen(false)}>Закрыть</Button>
+                        {runResult?.result_version_id && (
+                            <Button
+                                variant="contained"
+                                onClick={() => {
+                                    window.open(`/gantt?version_id=${runResult.result_version_id}`, '_blank');
+                                }}
+                            >
+                                Открыть план
+                            </Button>
+                        )}
+                    </>
+                }
+            >
+                {runResult && (
+                    <Box sx={{display: 'flex', flexDirection: 'column', gap: 2}}>
+                        <Alert severity="info">
+                            <b>{runResult.scenario_name}</b> — сравнение с базовым планом
+                        </Alert>
+
+                        <TableContainer component={Paper} variant="outlined">
+                            <Table size="small">
+                                <TableHead>
+                                    <TableRow sx={{bgcolor: '#f5f7fa'}}>
+                                        <TableCell><b>Метрика</b></TableCell>
+                                        <TableCell align="right"><b>База</b></TableCell>
+                                        <TableCell align="right"><b>Результат</b></TableCell>
+                                        <TableCell align="right"><b>Δ</b></TableCell>
+                                    </TableRow>
+                                </TableHead>
+                                <TableBody>
+                                    <MetricRow
+                                        label="Makespan (мин)"
+                                        base={runResult.base_metrics.makespan_minutes}
+                                        result={runResult.result_metrics?.makespan_minutes}
+                                        delta={runResult.makespan_delta_minutes}
+                                        deltaPercent={runResult.makespan_delta_percent}
+                                        formatValue={(v) => v.toFixed(0)}
+                                    />
+                                    <MetricRow
+                                        label="Всего задач"
+                                        base={runResult.base_metrics.total_tasks}
+                                        result={runResult.result_metrics?.total_tasks}
+                                        delta={runResult.total_tasks_delta}
+                                    />
+                                    <MetricRow
+                                        label="Заблокировано"
+                                        base={runResult.base_metrics.blocked_tasks}
+                                        result={runResult.result_metrics?.blocked_tasks}
+                                        delta={runResult.blocked_tasks_delta}
+                                    />
+                                    <MetricRow
+                                        label="Замедленное охлаждение"
+                                        base={runResult.base_metrics.cooling_slow_tasks}
+                                        result={runResult.result_metrics?.cooling_slow_tasks}
+                                        delta={runResult.cooling_slow_tasks_delta}
+                                    />
+                                    <MetricRow
+                                        label="ЧЗ не завершено"
+                                        base={runResult.base_metrics.cz_incomplete_tasks}
+                                        result={runResult.result_metrics?.cz_incomplete_tasks}
+                                        delta={runResult.cz_incomplete_tasks_delta}
+                                    />
+                                </TableBody>
+                            </Table>
+                        </TableContainer>
+
+                        {runResult.result_version_id && (
+                            <Alert severity="success" icon={<CheckCircleIcon/>}>
+                                Новая версия плана создана: <b>{runResult.result_version_id.substring(0, 8)}</b>.
+                                Нажмите «Открыть план», чтобы увидеть его на диаграмме Ганта.
+                            </Alert>
+                        )}
+                    </Box>
+                )}
+            </DraggableDialog>
         </Box>
     );
 };
-
 
 // ==========================================
 // ВСПОМОГАТЕЛЬНЫЙ КОМПОНЕНТ
@@ -880,6 +874,5 @@ const MetricRow: React.FC<MetricRowProps> = ({
         </TableRow>
     );
 };
-
 
 export default WhatIfPage;

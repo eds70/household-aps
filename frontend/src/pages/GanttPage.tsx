@@ -3,14 +3,10 @@
 // Часть 2/2 — renderTimeline + drawDependencies + JSX.
 //
 // Итерация 13.10: выходные — фоновые полосы (type: 'background').
-//   - Убраны блоки «Выходной 1440 мин» на каждой строке.
-//   - Выходные подсвечиваются вертикальными полосами на всю высоту.
-//   - Верхняя полоса дат подсвечивает субботу/воскресенье фиолетовым.
-//   - Связи — по hover (Итерация 13.9).
-//
 // Итерация 13.15: если у плана нет снапшотов (has_snapshot=false),
-//   показываем предупреждение вместо диаграммы. Это защита от
-//   «пустых» планов, созданных до Итерации 13.15.
+//   показываем предупреждение вместо диаграммы.
+// Итерация 13.16: расширенный диалог задачи переведён на DraggableDialog.
+//   Убран ~150 строк кастомного drag/resize-кода.
 
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
@@ -21,10 +17,6 @@ import {
     Checkbox,
     Chip,
     CircularProgress,
-    Dialog,
-    DialogActions,
-    DialogContent,
-    DialogTitle,
     Divider,
     FormControl,
     FormControlLabel,
@@ -71,6 +63,7 @@ import {ganttApi, rescheduleApi} from '../services/api';
 import {API_BASE_URL} from '../config';
 import {usePlan} from '../context/PlainContext';
 import type {CoolingMode, CzStatus} from '../types';
+import DraggableDialog from '../components/common/DraggableDialog';
 
 // ==========================================
 // Итерация 13.6: типы для связей
@@ -182,7 +175,6 @@ const GanttPage: React.FC = () => {
     // --- Plan context ---
     const {currentVersionId, currentPlanName, currentPlanHasSnapshot, clearPlan} = usePlan();
     const isReadOnly = currentVersionId !== null;
-    // Итерация 13.15: план пуст (нет снапшотов) — показываем предупреждение.
     const isEmptyPlan = currentVersionId !== null && !currentPlanHasSnapshot;
 
     // --- State ---
@@ -458,10 +450,6 @@ const GanttPage: React.FC = () => {
     // ==========================================
     // Итерация 13.10: выходные — фоновые полосы
     // ==========================================
-    // Вместо блоков «Выходной 1440 мин» на каждой строке создаём
-    // один background-item на всю высоту диаграммы. vis-timeline
-    // рисует его под задачами в виде вертикальной полосы.
-    //
     const generateWeekendBackgrounds = (
         tasksData: TaskData[],
     ): BackgroundItem[] => {
@@ -702,9 +690,6 @@ const GanttPage: React.FC = () => {
 
             svg.setAttribute('viewBox', `0 0 ${containerRect.width} ${containerRect.height}`);
 
-            // ==========================================
-            // Собираем bbox задач
-            // ==========================================
             const boxMap = new Map<
                 string,
                 {left: number; right: number; top: number; bottom: number}
@@ -984,9 +969,6 @@ const GanttPage: React.FC = () => {
                 minimapRef.current = null;
             }
 
-            // ==========================================
-            // Фильтрация
-            // ==========================================
             let filteredTasks = tasksData.filter(
                 (task) => task.item_type === 'task' || !task.item_type
             );
@@ -1037,7 +1019,6 @@ const GanttPage: React.FC = () => {
                 ? generateWeekendBackgrounds(filteredTasks)
                 : [];
 
-            // Обычные задачи (task, setup)
             const taskItems = [...filteredTasks, ...setups];
 
             if (taskItems.length === 0 && weekendBackgrounds.length === 0) {
@@ -1133,8 +1114,6 @@ const GanttPage: React.FC = () => {
                     className = 'item-setup';
                     title = `<div style="padding: 8px; min-width: 280px;"><b>🧼 Замывка</b><br>${task.duration_minutes} мин</div>`;
                 } else if (itemType === 'downtime') {
-                    // Оставляем для обратной совместимости (если API вернёт downtime).
-                    // Но generateWeekendBackgrounds больше не создаёт такие items.
                     style = `background-color: #9b59b620; border: 1px solid #9b59b6; border-radius: 4px;`;
                     className = 'item-downtime';
                     title = `<div style="padding: 8px; min-width: 280px;"><b>📅 ${task.operation_name}</b><br>${task.duration_minutes} мин</div>`;
@@ -1172,9 +1151,6 @@ const GanttPage: React.FC = () => {
                 };
             });
 
-            // ==========================================
-            // Миникарта — без фоновых полос (для читаемости)
-            // ==========================================
             const minimapItemsArray: GanttItem[] = itemsArray.map((item) => ({
                 id: item.id,
                 group: item.group,
@@ -1191,10 +1167,6 @@ const GanttPage: React.FC = () => {
 
             const groups = new DataSet<GanttGroup>(groupsArray);
 
-            // ==========================================
-            // Итерация 13.10: объединяем задачи и фоновые полосы выходных
-            // в один DataSet. vis-timeline сам различает их по type.
-            // ==========================================
             const allVisItems: any[] = [
                 ...itemsArray,
                 ...weekendBackgrounds,
@@ -1317,9 +1289,6 @@ const GanttPage: React.FC = () => {
                 newTimeline.fit();
             }
 
-            // ==========================================
-            // Обработчики событий
-            // ==========================================
             newTimeline.on('rangechange', () => {
                 persistCurrentViewport();
 
@@ -1346,7 +1315,6 @@ const GanttPage: React.FC = () => {
                 const itemId = String(props.item);
                 const task = tasks.find((t) => t.id === itemId);
 
-                // Игнорируем клики по background-полосам выходных
                 if (!task) return;
 
                 if (clickTimeoutRef.current) {
@@ -1366,9 +1334,6 @@ const GanttPage: React.FC = () => {
                 }
             });
 
-            // ==========================================
-            // Первичная отрисовка связей
-            // ==========================================
             const tryDrawDeps = (attempt: number) => {
                 if (!timelineRef.current) return;
                 const containerEl = containerRef.current;
@@ -1389,9 +1354,6 @@ const GanttPage: React.FC = () => {
                 tryDrawDeps(1);
             });
 
-            // ==========================================
-            // Миникарта
-            // ==========================================
             if (!showMinimap || !minimapContainerRef.current) return;
 
             const minimapOptions: TimelineOptions = {
@@ -1505,7 +1467,6 @@ const GanttPage: React.FC = () => {
 
     // ==========================================
     // Итерация 13.15: план пуст (нет снапшотов).
-    // Показываем предупреждение вместо диаграммы.
     // ==========================================
     if (isEmptyPlan) {
         return (
@@ -1942,520 +1903,342 @@ const GanttPage: React.FC = () => {
             </Popover>
 
             {/* ==========================================
-    Расширенный диалог задачи с информацией о партии.
-    Итерация 13.12:
-      - Перемещаемый (drag за заголовок)
-      - Resizable (drag за правый нижний угол)
-      - Скроллируемый
-      - Блок «Редактирование времени» — первым
-    ========================================== */}
-            <Dialog
+                Расширенный диалог задачи (DraggableDialog).
+                Итерация 13.16: переведён на DraggableDialog,
+                удалён дублированный drag/resize-код.
+            ========================================== */}
+            <DraggableDialog
                 open={editDialogOpen}
-                onClose={(_event, reason) => {
-                    // Итерация 13.12: запрещаем закрытие по клику вне диалога.
-                    // Esc по-прежнему закрывает.
-                    if (reason === 'backdropClick') {
-                        return;
-                    }
-                    setEditDialogOpen(false);
-                }}
-                maxWidth={false}
-                fullWidth={false}
-                slotProps={{
-                    root: {
-                        sx: {
-                            '& .MuiDialog-container': {
-                                alignItems: 'flex-start',
-                                justifyContent: 'flex-start',
-                                padding: 0,
-                            },
-                        },
-                    },
-                    paper: {
-                        sx: {
-                            width: 700,
-                            height: 'auto',
-                            maxHeight: '90vh',
-                            minWidth: 480,
-                            minHeight: 320,
-                            display: 'flex',
-                            flexDirection: 'column',
-                            position: 'relative',
-                            overflow: 'hidden',
-                        },
-                    },
-                }}
-            >
-                {/* ==========================================
-        Ручка-ресайзер в правом нижнем углу
-        ========================================== */}
-                <Box
-                    onMouseDown={(e) => {
-                        e.stopPropagation();
-                        e.preventDefault();
-
-                        const dialogEl = (e.currentTarget as HTMLElement).closest(
-                            '.MuiDialog-paper'
-                        ) as HTMLElement | null;
-                        if (!dialogEl) return;
-
-                        const rect = dialogEl.getBoundingClientRect();
-                        const startX = e.clientX;
-                        const startY = e.clientY;
-                        const startWidth = rect.width;
-                        const startHeight = rect.height;
-
-                        const onMouseMove = (ev: MouseEvent) => {
-                            const dx = ev.clientX - startX;
-                            const dy = ev.clientY - startY;
-
-                            const newWidth = Math.max(480, startWidth + dx);
-                            const newHeight = Math.max(320, startHeight + dy);
-
-                            // Ограничения по экрану
-                            const maxW = window.innerWidth * 0.95;
-                            const maxH = window.innerHeight * 0.9;
-
-                            dialogEl.style.width = `${Math.min(newWidth, maxW)}px`;
-                            dialogEl.style.height = `${Math.min(newHeight, maxH)}px`;
-                            dialogEl.style.maxHeight = `${maxH}px`;
-                        };
-
-                        const onMouseUp = () => {
-                            document.removeEventListener('mousemove', onMouseMove);
-                            document.removeEventListener('mouseup', onMouseUp);
-                        };
-
-                        document.addEventListener('mousemove', onMouseMove);
-                        document.addEventListener('mouseup', onMouseUp);
-                    }}
-                    sx={{
-                        position: 'absolute',
-                        right: 0,
-                        bottom: 0,
-                        width: 20,
-                        height: 20,
-                        cursor: 'nwse-resize',
-                        zIndex: 10,
-                        // Визуальная ручка (уголок)
-                        '&::before': {
-                            content: '""',
-                            position: 'absolute',
-                            right: 3,
-                            bottom: 3,
-                            width: 12,
-                            height: 12,
-                            borderRight: '2px solid #bdc3c7',
-                            borderBottom: '2px solid #bdc3c7',
-                            transition: 'border-color 0.15s',
-                        },
-                        '&:hover::before': {
-                            borderRightColor: '#3498db',
-                            borderBottomColor: '#3498db',
-                        },
-                        // Слегка увеличим область захвата
-                        '&::after': {
-                            content: '""',
-                            position: 'absolute',
-                            right: 0,
-                            bottom: 0,
-                            width: 20,
-                            height: 20,
-                        },
-                    }}
-                />
-
-                <DialogTitle
-                    sx={{
-                        fontWeight: 600,
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 1,
-                        cursor: 'move',
-                        userSelect: 'none',
-                        flexShrink: 0,
-                        '&:active': {cursor: 'grabbing'},
-                        borderBottom: '1px solid #e0e0e0',
-                    }}
-                    onMouseDown={(e) => {
-                        // Игнорируем клики по кнопкам/chip'ам в заголовке
-                        const target = e.target as HTMLElement;
-                        if (
-                            target.closest('button') ||
-                            target.closest('.MuiChip-root') ||
-                            target.closest('.MuiIconButton-root')
-                        ) {
-                            return;
-                        }
-
-                        const dialogEl = (e.currentTarget as HTMLElement).closest(
-                            '.MuiDialog-paper'
-                        ) as HTMLElement | null;
-                        if (!dialogEl) return;
-
-                        const rect = dialogEl.getBoundingClientRect();
-                        const startX = e.clientX;
-                        const startY = e.clientY;
-                        const startLeft = rect.left;
-                        const startTop = rect.top;
-
-                        // Фиксируем диалог в текущей позиции
-                        dialogEl.style.margin = '0';
-                        dialogEl.style.position = 'fixed';
-                        dialogEl.style.left = `${startLeft}px`;
-                        dialogEl.style.top = `${startTop}px`;
-                        dialogEl.style.right = 'auto';
-                        dialogEl.style.bottom = 'auto';
-
-                        const onMouseMove = (ev: MouseEvent) => {
-                            const dx = ev.clientX - startX;
-                            const dy = ev.clientY - startY;
-                            dialogEl.style.left = `${startLeft + dx}px`;
-                            dialogEl.style.top = `${startTop + dy}px`;
-                        };
-
-                        const onMouseUp = () => {
-                            document.removeEventListener('mousemove', onMouseMove);
-                            document.removeEventListener('mouseup', onMouseUp);
-                        };
-
-                        document.addEventListener('mousemove', onMouseMove);
-                        document.addEventListener('mouseup', onMouseUp);
-                    }}
-                >
-                    {selectedTask?.operation_name || 'Задача'}
-                    {selectedTask?.batch_id && !NON_BATCH_VALUES.has(selectedTask.batch_id) && (
-                        <Chip
-                            size="small"
-                            label={`📌 ${selectedTask.batch_id.substring(0, 8)}`}
-                            color="secondary"
-                            variant="outlined"
-                        />
-                    )}
+                onClose={() => setEditDialogOpen(false)}
+                title={
+                    <Box sx={{display: 'flex', alignItems: 'center', gap: 1, width: '100%'}}>
+                        <Typography variant="h6" component="div" sx={{fontWeight: 600}}>
+                            {selectedTask?.operation_name || 'Задача'}
+                        </Typography>
+                        {selectedTask?.batch_id && !NON_BATCH_VALUES.has(selectedTask.batch_id) && (
+                            <Chip
+                                size="small"
+                                label={`📌 ${selectedTask.batch_id.substring(0, 8)}`}
+                                color="secondary"
+                                variant="outlined"
+                            />
+                        )}
+                    </Box>
+                }
+                titleExtra={
                     <Typography
                         variant="caption"
-                        sx={{ml: 'auto', color: 'text.secondary', fontSize: '0.7rem'}}
+                        sx={{color: 'text.secondary', fontSize: '0.7rem', mr: 4}}
                     >
                         🖱 Перетащите заголовок / угол
                     </Typography>
-                </DialogTitle>
-
-                <DialogContent
-                    dividers
-                    sx={{
-                        flexGrow: 1,
-                        minHeight: 0,
-                        overflowY: 'auto',
-                        pt: 2,
-                    }}
-                >
-                    {selectedTask && (
-                        <Box sx={{display: 'flex', flexDirection: 'column', gap: 2}}>
-                            {/* ==========================================
-                    Блок 1: Редактирование времени (первый)
-                    ========================================== */}
-                            {!isReadOnly && (
-                                <Box>
-                                    <Typography variant="subtitle2" sx={{fontWeight: 700, mb: 1, color: '#2c3e50'}}>
-                                        ⏱ Редактирование времени
-                                    </Typography>
-                                    <Box sx={{display: 'flex', flexDirection: 'column', gap: 2}}>
-                                        <TextField
-                                            margin="dense"
-                                            label="Начало"
-                                            type="datetime-local"
-                                            fullWidth
-                                            value={formatDateForInput(editFormData.start)}
-                                            onChange={(e) => setEditFormData({...editFormData, start: e.target.value})}
-                                            slotProps={{inputLabel: {shrink: true}, htmlInput: {step: 300}}}
-                                        />
-                                        <TextField
-                                            margin="dense"
-                                            label="Конец"
-                                            type="datetime-local"
-                                            fullWidth
-                                            value={formatDateForInput(editFormData.end)}
-                                            onChange={(e) => setEditFormData({...editFormData, end: e.target.value})}
-                                            slotProps={{inputLabel: {shrink: true}, htmlInput: {step: 300}}}
-                                        />
-                                    </Box>
+                }
+                initialWidth={700}
+                initialHeight={600}
+                minWidth={480}
+                minHeight={400}
+                actions={
+                    <>
+                        <Button onClick={() => setEditDialogOpen(false)}>Закрыть</Button>
+                        {!isReadOnly && (
+                            <Button onClick={handleSaveTask} variant="contained">
+                                Сохранить время
+                            </Button>
+                        )}
+                    </>
+                }
+            >
+                {selectedTask && (
+                    <Box sx={{display: 'flex', flexDirection: 'column', gap: 2}}>
+                        {/* Блок 1: Редактирование времени */}
+                        {!isReadOnly && (
+                            <Box>
+                                <Typography variant="subtitle2" sx={{fontWeight: 700, mb: 1, color: '#2c3e50'}}>
+                                    ⏱ Редактирование времени
+                                </Typography>
+                                <Box sx={{display: 'flex', flexDirection: 'column', gap: 2}}>
+                                    <TextField
+                                        margin="dense"
+                                        label="Начало"
+                                        type="datetime-local"
+                                        fullWidth
+                                        value={formatDateForInput(editFormData.start)}
+                                        onChange={(e) => setEditFormData({...editFormData, start: e.target.value})}
+                                        slotProps={{inputLabel: {shrink: true}, htmlInput: {step: 300}}}
+                                    />
+                                    <TextField
+                                        margin="dense"
+                                        label="Конец"
+                                        type="datetime-local"
+                                        fullWidth
+                                        value={formatDateForInput(editFormData.end)}
+                                        onChange={(e) => setEditFormData({...editFormData, end: e.target.value})}
+                                        slotProps={{inputLabel: {shrink: true}, htmlInput: {step: 300}}}
+                                    />
                                 </Box>
-                            )}
+                            </Box>
+                        )}
 
-                            {isReadOnly && (
-                                <Alert severity="info">
-                                    Режим просмотра: редактирование недоступно.
-                                </Alert>
-                            )}
+                        {isReadOnly && (
+                            <Alert severity="info">
+                                Режим просмотра: редактирование недоступно.
+                            </Alert>
+                        )}
 
-                            {/* ==========================================
-                    Блок 2: Карточка партии
-                    ========================================== */}
-                            {selectedTask.batch_id && !NON_BATCH_VALUES.has(selectedTask.batch_id) ? (
+                        {/* Блок 2: Карточка партии */}
+                        {selectedTask.batch_id && !NON_BATCH_VALUES.has(selectedTask.batch_id) ? (
+                            <Box
+                                sx={{
+                                    bgcolor: '#f8f9fa',
+                                    border: '1px solid #e0e0e0',
+                                    borderRadius: 1,
+                                    p: 1.5,
+                                }}
+                            >
+                                <Typography variant="subtitle2" sx={{fontWeight: 700, mb: 1, color: '#2c3e50'}}>
+                                    📦 Информация о партии
+                                </Typography>
                                 <Box
                                     sx={{
-                                        bgcolor: '#f8f9fa',
-                                        border: '1px solid #e0e0e0',
-                                        borderRadius: 1,
-                                        p: 1.5,
+                                        display: 'grid',
+                                        gridTemplateColumns: {xs: '1fr', sm: '1fr 1fr'},
+                                        gap: 1,
                                     }}
                                 >
-                                    <Typography variant="subtitle2" sx={{fontWeight: 700, mb: 1, color: '#2c3e50'}}>
-                                        📦 Информация о партии
-                                    </Typography>
-                                    <Box
-                                        sx={{
-                                            display: 'grid',
-                                            gridTemplateColumns: {xs: '1fr', sm: '1fr 1fr'},
-                                            gap: 1,
-                                        }}
-                                    >
-                                        <Box>
-                                            <Typography variant="caption" color="text.secondary">Партия</Typography>
-                                            <Typography variant="body2" sx={{fontFamily: 'monospace', fontSize: '0.8rem'}}>
-                                                {selectedTask.batch_id}
-                                            </Typography>
+                                    <Box>
+                                        <Typography variant="caption" color="text.secondary">Партия</Typography>
+                                        <Typography variant="body2" sx={{fontFamily: 'monospace', fontSize: '0.8rem'}}>
+                                            {selectedTask.batch_id}
+                                        </Typography>
+                                    </Box>
+                                    <Box>
+                                        <Typography variant="caption" color="text.secondary">Продукт</Typography>
+                                        <Typography variant="body2" sx={{fontWeight: 600}}>
+                                            {selectedTask.product_id}
+                                        </Typography>
+                                    </Box>
+                                    <Box>
+                                        <Typography variant="caption" color="text.secondary">Роль задачи</Typography>
+                                        <Typography variant="body2">
+                                            {selectedTask.task_role || '—'}
+                                        </Typography>
+                                    </Box>
+                                    <Box>
+                                        <Typography variant="caption" color="text.secondary">Оборудование</Typography>
+                                        <Typography variant="body2">
+                                            {selectedTask.equipment_id}
+                                        </Typography>
+                                    </Box>
+                                    <Box>
+                                        <Typography variant="caption" color="text.secondary">Лаборатория</Typography>
+                                        <Box sx={{mt: 0.25}}>
+                                            <Chip
+                                                size="small"
+                                                label={
+                                                    selectedTask.is_lab_blocked
+                                                        ? '🔒 Заблокировано'
+                                                        : selectedTask.lab_status === 'APPROVED'
+                                                            ? '✅ Одобрено'
+                                                            : selectedTask.lab_status === 'PENDING_LAB'
+                                                                ? '🧪 Ожидает лабу'
+                                                                : '— Не требуется'
+                                                }
+                                                color={
+                                                    selectedTask.is_lab_blocked
+                                                        ? 'error'
+                                                        : selectedTask.lab_status === 'APPROVED'
+                                                            ? 'success'
+                                                            : selectedTask.lab_status === 'PENDING_LAB'
+                                                                ? 'info'
+                                                                : 'default'
+                                                }
+                                                variant={selectedTask.is_lab_blocked ? 'filled' : 'outlined'}
+                                            />
                                         </Box>
-                                        <Box>
-                                            <Typography variant="caption" color="text.secondary">Продукт</Typography>
-                                            <Typography variant="body2" sx={{fontWeight: 600}}>
-                                                {selectedTask.product_id}
+                                        {selectedTask.lab_block_reason && (
+                                            <Typography
+                                                variant="caption"
+                                                sx={{color: 'error.main', display: 'block', mt: 0.5}}
+                                            >
+                                                Причина: {selectedTask.lab_block_reason}
                                             </Typography>
-                                        </Box>
-                                        <Box>
-                                            <Typography variant="caption" color="text.secondary">Роль задачи</Typography>
-                                            <Typography variant="body2">
-                                                {selectedTask.task_role || '—'}
-                                            </Typography>
-                                        </Box>
-                                        <Box>
-                                            <Typography variant="caption" color="text.secondary">Оборудование</Typography>
-                                            <Typography variant="body2">
-                                                {selectedTask.equipment_id}
-                                            </Typography>
-                                        </Box>
-                                        <Box>
-                                            <Typography variant="caption" color="text.secondary">Лаборатория</Typography>
-                                            <Box sx={{mt: 0.25}}>
-                                                <Chip
-                                                    size="small"
-                                                    label={
-                                                        selectedTask.is_lab_blocked
-                                                            ? '🔒 Заблокировано'
-                                                            : selectedTask.lab_status === 'APPROVED'
-                                                                ? '✅ Одобрено'
-                                                                : selectedTask.lab_status === 'PENDING_LAB'
-                                                                    ? '🧪 Ожидает лабу'
-                                                                    : '— Не требуется'
-                                                    }
-                                                    color={
-                                                        selectedTask.is_lab_blocked
-                                                            ? 'error'
-                                                            : selectedTask.lab_status === 'APPROVED'
+                                        )}
+                                    </Box>
+                                    <Box>
+                                        <Typography variant="caption" color="text.secondary">Честный Знак</Typography>
+                                        <Box sx={{mt: 0.25}}>
+                                            {selectedTask.task_role === 'LINE_FILL' ? (
+                                                <Box>
+                                                    <Chip
+                                                        size="small"
+                                                        label={
+                                                            selectedTask.cz_status === 'COMPLETED'
+                                                                ? '🟢 Завершено'
+                                                                : selectedTask.cz_status === 'IN_PROGRESS'
+                                                                    ? '🔵 В работе'
+                                                                    : selectedTask.cz_status === 'PENDING'
+                                                                        ? '🟡 Ожидает'
+                                                                        : '⚪ Не требуется'
+                                                        }
+                                                        color={
+                                                            selectedTask.cz_status === 'COMPLETED'
                                                                 ? 'success'
-                                                                : selectedTask.lab_status === 'PENDING_LAB'
+                                                                : selectedTask.cz_status === 'IN_PROGRESS'
                                                                     ? 'info'
-                                                                    : 'default'
-                                                    }
-                                                    variant={selectedTask.is_lab_blocked ? 'filled' : 'outlined'}
-                                                />
-                                            </Box>
-                                            {selectedTask.lab_block_reason && (
-                                                <Typography
-                                                    variant="caption"
-                                                    sx={{color: 'error.main', display: 'block', mt: 0.5}}
-                                                >
-                                                    Причина: {selectedTask.lab_block_reason}
-                                                </Typography>
+                                                                    : selectedTask.cz_status === 'PENDING'
+                                                                        ? 'warning'
+                                                                        : 'default'
+                                                        }
+                                                        variant="outlined"
+                                                    />
+                                                    {selectedTask.cz_marked_qty != null && (
+                                                        <Typography variant="caption" sx={{display: 'block', mt: 0.5}}>
+                                                            Промаркировано: {selectedTask.cz_marked_qty}
+                                                        </Typography>
+                                                    )}
+                                                </Box>
+                                            ) : (
+                                                <Typography variant="body2">—</Typography>
                                             )}
                                         </Box>
-                                        <Box>
-                                            <Typography variant="caption" color="text.secondary">Честный Знак</Typography>
-                                            <Box sx={{mt: 0.25}}>
-                                                {selectedTask.task_role === 'LINE_FILL' ? (
-                                                    <Box>
-                                                        <Chip
-                                                            size="small"
-                                                            label={
-                                                                selectedTask.cz_status === 'COMPLETED'
-                                                                    ? '🟢 Завершено'
-                                                                    : selectedTask.cz_status === 'IN_PROGRESS'
-                                                                        ? '🔵 В работе'
-                                                                        : selectedTask.cz_status === 'PENDING'
-                                                                            ? '🟡 Ожидает'
-                                                                            : '⚪ Не требуется'
-                                                            }
-                                                            color={
-                                                                selectedTask.cz_status === 'COMPLETED'
-                                                                    ? 'success'
-                                                                    : selectedTask.cz_status === 'IN_PROGRESS'
-                                                                        ? 'info'
-                                                                        : selectedTask.cz_status === 'PENDING'
-                                                                            ? 'warning'
-                                                                            : 'default'
-                                                            }
-                                                            variant="outlined"
-                                                        />
-                                                        {selectedTask.cz_marked_qty != null && (
-                                                            <Typography variant="caption" sx={{display: 'block', mt: 0.5}}>
-                                                                Промаркировано: {selectedTask.cz_marked_qty}
+                                    </Box>
+                                    <Box>
+                                        <Typography variant="caption" color="text.secondary">Режим охлаждения</Typography>
+                                        <Typography variant="body2">
+                                            {selectedTask.cooling_mode === 'slow'
+                                                ? '⏳ Замедлено (×1.3)'
+                                                : selectedTask.cooling_mode === 'fast'
+                                                    ? '❄️ Обычное'
+                                                    : '—'}
+                                        </Typography>
+                                    </Box>
+                                    <Box>
+                                        <Typography variant="caption" color="text.secondary">Длительность</Typography>
+                                        <Typography variant="body2">
+                                            {selectedTask.duration_minutes} мин
+                                        </Typography>
+                                    </Box>
+                                    <Box>
+                                        <Typography variant="caption" color="text.secondary">Начало / Конец</Typography>
+                                        <Typography variant="body2" sx={{fontSize: '0.8rem'}}>
+                                            {new Date(selectedTask.start).toLocaleString('ru-RU')}
+                                            <br/>
+                                            {new Date(selectedTask.end).toLocaleString('ru-RU')}
+                                        </Typography>
+                                    </Box>
+                                </Box>
+
+                                {selectedTask.depends_on_task_ids && selectedTask.depends_on_task_ids.length > 0 && (
+                                    <Box sx={{mt: 1.5}}>
+                                        <Typography variant="caption" color="text.secondary">
+                                            Зависит от задач: {selectedTask.depends_on_task_ids.length}
+                                        </Typography>
+                                        <Box sx={{display: 'flex', gap: 0.5, flexWrap: 'wrap', mt: 0.5}}>
+                                            {selectedTask.depends_on_task_ids.slice(0, 5).map((id) => (
+                                                <Chip
+                                                    key={id}
+                                                    size="small"
+                                                    label={id.substring(0, 8)}
+                                                    variant="outlined"
+                                                />
+                                            ))}
+                                            {selectedTask.depends_on_task_ids.length > 5 && (
+                                                <Chip
+                                                    size="small"
+                                                    label={`+${selectedTask.depends_on_task_ids.length - 5}`}
+                                                    variant="outlined"
+                                                />
+                                            )}
+                                        </Box>
+                                    </Box>
+                                )}
+
+                                <Box sx={{mt: 1.5, display: 'flex', gap: 1, flexWrap: 'wrap'}}>
+                                    <Button
+                                        variant="contained"
+                                        size="small"
+                                        color="secondary"
+                                        onClick={() => {
+                                            setBatchFilter(selectedTask.batch_id);
+                                            setEditDialogOpen(false);
+                                        }}
+                                    >
+                                        📌 Показать только эту партию
+                                    </Button>
+                                </Box>
+                            </Box>
+                        ) : (
+                            <Alert severity="info" icon={false}>
+                                Задача не привязана к партии ({selectedTask.batch_id || 'нет'})
+                            </Alert>
+                        )}
+
+                        {/* Блок 3: Все операции партии */}
+                        {selectedBatchTasks.length > 1 && (
+                            <Box>
+                                <Typography variant="subtitle2" sx={{fontWeight: 700, mb: 1, color: '#2c3e50'}}>
+                                    🔧 Все операции партии ({selectedBatchTasks.length})
+                                </Typography>
+                                <TableContainer component={Paper} variant="outlined">
+                                    <Table size="small" stickyHeader>
+                                        <TableHead>
+                                            <TableRow>
+                                                <TableCell sx={{fontWeight: 600}}>Операция</TableCell>
+                                                <TableCell sx={{fontWeight: 600}}>Оборудование</TableCell>
+                                                <TableCell sx={{fontWeight: 600}}>Роль</TableCell>
+                                                <TableCell sx={{fontWeight: 600}} align="right">Длит.</TableCell>
+                                                <TableCell sx={{fontWeight: 600}}>Начало</TableCell>
+                                            </TableRow>
+                                        </TableHead>
+                                        <TableBody>
+                                            {selectedBatchTasks.map((t) => {
+                                                const isCurrent = t.id === selectedTask.id;
+                                                return (
+                                                    <TableRow
+                                                        key={t.id}
+                                                        hover
+                                                        selected={isCurrent}
+                                                        sx={{
+                                                            cursor: 'pointer',
+                                                            bgcolor: isCurrent ? '#e3f2fd' : undefined,
+                                                        }}
+                                                    >
+                                                        <TableCell>
+                                                            <Typography variant="caption" sx={{fontWeight: isCurrent ? 700 : 400}}>
+                                                                {t.operation_name}
                                                             </Typography>
-                                                        )}
-                                                    </Box>
-                                                ) : (
-                                                    <Typography variant="body2">—</Typography>
-                                                )}
-                                            </Box>
-                                        </Box>
-                                        <Box>
-                                            <Typography variant="caption" color="text.secondary">Режим охлаждения</Typography>
-                                            <Typography variant="body2">
-                                                {selectedTask.cooling_mode === 'slow'
-                                                    ? '⏳ Замедлено (×1.3)'
-                                                    : selectedTask.cooling_mode === 'fast'
-                                                        ? '❄️ Обычное'
-                                                        : '—'}
-                                            </Typography>
-                                        </Box>
-                                        <Box>
-                                            <Typography variant="caption" color="text.secondary">Длительность</Typography>
-                                            <Typography variant="body2">
-                                                {selectedTask.duration_minutes} мин
-                                            </Typography>
-                                        </Box>
-                                        <Box>
-                                            <Typography variant="caption" color="text.secondary">Начало / Конец</Typography>
-                                            <Typography variant="body2" sx={{fontSize: '0.8rem'}}>
-                                                {new Date(selectedTask.start).toLocaleString('ru-RU')}
-                                                <br/>
-                                                {new Date(selectedTask.end).toLocaleString('ru-RU')}
-                                            </Typography>
-                                        </Box>
-                                    </Box>
-
-                                    {selectedTask.depends_on_task_ids && selectedTask.depends_on_task_ids.length > 0 && (
-                                        <Box sx={{mt: 1.5}}>
-                                            <Typography variant="caption" color="text.secondary">
-                                                Зависит от задач: {selectedTask.depends_on_task_ids.length}
-                                            </Typography>
-                                            <Box sx={{display: 'flex', gap: 0.5, flexWrap: 'wrap', mt: 0.5}}>
-                                                {selectedTask.depends_on_task_ids.slice(0, 5).map((id) => (
-                                                    <Chip
-                                                        key={id}
-                                                        size="small"
-                                                        label={id.substring(0, 8)}
-                                                        variant="outlined"
-                                                    />
-                                                ))}
-                                                {selectedTask.depends_on_task_ids.length > 5 && (
-                                                    <Chip
-                                                        size="small"
-                                                        label={`+${selectedTask.depends_on_task_ids.length - 5}`}
-                                                        variant="outlined"
-                                                    />
-                                                )}
-                                            </Box>
-                                        </Box>
-                                    )}
-
-                                    <Box sx={{mt: 1.5, display: 'flex', gap: 1, flexWrap: 'wrap'}}>
-                                        <Button
-                                            variant="contained"
-                                            size="small"
-                                            color="secondary"
-                                            onClick={() => {
-                                                setBatchFilter(selectedTask.batch_id);
-                                                setEditDialogOpen(false);
-                                            }}
-                                        >
-                                            📌 Показать только эту партию
-                                        </Button>
-                                    </Box>
-                                </Box>
-                            ) : (
-                                <Alert severity="info" icon={false}>
-                                    Задача не привязана к партии ({selectedTask.batch_id || 'нет'})
-                                </Alert>
-                            )}
-
-                            {/* ==========================================
-                    Блок 3: Все операции партии
-                    ========================================== */}
-                            {selectedBatchTasks.length > 1 && (
-                                <Box>
-                                    <Typography variant="subtitle2" sx={{fontWeight: 700, mb: 1, color: '#2c3e50'}}>
-                                        🔧 Все операции партии ({selectedBatchTasks.length})
-                                    </Typography>
-                                    <TableContainer component={Paper} variant="outlined">
-                                        <Table size="small" stickyHeader>
-                                            <TableHead>
-                                                <TableRow>
-                                                    <TableCell sx={{fontWeight: 600}}>Операция</TableCell>
-                                                    <TableCell sx={{fontWeight: 600}}>Оборудование</TableCell>
-                                                    <TableCell sx={{fontWeight: 600}}>Роль</TableCell>
-                                                    <TableCell sx={{fontWeight: 600}} align="right">Длит.</TableCell>
-                                                    <TableCell sx={{fontWeight: 600}}>Начало</TableCell>
-                                                </TableRow>
-                                            </TableHead>
-                                            <TableBody>
-                                                {selectedBatchTasks.map((t) => {
-                                                    const isCurrent = t.id === selectedTask.id;
-                                                    return (
-                                                        <TableRow
-                                                            key={t.id}
-                                                            hover
-                                                            selected={isCurrent}
-                                                            sx={{
-                                                                cursor: 'pointer',
-                                                                bgcolor: isCurrent ? '#e3f2fd' : undefined,
-                                                            }}
-                                                        >
-                                                            <TableCell>
-                                                                <Typography variant="caption" sx={{fontWeight: isCurrent ? 700 : 400}}>
-                                                                    {t.operation_name}
-                                                                </Typography>
-                                                            </TableCell>
-                                                            <TableCell>
-                                                                <Typography variant="caption">
-                                                                    {t.equipment_id}
-                                                                </Typography>
-                                                            </TableCell>
-                                                            <TableCell>
-                                                                <Typography variant="caption">
-                                                                    {t.task_role || '—'}
-                                                                </Typography>
-                                                            </TableCell>
-                                                            <TableCell align="right">
-                                                                <Typography variant="caption">
-                                                                    {t.duration_minutes} мин
-                                                                </Typography>
-                                                            </TableCell>
-                                                            <TableCell>
-                                                                <Typography variant="caption">
-                                                                    {new Date(t.start).toLocaleString('ru-RU')}
-                                                                </Typography>
-                                                            </TableCell>
-                                                        </TableRow>
-                                                    );
-                                                })}
-                                            </TableBody>
-                                        </Table>
-                                    </TableContainer>
-                                </Box>
-                            )}
-                        </Box>
-                    )}
-                </DialogContent>
-
-                <DialogActions sx={{px: 3, py: 1.5, flexShrink: 0}}>
-                    <Button onClick={() => setEditDialogOpen(false)}>Закрыть</Button>
-                    {!isReadOnly && (
-                        <Button onClick={handleSaveTask} variant="contained">
-                            Сохранить время
-                        </Button>
-                    )}
-                </DialogActions>
-            </Dialog>
+                                                        </TableCell>
+                                                        <TableCell>
+                                                            <Typography variant="caption">
+                                                                {t.equipment_id}
+                                                            </Typography>
+                                                        </TableCell>
+                                                        <TableCell>
+                                                            <Typography variant="caption">
+                                                                {t.task_role || '—'}
+                                                            </Typography>
+                                                        </TableCell>
+                                                        <TableCell align="right">
+                                                            <Typography variant="caption">
+                                                                {t.duration_minutes} мин
+                                                            </Typography>
+                                                        </TableCell>
+                                                        <TableCell>
+                                                            <Typography variant="caption">
+                                                                {new Date(t.start).toLocaleString('ru-RU')}
+                                                            </Typography>
+                                                        </TableCell>
+                                                    </TableRow>
+                                                );
+                                            })}
+                                        </TableBody>
+                                    </Table>
+                                </TableContainer>
+                            </Box>
+                        )}
+                    </Box>
+                )}
+            </DraggableDialog>
         </Box>
     );
 };
