@@ -8,6 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_org_id, get_db_session
+from app.scheduler.snapshot import snapshot_all_catalogs
 from .models import ScheduleBuildRequest, ScheduleBuildResponse
 
 router = APIRouter(prefix="/api/v1/schedule", tags=["Планирование"])
@@ -82,13 +83,25 @@ async def get_schedule_versions(
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """Получить список всех версий планов."""
+    """
+    Получить список всех версий планов.
+
+    Итерация 13.15: добавлено поле has_snapshot — заполнены ли
+    снапшот-таблицы для этой версии. UI использует это поле, чтобы
+    понять, можно ли открывать план в readonly-режиме.
+    """
     result = await db.execute(
         text("""
-            SELECT id, name, version_type, is_active, created_at, comment
-            FROM schedule_version
-            WHERE organization_id = :org_id
-            ORDER BY created_at DESC
+            SELECT
+                sv.id, sv.name, sv.version_type, sv.is_active,
+                sv.created_at, sv.comment,
+                EXISTS (
+                    SELECT 1 FROM equipment_snapshot
+                    WHERE version_id = sv.id LIMIT 1
+                ) AS has_snapshot
+            FROM schedule_version sv
+            WHERE sv.organization_id = :org_id
+            ORDER BY sv.created_at DESC
         """),
         {"org_id": org_id},
     )
@@ -100,6 +113,7 @@ async def get_schedule_versions(
             "is_active": row.is_active,
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "comment": row.comment,
+            "has_snapshot": bool(row.has_snapshot),
         }
         for row in result.fetchall()
     ]
@@ -111,12 +125,31 @@ async def create_schedule_version(
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """Создать новую версию плана (пустую, без задач)."""
+    """
+    Создать новую версию плана (пустую, без задач).
+
+    Итерация 13.15:
+        Раньше при создании пустого плана снапшот-таблицы НЕ заполнялись,
+        из-за чего UI в readonly-режиме показывал пустые справочники.
+
+        Теперь:
+          1. Создаём schedule_version.
+          2. Триггер copy_app_settings_to_plan копирует app_settings
+             в plan_settings (работает на уровне БД, add_21.sql).
+          3. Явно вызываем snapshot_all_catalogs — заполняем
+             equipment/product/operation/calendar снапшоты.
+
+        Это делает план «полноценным» с точки зрения UI: справочники
+        открываются, настройки видны, можно пересчитать план.
+    """
     version_id = uuid4()
     name = request.get("name", "Без названия")
     version_type = request.get("version_type", "MONTHLY")
     comment = request.get("comment", "")
 
+    # ==========================================
+    # 1. Создаём версию плана.
+    # ==========================================
     await db.execute(
         text("""
             INSERT INTO schedule_version
@@ -133,6 +166,20 @@ async def create_schedule_version(
             "comment": comment,
         },
     )
+
+    # ==========================================
+    # 2. Заполняем снапшоты.
+    # ==========================================
+    # Триггер copy_app_settings_to_plan уже сработал на INSERT
+    # (см. add_21.sql) — plan_settings заполнены.
+    #
+    # Теперь заполняем снапшоты справочников.
+    snapshot_stats = await snapshot_all_catalogs(
+        session=db,
+        org_id=org_id,
+        version_id=version_id,
+    )
+
     await db.commit()
 
     return {
@@ -142,6 +189,8 @@ async def create_schedule_version(
         "is_active": False,
         "created_at": datetime.now().isoformat(),
         "comment": comment,
+        "has_snapshot": True,
+        "snapshot_stats": snapshot_stats,
     }
 
 

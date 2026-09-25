@@ -716,19 +716,25 @@ export const settingsApi = {
 };
 
 // ==========================================
-// Plan Settings API (Итерация 13.14)
+// Plan Settings API (Итерация 13.14 + 13.14.1)
 // ==========================================
 export const planSettingsApi = {
     /**
-     * Настройки конкретного плана (snapshot).
+     * Настройки конкретного плана (snapshot) + метаданные schedule_version.
      *
      * Возвращает:
-     *   - settings: {key: value} — для чтения
+     *   - metadata: {name, comment, version_type} — из schedule_version
+     *   - settings: {key: value} — из plan_settings
      *   - schema: полный реестр с метаданными
      *   - categories: список категорий с label
      */
     getForVersion: async (versionId: string): Promise<{
         version_id: string;
+        metadata: {
+            name: string | null;
+            comment: string | null;
+            version_type: string | null;
+        };
         settings: Record<string, any>;
         schema: any[];
         categories: {key: string; label: string}[];
@@ -737,19 +743,40 @@ export const planSettingsApi = {
         return response.data;
     },
 
-    /** Массовое обновление настроек плана. */
+    /**
+     * Массовое обновление настроек плана + опционально метаданных.
+     *
+     * Все поля опциональны. Если ни одно не передано — no-op.
+     */
     updateForVersion: async (
         versionId: string,
-        settings: Record<string, any>,
-    ): Promise<any> => {
+        payload: {
+            settings?: Record<string, any>;
+            name?: string | null;
+            comment?: string | null;
+            version_type?: string | null;
+        },
+    ): Promise<{
+        status: string;
+        version_id: string;
+        metadata_updated: string[];
+        settings_updated_count: number;
+        settings_updated: string[];
+    }> => {
+        const body: Record<string, any> = {};
+        if (payload.settings !== undefined) body.settings = payload.settings;
+        if (payload.name !== undefined) body.name = payload.name;
+        if (payload.comment !== undefined) body.comment = payload.comment;
+        if (payload.version_type !== undefined) body.version_type = payload.version_type;
+
         const response = await api.put(
             `/api/v1/plan-settings/version/${versionId}`,
-            {settings},
+            body,
         );
         return response.data;
     },
 
-    /** Сброс настроек плана к глобальным app_settings. */
+    /** Сброс настроек плана к глобальным app_settings (метаданные не трогает). */
     resetForVersion: async (versionId: string): Promise<any> => {
         const response = await api.post(
             `/api/v1/plan-settings/version/${versionId}/reset`,

@@ -11,6 +11,9 @@
 Итерация 12 (what-if): опциональная session.
 Итерация 13.6: двухпроходное сохранение связей
                (depends_on_task_ids).
+Итерация 13.15: снапшоты справочников вынесены в отдельный модуль
+                snapshot.py (snapshot_all_catalogs). Здесь только
+                вызываем эту функцию.
 """
 import json
 import logging
@@ -25,6 +28,7 @@ from sqlalchemy.orm import sessionmaker
 from app.core.config import settings
 from .logging_config import setup_scheduler_logging, log_with_context
 from .shifts import find_shift_id_for_time
+from .snapshot import snapshot_all_catalogs
 
 logger = setup_scheduler_logging(level=logging.INFO)
 
@@ -147,6 +151,8 @@ class ScheduleSaver:
         Итерация 13.6: двухпроходное сохранение.
           - 1-й проход: INSERT всех задач, сбор {key: task_uuid}.
           - 2-й проход: UPDATE depends_on_task_ids.
+
+        Итерация 13.15: снапшоты вынесены в snapshot.snapshot_all_catalogs.
         """
         version_id = uuid4()
         plan_name = f"План от {datetime.now().strftime('%Y-%m-%d %H:%M')}"
@@ -184,66 +190,23 @@ class ScheduleSaver:
         )
 
         # ==========================================
-        # 3. Снапшоты справочников
+        # 3. Снапшоты справочников (Итерация 13.15)
         # ==========================================
-        await session.execute(
-            text("""
-                INSERT INTO equipment_snapshot
-                    (id, organization_id, code, name, type, volume_kg,
-                     speed_coeff, mixer_type, is_active, version_id)
-                SELECT id, organization_id, code, name, type, volume_kg,
-                       speed_coeff, mixer_type, is_active, :version_id
-                FROM equipment
-                WHERE organization_id = :org_id
-            """),
-            {"version_id": version_id, "org_id": self.org_id},
+        # Вызов единой функции из snapshot.py.
+        # Раньше здесь было 4 отдельных INSERT'а — теперь один вызов.
+        snapshot_stats = await snapshot_all_catalogs(
+            session=session,
+            org_id=self.org_id,
+            version_id=version_id,
         )
 
-        await session.execute(
-            text("""
-                INSERT INTO product_snapshot
-                    (id, organization_id, code, name, type, viscosity_coeff,
-                     requires_heating, bottle_volume_l, fill_speed_per_min,
-                     parent_pf_id, route_type, version_id)
-                SELECT id, organization_id, code, name, type, viscosity_coeff,
-                       requires_heating, bottle_volume_l, fill_speed_per_min,
-                       parent_pf_id, route_type, :version_id
-                FROM product
-                WHERE organization_id = :org_id
-            """),
-            {"version_id": version_id, "org_id": self.org_id},
-        )
-
-        await session.execute(
-            text("""
-                INSERT INTO operation_snapshot
-                    (id, organization_id, product_id, stage_order, name,
-                     base_duration_mins, is_setup, is_parallel_group,
-                     parallel_group_id, needs_boiler, needs_cooling_zone,
-                     needs_operator, needs_lab, duration_formula,
-                     operator_pool, comment, version_id)
-                SELECT id, organization_id, product_id, stage_order, name,
-                       base_duration_mins, is_setup, is_parallel_group,
-                       parallel_group_id, needs_boiler, needs_cooling_zone,
-                       needs_operator, needs_lab, duration_formula,
-                       operator_pool, comment, :version_id
-                FROM operation_template
-                WHERE organization_id = :org_id
-            """),
-            {"version_id": version_id, "org_id": self.org_id},
-        )
-
-        await session.execute(
-            text("""
-                INSERT INTO calendar_snapshot
-                    (id, organization_id, equipment_id, event_type,
-                     starts_at, ends_at, comment, version_id)
-                SELECT id, organization_id, equipment_id, event_type,
-                       starts_at, ends_at, comment, :version_id
-                FROM calendar_event
-                WHERE organization_id = :org_id
-            """),
-            {"version_id": version_id, "org_id": self.org_id},
+        log_with_context(
+            logger, logging.INFO,
+            f"Снапшоты сохранены: equipment={snapshot_stats['equipment']}, "
+            f"products={snapshot_stats['products']}, "
+            f"operations={snapshot_stats['operations']}, "
+            f"calendar={snapshot_stats['calendar_events']}",
+            stage="save", org_id=str(self.org_id),
         )
 
         # ==========================================
@@ -518,4 +481,5 @@ class ScheduleSaver:
             "cooling_slow": cooling_slow_count,
             "line_fill_fixed": line_fill_fixed,
             "deps_updated": deps_updated,
+            "snapshot_stats": snapshot_stats,
         }

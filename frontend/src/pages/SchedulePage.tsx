@@ -53,7 +53,7 @@ import {Allotment} from 'allotment';
 import 'allotment/dist/style.css';
 import {advisorApi, rescheduleApi, scheduleApi, settingsApi} from '../services/api';
 import type {AdvisorResponse, AdvisorSeverity, RescheduleReason, RescheduleResponse,} from '../types';
-import PlanSettingsWizard from './PlanSettingsWizard';
+import PlanSettingsWizard, {type WizardMode} from './PlanSettingsWizard';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -88,6 +88,7 @@ const SchedulePage: React.FC = () => {
     const { versions, setPlan, clearPlan, loadVersions, currentVersionId } = usePlan();
     const navigate = useNavigate();
 
+    // Параметры расчёта — читаются из app_settings
     const [horizonHours, setHorizonHours] = useState<number>(DEFAULT_HORIZON_HOURS);
     const [solverTimeout, setSolverTimeout] = useState<number>(DEFAULT_TIMEOUT_SECONDS);
     const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -97,18 +98,20 @@ const SchedulePage: React.FC = () => {
     const [result, setResult] = useState<any>(null);
     const [error, setError] = useState<string | null>(null);
 
+    // Advisor
     const [advisorData, setAdvisorData] = useState<AdvisorResponse | null>(null);
     const [advisorLoading, setAdvisorLoading] = useState(false);
     const [advisorError, setAdvisorError] = useState<string | null>(null);
 
-    const [newPlanDialogOpen, setNewPlanDialogOpen] = useState(false);
-    const [newPlanForm, setNewPlanForm] = useState({
-        name: '',
-        version_type: 'MONTHLY',
-        comment: '',
-    });
-    const [creatingPlan, setCreatingPlan] = useState(false);
+    // ==========================================
+    // Итерация 13.14: единый мастер настроек плана
+    // (заменяет старые диалоги «Новый план» и «Настройки плана»)
+    // ==========================================
+    const [wizardOpen, setWizardOpen] = useState(false);
+    const [wizardMode, setWizardMode] = useState<WizardMode>('edit');
+    const [wizardVersionId, setWizardVersionId] = useState<string | null>(null);
 
+    // Перепланирование
     const [rescheduleDialogOpen, setRescheduleDialogOpen] = useState(false);
     const [rescheduleForm, setRescheduleForm] = useState<{
         reason: RescheduleReason;
@@ -122,10 +125,9 @@ const SchedulePage: React.FC = () => {
     const [rescheduling, setRescheduling] = useState(false);
     const [rescheduleResult, setRescheduleResult] = useState<RescheduleResponse | null>(null);
 
-    // Итерация 13.14: мастер настроек плана
-    const [wizardOpen, setWizardOpen] = useState(false);
-    const [wizardVersionId, setWizardVersionId] = useState<string | null>(null);
-
+    // ==========================================
+    // Загрузка настроек планирования из app_settings
+    // ==========================================
     const loadPlanningSettings = useCallback(async () => {
         try {
             const settings = await settingsApi.getCategory('planning');
@@ -142,6 +144,9 @@ const SchedulePage: React.FC = () => {
         }
     }, []);
 
+    // ==========================================
+    // Сохранение настроек в app_settings
+    // ==========================================
     const savePlanningSettings = useCallback(async (
         horizon: number,
         timeout: number,
@@ -172,7 +177,7 @@ const SchedulePage: React.FC = () => {
         setAdvisorLoading(true);
         setAdvisorError(null);
         try {
-            const data = await advisorApi.getAdvice();
+            const data = await advisorApi.getAdvice(currentVersionId || undefined);
             setAdvisorData(data);
         } catch (err: any) {
             const detail = err.response?.data?.detail;
@@ -213,26 +218,6 @@ const SchedulePage: React.FC = () => {
         if (ok) setError(null);
     };
 
-    const handleCreatePlan = async () => {
-        if (!newPlanForm.name.trim()) {
-            setError('Введите название плана');
-            return;
-        }
-        setCreatingPlan(true);
-        setError(null);
-        try {
-            const newVersion = await scheduleApi.createVersion(newPlanForm);
-            setPlan(newVersion.id, newVersion.name);
-            setNewPlanDialogOpen(false);
-            setNewPlanForm({ name: '', version_type: 'MONTHLY', comment: '' });
-            await loadVersions();
-        } catch (err: any) {
-            setError(err.response?.data?.detail || 'Ошибка создания плана');
-        } finally {
-            setCreatingPlan(false);
-        }
-    };
-
     const handleDeletePlan = async (version: PlanVersion) => {
         if (!window.confirm(`Удалить план "${version.name}"?`)) return;
         try {
@@ -246,23 +231,66 @@ const SchedulePage: React.FC = () => {
         }
     };
 
+    // ==========================================
+    // Итерация 13.14: открыть план → установить в контекст
+    // и перейти на страницу «Диаграмма Ганта».
+    //
+    // Итерация 13.15: передаём has_snapshot в setPlan. Если план пуст
+    // (создан до 13.15 или не рассчитан), UI покажет предупреждение
+    // вместо пустых справочников.
+    // ==========================================
     const handleOpenPlan = (version: PlanVersion) => {
-        setPlan(version.id, version.name);
+        setPlan(
+            version.id,
+            version.name,
+            version.has_snapshot !== false,
+        );
         navigate('/gantt');
     };
 
+    // ==========================================
+    // Итерация 13.14: закрыть текущий план → вернуться
+    // в режим редактирования. Остаёмся на «Планировании».
+    // ==========================================
     const handleClosePlan = () => {
         clearPlan();
     };
 
-    // ============================================
-    // Итерация 13.14: открыть мастер настроек плана
-    // ============================================
-    const handleOpenWizard = (versionId: string) => {
+    // ==========================================
+    // Итерация 13.14: открыть мастер настроек
+    //   - режим 'edit' — для существующего плана
+    //   - режим 'create' — для создания нового плана
+    // ==========================================
+    const handleOpenWizardEdit = (versionId: string) => {
+        setWizardMode('edit');
         setWizardVersionId(versionId);
         setWizardOpen(true);
     };
 
+    const handleOpenWizardCreate = () => {
+        setWizardMode('create');
+        setWizardVersionId(null);
+        setWizardOpen(true);
+    };
+
+    const handleWizardSaved = async (
+        versionId: string,
+        action: 'save' | 'save-and-build' | 'create-and-build',
+    ) => {
+        await loadVersions();
+        if (action === 'create-and-build' || action === 'save-and-build') {
+            setWizardOpen(false);
+            navigate(`/gantt?version_id=${versionId}`);
+        }
+        if (action === 'create-and-build') {
+            // Триггер БД уже скопировал app_settings в plan_settings,
+            // мастер сохранил поверх него. Снапшоты заполнены
+            // (Итерация 13.15 — в create_schedule_version).
+            await loadVersions();
+        }
+    };
+
+    // ---------- Перепланирование ----------
     const handleOpenReschedule = () => {
         if (!currentVersionId) {
             setError('Сначала откройте сохранённую версию плана');
@@ -293,7 +321,7 @@ const SchedulePage: React.FC = () => {
             setRescheduleResult(res);
             await loadVersions();
             if (res.to_version_id) {
-                setPlan(res.to_version_id, `Перепланировано от ${new Date().toLocaleString('ru-RU')}`);
+                setPlan(res.to_version_id, `Перепланировано от ${new Date().toLocaleString('ru-RU')}`, true);
             }
         } catch (err: any) {
             const detail = err.response?.data?.detail;
@@ -303,6 +331,9 @@ const SchedulePage: React.FC = () => {
         }
     };
 
+    // ==========================================
+    // Колонки таблицы планов
+    // ==========================================
     const columnDefs: ColDef[] = [
         { headerName: 'Наименование', field: 'name', flex: 2 },
         {
@@ -325,13 +356,23 @@ const SchedulePage: React.FC = () => {
         },
         {
             headerName: 'Действия',
-            width: 220,
+            width: 240,
             editable: false,
             cellRenderer: (params: any) => {
                 const version = params.data as PlanVersion;
                 const isCurrent = version.id === currentVersionId;
+                const hasSnapshot = version.has_snapshot !== false;
+
                 return (
                     <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
+                        {!hasSnapshot && (
+                            <Tooltip title="План создан до Итерации 13.15, снапшоты пусты. Пересоздайте план или пересчитайте.">
+                                <WarningIcon
+                                    fontSize="small"
+                                    sx={{ color: '#e67e22' }}
+                                />
+                            </Tooltip>
+                        )}
                         {isCurrent ? (
                             <Tooltip title="Закрыть план (вернуться в режим редактирования)">
                                 <IconButton
@@ -343,10 +384,14 @@ const SchedulePage: React.FC = () => {
                                 </IconButton>
                             </Tooltip>
                         ) : (
-                            <Tooltip title="Открыть план (перейти на диаграмму Ганта)">
+                            <Tooltip title={
+                                hasSnapshot
+                                    ? "Открыть план (перейти на диаграмму Ганта)"
+                                    : "Открыть план (нет снапшотов — справочники будут пусты)"
+                            }>
                                 <IconButton
                                     size="small"
-                                    color="primary"
+                                    color={hasSnapshot ? 'primary' : 'warning'}
                                     onClick={() => handleOpenPlan(version)}
                                 >
                                     <ViewIcon fontSize="small" />
@@ -361,11 +406,11 @@ const SchedulePage: React.FC = () => {
                                 <TimelineIcon fontSize="small" />
                             </IconButton>
                         </Tooltip>
-                        <Tooltip title="Настройки этого плана">
+                        <Tooltip title="Мастер настроек плана">
                             <IconButton
                                 size="small"
                                 color="info"
-                                onClick={() => handleOpenWizard(version.id)}
+                                onClick={() => handleOpenWizardEdit(version.id)}
                             >
                                 <SettingsIcon fontSize="small" />
                             </IconButton>
@@ -385,6 +430,9 @@ const SchedulePage: React.FC = () => {
         },
     ];
 
+    // ==========================================
+    // Advisor Panel
+    // ==========================================
     const renderAdvisorPanel = () => {
         return (
             <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column', m: 0.5 }}>
@@ -476,6 +524,9 @@ const SchedulePage: React.FC = () => {
         );
     };
 
+    // ==========================================
+    // AgGrid Panel — история планов
+    // ==========================================
     const renderPlansGrid = () => {
         return (
             <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column', m: 0.5 }}>
@@ -505,6 +556,7 @@ const SchedulePage: React.FC = () => {
                             getRowStyle={(params: any): RowStyle | undefined => {
                                 const isCurrent = params.data?.id === currentVersionId;
                                 const isActive = params.data?.is_active;
+                                const hasSnapshot = params.data?.has_snapshot !== false;
                                 if (isCurrent) {
                                     return {
                                         backgroundColor: '#e3f2fd',
@@ -519,6 +571,12 @@ const SchedulePage: React.FC = () => {
                                         color: '#33691e',
                                     } as RowStyle;
                                 }
+                                if (!hasSnapshot) {
+                                    return {
+                                        backgroundColor: '#fff8e1',
+                                        color: '#7f6000',
+                                    } as RowStyle;
+                                }
                                 return undefined;
                             }}
                         />
@@ -528,8 +586,12 @@ const SchedulePage: React.FC = () => {
         );
     };
 
+    // ==========================================
+    // Основной рендер
+    // ==========================================
     return (
         <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            {/* Заголовок */}
             <Box
                 sx={{
                     display: 'flex',
@@ -555,7 +617,7 @@ const SchedulePage: React.FC = () => {
                     <Button
                         variant="outlined"
                         startIcon={<AddIcon />}
-                        onClick={() => setNewPlanDialogOpen(true)}
+                        onClick={handleOpenWizardCreate}
                         sx={{ textTransform: 'none' }}
                     >
                         Новый план
@@ -569,6 +631,7 @@ const SchedulePage: React.FC = () => {
                 </Alert>
             )}
 
+            {/* Параметры расчёта */}
             <Card sx={{ mb: 2, flexShrink: 0 }}>
                 <CardContent sx={{ py: 2, '&:last-child': { pb: 2 } }}>
                     <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
@@ -631,6 +694,7 @@ const SchedulePage: React.FC = () => {
                 </CardContent>
             </Card>
 
+            {/* Allotment: Advisor сверху, планы снизу */}
             <Box sx={{ flexGrow: 1, minHeight: 0, mx: -0.5 }}>
                 <Allotment vertical defaultSizes={[30, 70]}>
                     <Allotment.Pane minSize={180} preferredSize="30%">
@@ -642,51 +706,23 @@ const SchedulePage: React.FC = () => {
                 </Allotment>
             </Box>
 
-            <Dialog open={newPlanDialogOpen} onClose={() => setNewPlanDialogOpen(false)} maxWidth="sm" fullWidth>
-                <DialogTitle sx={{ fontWeight: 600 }}>Создать новый план</DialogTitle>
-                <DialogContent>
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
-                        <TextField
-                            label="Название плана"
-                            fullWidth
-                            value={newPlanForm.name}
-                            onChange={(e) => setNewPlanForm({ ...newPlanForm, name: e.target.value })}
-                        />
-                        <FormControl fullWidth variant="outlined">
-                            <InputLabel>Тип плана</InputLabel>
-                            <Select
-                                value={newPlanForm.version_type}
-                                label="Тип плана"
-                                variant="outlined"
-                                onChange={(e) => setNewPlanForm({ ...newPlanForm, version_type: e.target.value })}
-                            >
-                                <MenuItem value="MONTHLY">Месячный (ОКП)</MenuItem>
-                                <MenuItem value="SHIFT">Посменный</MenuItem>
-                                <MenuItem value="WHAT_IF">Сценарий "что если"</MenuItem>
-                            </Select>
-                        </FormControl>
-                        <TextField
-                            label="Комментарий"
-                            fullWidth
-                            multiline
-                            rows={3}
-                            value={newPlanForm.comment}
-                            onChange={(e) => setNewPlanForm({ ...newPlanForm, comment: e.target.value })}
-                        />
-                    </Box>
-                </DialogContent>
-                <DialogActions>
-                    <Button onClick={() => setNewPlanDialogOpen(false)}>Отмена</Button>
-                    <Button
-                        onClick={handleCreatePlan}
-                        variant="contained"
-                        disabled={creatingPlan || !newPlanForm.name.trim()}
-                    >
-                        {creatingPlan ? 'Создание...' : 'Создать'}
-                    </Button>
-                </DialogActions>
-            </Dialog>
+            {/*
+              ============================================
+              Итерация 13.14: единый мастер настроек плана.
+              Заменяет старые диалоги:
+                - «Создать новый план» (удалён)
+                - «Настройки плана» (объединён в этот)
+              ============================================
+            */}
+            <PlanSettingsWizard
+                open={wizardOpen}
+                onClose={() => setWizardOpen(false)}
+                mode={wizardMode}
+                versionId={wizardVersionId}
+                onSaved={handleWizardSaved}
+            />
 
+            {/* ---------- Диалог перепланирования ---------- */}
             <Dialog
                 open={rescheduleDialogOpen}
                 onClose={() => setRescheduleDialogOpen(false)}
@@ -778,19 +814,6 @@ const SchedulePage: React.FC = () => {
                     )}
                 </DialogActions>
             </Dialog>
-
-            {/* Итерация 13.14: мастер настроек плана */}
-            <PlanSettingsWizard
-                open={wizardOpen}
-                onClose={() => setWizardOpen(false)}
-                versionId={wizardVersionId}
-                onSaved={(vid, action) => {
-                    if (action === 'save-and-build') {
-                        setWizardOpen(false);
-                        navigate(`/gantt?version_id=${vid}`);
-                    }
-                }}
-            />
         </Box>
     );
 };

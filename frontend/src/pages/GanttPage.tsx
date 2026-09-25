@@ -7,6 +7,10 @@
 //   - Выходные подсвечиваются вертикальными полосами на всю высоту.
 //   - Верхняя полоса дат подсвечивает субботу/воскресенье фиолетовым.
 //   - Связи — по hover (Итерация 13.9).
+//
+// Итерация 13.15: если у плана нет снапшотов (has_snapshot=false),
+//   показываем предупреждение вместо диаграммы. Это защита от
+//   «пустых» планов, созданных до Итерации 13.15.
 
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
@@ -55,6 +59,7 @@ import {
     Refresh as RefreshIcon,
     Search as SearchIcon,
     Today as TodayIcon,
+    WarningAmber as WarningIcon,
     ZoomIn as ZoomInIcon,
     ZoomOut as ZoomOutIcon,
 } from '@mui/icons-material';
@@ -175,8 +180,10 @@ const GanttPage: React.FC = () => {
     const hoveredTaskIdRef = useRef<string | null>(null);
 
     // --- Plan context ---
-    const {currentVersionId, currentPlanName} = usePlan();
+    const {currentVersionId, currentPlanName, currentPlanHasSnapshot, clearPlan} = usePlan();
     const isReadOnly = currentVersionId !== null;
+    // Итерация 13.15: план пуст (нет снапшотов) — показываем предупреждение.
+    const isEmptyPlan = currentVersionId !== null && !currentPlanHasSnapshot;
 
     // --- State ---
     const [loading, setLoading] = useState(true);
@@ -1497,6 +1504,74 @@ const GanttPage: React.FC = () => {
     }
 
     // ==========================================
+    // Итерация 13.15: план пуст (нет снапшотов).
+    // Показываем предупреждение вместо диаграммы.
+    // ==========================================
+    if (isEmptyPlan) {
+        return (
+            <Box
+                sx={{
+                    height: '100%',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    minHeight: 0,
+                    p: 4,
+                }}
+            >
+                <Alert
+                    severity="warning"
+                    icon={<WarningIcon fontSize="inherit"/>}
+                    sx={{mb: 2}}
+                >
+                    <Typography variant="h6" sx={{fontWeight: 600, mb: 1}}>
+                        План «{currentPlanName}» пуст
+                    </Typography>
+                    <Typography variant="body2">
+                        Этот план был создан до Итерации 13.15, и снапшоты
+                        справочников для него не заполнены. Диаграмма Ганта
+                        недоступна.
+                    </Typography>
+                    <Typography variant="body2" sx={{mt: 1.5, fontWeight: 600}}>
+                        Что делать:
+                    </Typography>
+                    <Box component="ul" sx={{mt: 0.5, mb: 1, pl: 3}}>
+                        <li>
+                            <Typography variant="body2">
+                                Закрыть план и создать новый через мастер — снапшоты
+                                заполнятся автоматически.
+                            </Typography>
+                        </li>
+                        <li>
+                            <Typography variant="body2">
+                                Либо удалить этот план (кнопка 🗑 в списке планов)
+                                и создать заново.
+                            </Typography>
+                        </li>
+                    </Box>
+                    <Box sx={{mt: 2, display: 'flex', gap: 1, flexWrap: 'wrap'}}>
+                        <Button
+                            variant="contained"
+                            onClick={() => navigate('/schedule')}
+                        >
+                            Перейти к планированию
+                        </Button>
+                        <Button
+                            variant="outlined"
+                            color="warning"
+                            onClick={() => {
+                                clearPlan();
+                                navigate('/schedule');
+                            }}
+                        >
+                            Закрыть план
+                        </Button>
+                    </Box>
+                </Alert>
+            </Box>
+        );
+    }
+
+    // ==========================================
     // JSX
     // ==========================================
     return (
@@ -1866,13 +1941,6 @@ const GanttPage: React.FC = () => {
                 </Box>
             </Popover>
 
-            {/* ==========================================
-    Расширенный диалог задачи с информацией о партии.
-    Итерация 13.11:
-      - Перемещаемый (drag за заголовок)
-      - Скроллируемый
-      - Блок «Редактирование времени» — первым
-    ========================================== */}
             {/* ==========================================
     Расширенный диалог задачи с информацией о партии.
     Итерация 13.12:

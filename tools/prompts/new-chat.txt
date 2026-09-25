@@ -1,0 +1,6 @@
+Проанализируй файлы. (project_dump.txt, README.md, ТЗ.txt) 
+Определи в какой стадии находится сейчас проект. Предложи план дальнейшей работы.
+Прими следующие правила:
+- листинг всех исправленных файлов всегда выводить полностью
+- все команды общение с БД оборачивать командам работы с docker, например:
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT type, capacity FROM resource_pool ORDER BY type;"

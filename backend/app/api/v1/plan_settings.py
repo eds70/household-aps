@@ -7,15 +7,17 @@ API мастера настроек плана (Итерация 13.14).
   PUT  /api/v1/plan-settings/version/{version_id}       — массовое обновление
   POST /api/v1/plan-settings/version/{version_id}/reset — сброс к глобальным
 
+Итерация 13.14.1: PUT принимает опциональные метаданные плана
+    (name, comment, version_type) и обновляет schedule_version.
+
 Логика:
   - plan_settings — снапшот настроек для конкретного плана.
-  - При создании schedule_version триггер копирует app_settings.
-  - Мастер позволяет переопределить эти настройки ДО построения плана.
-  - Планировщик (ProductionScheduler) читает plan_settings, а не app_settings.
+  - schedule_version — метаданные плана (name, comment, version_type).
+  - PUT обновляет оба, если переданы соответствующие поля.
 """
 import json as _json
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -39,16 +41,38 @@ logger = logging.getLogger("app.api.plan_settings")
 
 EDIT_ALLOWED_ROLES = {"ADMIN", "PLANNER"}
 
+VALID_VERSION_TYPES = {"MONTHLY", "SHIFT", "WHAT_IF"}
+
 
 # ==========================================
 # Модели
 # ==========================================
 
 class PlanSettingsUpdateRequest(BaseModel):
-    """Массовое обновление plan_settings."""
+    """
+    Массовое обновление plan_settings + опционально метаданные плана.
+
+    Если переданы name / comment / version_type — обновляется schedule_version.
+    """
     settings: Dict[str, Any] = Field(
-        ...,
-        description="Словарь {setting_key: new_value}",
+        default_factory=dict,
+        description="Словарь {setting_key: new_value}. Может быть пустым.",
+    )
+    # --- Итерация 13.14.1: метаданные плана ---
+    name: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+        description="Новое имя плана",
+    )
+    comment: Optional[str] = Field(
+        default=None,
+        max_length=2000,
+        description="Новый комментарий",
+    )
+    version_type: Optional[str] = Field(
+        default=None,
+        description="Новый тип плана: MONTHLY | SHIFT | WHAT_IF",
     )
 
 
@@ -57,7 +81,6 @@ class PlanSettingsUpdateRequest(BaseModel):
 # ==========================================
 
 def _check_edit_role(current_user: dict) -> None:
-    """Только ADMIN и PLANNER могут менять настройки плана."""
     role = current_user.get("role")
     if role not in EDIT_ALLOWED_ROLES:
         raise HTTPException(
@@ -71,7 +94,6 @@ async def _assert_version_exists(
         version_id: UUID,
         org_id: UUID,
 ) -> None:
-    """Проверяет, что schedule_version существует и принадлежит организации."""
     result = await db.execute(
         text("""
             SELECT id FROM schedule_version
@@ -97,13 +119,27 @@ async def get_plan_settings(
         db: AsyncSession = Depends(get_db_session),
 ):
     """
-    Возвращает все plan_settings для конкретного плана.
-
-    Если для плана нет записей (старый план до миграции) —
-    возвращается пустой settings, а UI может показать fallback на app_settings.
+    Возвращает настройки плана + метаданные schedule_version.
     """
     await _assert_version_exists(db, version_id, org_id)
 
+    # Метаданные плана
+    version_result = await db.execute(
+        text("""
+            SELECT name, comment, version_type
+            FROM schedule_version
+            WHERE id = :vid AND organization_id = :org_id
+        """),
+        {"vid": version_id, "org_id": org_id},
+    )
+    v_row = version_result.fetchone()
+    metadata = {
+        "name": v_row.name if v_row else None,
+        "comment": v_row.comment if v_row else None,
+        "version_type": v_row.version_type if v_row else None,
+    }
+
+    # Настройки плана
     result = await db.execute(
         text("""
             SELECT setting_key, setting_value, value_type, category,
@@ -136,6 +172,7 @@ async def get_plan_settings(
 
     return {
         "version_id": str(version_id),
+        "metadata": metadata,
         "settings": settings_dict,
         "schema": items,
         "categories": [
@@ -158,14 +195,57 @@ async def update_plan_settings(
         db: AsyncSession = Depends(get_db_session),
 ):
     """
-    Массовое обновление plan_settings.
+    Обновляет настройки плана + опционально метаданные schedule_version.
 
-    Валидирует значения через `validate_setting` из `settings.py`.
-    Системные настройки (`is_system = TRUE`) не обновляются.
+    Валидация настроек — через validate_setting.
+    Системные настройки (is_system=TRUE) не обновляются.
     """
     _check_edit_role(current_user)
     await _assert_version_exists(db, version_id, org_id)
 
+    # ==========================================
+    # 1. Обновляем метаданные schedule_version (если переданы)
+    # ==========================================
+    metadata_updates: Dict[str, Any] = {}
+
+    if payload.name is not None:
+        metadata_updates["name"] = payload.name.strip()
+
+    if payload.comment is not None:
+        metadata_updates["comment"] = payload.comment
+
+    if payload.version_type is not None:
+        if payload.version_type not in VALID_VERSION_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Недопустимый version_type: {payload.version_type}. "
+                       f"Допустимые: {sorted(VALID_VERSION_TYPES)}",
+            )
+        metadata_updates["version_type"] = payload.version_type
+
+    if metadata_updates:
+        set_clause = ", ".join(f"{k} = :{k}" for k in metadata_updates.keys())
+        params = {
+            **metadata_updates,
+            "vid": version_id,
+            "org_id": org_id,
+        }
+        await db.execute(
+            text(f"""
+                UPDATE schedule_version
+                SET {set_clause}
+                WHERE id = :vid AND organization_id = :org_id
+            """),
+            params,
+        )
+        logger.info(
+            f"[plan_settings] метаданные обновлены для {str(version_id)[:8]}: "
+            f"{list(metadata_updates.keys())}"
+        )
+
+    # ==========================================
+    # 2. Обновляем plan_settings (если переданы)
+    # ==========================================
     updated: Dict[str, Any] = {}
     errors: Dict[str, str] = {}
 
@@ -184,7 +264,6 @@ async def update_plan_settings(
             errors[key] = str(e)
             continue
 
-        # Сериализация в JSONB
         if isinstance(validated, bool):
             serialized = "true" if validated else "false"
         elif isinstance(validated, str):
@@ -236,16 +315,12 @@ async def update_plan_settings(
 
     await db.commit()
 
-    logger.info(
-        f"plan_settings обновлены для {str(version_id)[:8]}: "
-        f"{list(updated.keys())}"
-    )
-
     return {
         "status": "success",
         "version_id": str(version_id),
-        "updated_count": len(updated),
-        "updated": updated,
+        "metadata_updated": list(metadata_updates.keys()),
+        "settings_updated_count": len(updated),
+        "settings_updated": list(updated.keys()),
     }
 
 
@@ -262,14 +337,11 @@ async def reset_plan_settings(
 ):
     """
     Сбрасывает plan_settings к глобальным app_settings.
-
-    Полезно, если пользователь «переэкспериментировался» в мастере
-    и хочет вернуться к дефолтным значениям.
+    Метаданные schedule_version НЕ трогает.
     """
     _check_edit_role(current_user)
     await _assert_version_exists(db, version_id, org_id)
 
-    # 1. Удаляем все plan_settings для этого плана
     delete_result = await db.execute(
         text("""
             DELETE FROM plan_settings
@@ -279,7 +351,6 @@ async def reset_plan_settings(
     )
     deleted = delete_result.rowcount or 0
 
-    # 2. Копируем из app_settings
     await db.execute(
         text("""
             INSERT INTO plan_settings
@@ -298,11 +369,6 @@ async def reset_plan_settings(
     )
 
     await db.commit()
-
-    logger.info(
-        f"plan_settings сброшены для {str(version_id)[:8]} "
-        f"(удалено {deleted}, скопировано из app_settings)"
-    )
 
     return {
         "status": "success",

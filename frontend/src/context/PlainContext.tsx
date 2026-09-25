@@ -11,19 +11,37 @@ export interface PlanVersion {
     is_active: boolean;
     created_at: string;
     comment?: string | null;
+    /**
+     * Итерация 13.15: заполнены ли снапшот-таблицы для этой версии.
+     *
+     * true  — план рассчитан или создан через snapshot_all_catalogs.
+     * false — «пустой» план (создан до Итерации 13.15, снапшотов нет).
+     *
+     * UI использует это, чтобы понять, можно ли открывать план
+     * в readonly-режиме. Если false — вместо readonly показываем
+     * предупреждение «план пуст, требуется пересчёт».
+     */
+    has_snapshot?: boolean;
 }
 
 // Текущий план: либо конкретный план, либо null (режим редактирования)
 export interface CurrentPlan {
     id: string;
     name: string;
+    has_snapshot: boolean;
 }
 
 interface PlanContextType {
     currentVersionId: string | null;
     currentPlanName: string;
+    /**
+     * Итерация 13.15: есть ли снапшоты у текущего плана.
+     * true  — план полноценный, справочники читаются из снапшотов.
+     * false — план пуст (снапшотов нет), справочники будут пустыми.
+     */
+    currentPlanHasSnapshot: boolean;
     versions: PlanVersion[];
-    setPlan: (versionId: string | null, name: string) => void;
+    setPlan: (versionId: string | null, name: string, hasSnapshot?: boolean) => void;
     clearPlan: () => void;
     loadVersions: () => Promise<void>;
     createPlan: (name: string, versionType: string, comment?: string) => Promise<PlanVersion>;
@@ -38,13 +56,20 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Итерация 13.13: храним id и name в одном объекте,
     // чтобы они не могли рассинхронизироваться.
     // Также сохраняем в localStorage — чтобы план не сбрасывался при F5.
+    //
+    // Итерация 13.15: добавлен has_snapshot — чтобы UI знал, можно ли
+    // читать справочники из снапшотов или план пуст.
     const [currentPlan, setCurrentPlan] = useState<CurrentPlan | null>(() => {
         try {
             const raw = localStorage.getItem(STORAGE_KEY);
             if (raw) {
                 const parsed = JSON.parse(raw);
                 if (parsed && parsed.id && parsed.name) {
-                    return parsed as CurrentPlan;
+                    return {
+                        id: parsed.id,
+                        name: parsed.name,
+                        has_snapshot: parsed.has_snapshot !== false,
+                    } as CurrentPlan;
                 }
             }
         } catch {
@@ -82,10 +107,20 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 if (!stillExists) {
                     return null;
                 }
-                // Обновляем имя, если оно изменилось (например, после перепланирования)
+                // Обновляем имя и has_snapshot, если они изменились
                 const fresh = list.find((v) => v.id === prev.id);
-                if (fresh && fresh.name !== prev.name) {
-                    return {id: prev.id, name: fresh.name};
+                if (fresh) {
+                    const freshHasSnapshot = fresh.has_snapshot !== false;
+                    if (
+                        fresh.name !== prev.name ||
+                        freshHasSnapshot !== prev.has_snapshot
+                    ) {
+                        return {
+                            id: prev.id,
+                            name: fresh.name,
+                            has_snapshot: freshHasSnapshot,
+                        };
+                    }
                 }
                 return prev;
             });
@@ -102,12 +137,20 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
     }, [isLoading, isAuthenticated, loadVersions]);
 
-    const setPlan = useCallback((versionId: string | null, name: string) => {
+    const setPlan = useCallback((
+        versionId: string | null,
+        name: string,
+        hasSnapshot: boolean = true,
+    ) => {
         if (!versionId) {
             setCurrentPlan(null);
             return;
         }
-        setCurrentPlan({id: versionId, name: name || 'План без названия'});
+        setCurrentPlan({
+            id: versionId,
+            name: name || 'План без названия',
+            has_snapshot: hasSnapshot,
+        });
     }, []);
 
     const clearPlan = useCallback(() => {
@@ -143,11 +186,13 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const currentVersionId = currentPlan?.id ?? null;
     const currentPlanName = currentPlan?.name ?? "Режим редактирования";
+    const currentPlanHasSnapshot = currentPlan?.has_snapshot ?? true;
 
     return (
         <PlanContext.Provider value={{
             currentVersionId,
             currentPlanName,
+            currentPlanHasSnapshot,
             versions,
             setPlan,
             clearPlan,

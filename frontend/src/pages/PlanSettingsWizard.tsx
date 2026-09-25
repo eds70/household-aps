@@ -7,10 +7,6 @@ import {
     Checkbox,
     Chip,
     CircularProgress,
-    Dialog,
-    DialogActions,
-    DialogContent,
-    DialogTitle,
     Divider,
     FormControl,
     FormControlLabel,
@@ -35,11 +31,12 @@ import {
     Save as SaveIcon,
     Settings as SettingsIcon,
 } from '@mui/icons-material';
+import DraggableDialog from '../components/common/DraggableDialog';
 import {planSettingsApi, scheduleApi, settingsApi} from '../services/api';
 import type {SettingSpec, SettingsSchema} from '../types';
 
 // ==========================================
-// Описание шагов мастера
+// Шаги
 // ==========================================
 
 interface WizardStep {
@@ -50,6 +47,12 @@ interface WizardStep {
 }
 
 const WIZARD_STEPS: WizardStep[] = [
+    {
+        key: 'meta',
+        label: 'Метаданные',
+        description: 'Наименование и комментарий плана.',
+        categories: [],
+    },
     {
         key: 'planning',
         label: 'Основные',
@@ -110,13 +113,17 @@ const WIZARD_STEPS: WizardStep[] = [
 // Пропсы
 // ==========================================
 
+export type WizardMode = 'create' | 'edit';
+
 interface PlanSettingsWizardProps {
     open: boolean;
     onClose: () => void;
-    /** Если задан — работаем с существующим планом. */
+    mode?: WizardMode;
     versionId?: string | null;
-    /** Колбэк после сохранения. */
-    onSaved?: (versionId: string, action: 'save' | 'save-and-build') => void;
+    onSaved?: (
+        versionId: string,
+        action: 'save' | 'save-and-build' | 'create-and-build',
+    ) => void;
 }
 
 // ==========================================
@@ -126,11 +133,26 @@ interface PlanSettingsWizardProps {
 const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                                                                    open,
                                                                    onClose,
+                                                                   mode = 'edit',
                                                                    versionId,
                                                                    onSaved,
                                                                }) => {
-    const isEditingExisting = !!versionId;
+    const isCreateMode = mode === 'create';
+    const isEditMode = !isCreateMode;
 
+    // Метаданные плана
+    const [planName, setPlanName] = useState('');
+    const [planComment, setPlanComment] = useState('');
+    const [planVersionType, setPlanVersionType] = useState('MONTHLY');
+
+    // Снапшот исходных метаданных для отслеживания изменений
+    const [originalMeta, setOriginalMeta] = useState<{
+        name: string;
+        comment: string;
+        version_type: string;
+    }>({name: '', comment: '', version_type: 'MONTHLY'});
+
+    // Настройки
     const [schema, setSchema] = useState<SettingsSchema | null>(null);
     const [values, setValues] = useState<Record<string, any>>({});
     const [originalValues, setOriginalValues] = useState<Record<string, any>>({});
@@ -139,7 +161,7 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
     const [error, setError] = useState<string | null>(null);
     const [success, setSuccess] = useState<string | null>(null);
 
-    const [activeStep, setActiveStep] = useState(0);
+    const [activeStep, setActiveStep] = useState(isCreateMode ? 0 : 1);
 
     // ==========================================
     // Загрузка
@@ -151,10 +173,21 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
             const schemaData = await settingsApi.getSchema();
             setSchema(schemaData);
 
-            if (versionId) {
+            if (isEditMode && versionId) {
                 const planData = await planSettingsApi.getForVersion(versionId);
                 setValues(planData.settings);
                 setOriginalValues(planData.settings);
+
+                // Метаданные
+                const meta = {
+                    name: planData.metadata?.name || '',
+                    comment: planData.metadata?.comment || '',
+                    version_type: planData.metadata?.version_type || 'MONTHLY',
+                };
+                setPlanName(meta.name);
+                setPlanComment(meta.comment);
+                setPlanVersionType(meta.version_type);
+                setOriginalMeta(meta);
             } else {
                 const globalData = await settingsApi.getAll();
                 setValues(globalData);
@@ -162,21 +195,27 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
             }
         } catch (err: any) {
             const detail = err.response?.data?.detail;
-            setError(typeof detail === 'string' ? detail : 'Ошибка загрузки настроек');
+            setError(typeof detail === 'string' ? detail : 'Ошибка загрузки');
         } finally {
             setLoading(false);
         }
-    }, [versionId]);
+    }, [isEditMode, versionId]);
 
     useEffect(() => {
         if (open) {
-            setActiveStep(0);
+            setActiveStep(isCreateMode ? 0 : 1);
+            setPlanName('');
+            setPlanComment('');
+            setPlanVersionType('MONTHLY');
+            setOriginalMeta({name: '', comment: '', version_type: 'MONTHLY'});
+            setError(null);
+            setSuccess(null);
             loadData();
         }
-    }, [open, loadData]);
+    }, [open, loadData, isCreateMode]);
 
     // ==========================================
-    // Изменение значения
+    // Изменение настроек
     // ==========================================
     const handleChange = (key: string, value: any) => {
         setValues((prev) => ({...prev, [key]: value}));
@@ -193,64 +232,134 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
     }, [values, originalValues]);
 
     // ==========================================
-    // Настройки текущего шага
+    // Изменение метаданных
+    // ==========================================
+    const metadataChanged = useMemo(() => {
+        if (isCreateMode) return false;
+        return (
+            planName !== originalMeta.name ||
+            planComment !== originalMeta.comment
+            // version_type в edit-режиме не меняется
+        );
+    }, [isCreateMode, planName, planComment, originalMeta]);
+
+    // ==========================================
+    // Текущий шаг
     // ==========================================
     const currentStepSettings = useMemo<SettingSpec[]>(() => {
         if (!schema) return [];
         const step = WIZARD_STEPS[activeStep];
-        if (!step) return [];
+        if (!step || step.categories.length === 0) return [];
         return schema.settings
             .filter((s) => step.categories.includes(s.category))
             .sort((a, b) => a.display_order - b.display_order);
     }, [schema, activeStep]);
 
     // ==========================================
-    // Сохранение
+    // Создание нового плана
+    // ==========================================
+    const handleCreatePlan = async (): Promise<string | null> => {
+        if (!planName.trim()) {
+            setError('Введите название плана');
+            return null;
+        }
+        const newVersion = await scheduleApi.createVersion({
+            name: planName.trim(),
+            version_type: planVersionType,
+            comment: planComment || undefined,
+        });
+        return newVersion.id;
+    };
+
+    // ==========================================
+    // Сохранение настроек
+    // ==========================================
+    const handleSaveSettings = async (targetVersionId: string) => {
+        const updates: Record<string, any> = {};
+        for (const key of changedKeys) {
+            const spec = schema?.settings.find((s) => s.key === key);
+            if (spec?.is_system) continue;
+            updates[key] = values[key];
+        }
+        await planSettingsApi.updateForVersion(targetVersionId, {settings: updates});
+        setOriginalValues(values);
+        return Object.keys(updates).length;
+    };
+
+    // ==========================================
+    // Сохранение метаданных
+    // ==========================================
+    const handleSaveMetadata = async (targetVersionId: string) => {
+        if (!metadataChanged) return false;
+        await planSettingsApi.updateForVersion(targetVersionId, {
+            name: planName.trim(),
+            comment: planComment,
+        });
+        setOriginalMeta({
+            name: planName.trim(),
+            comment: planComment,
+            version_type: originalMeta.version_type,
+        });
+        return true;
+    };
+
+    // ==========================================
+    // Главный обработчик
     // ==========================================
     const handleSave = async (alsoBuild: boolean = false) => {
-        if (!versionId) {
-            setError('Внутренняя ошибка: versionId не передан.');
-            return;
-        }
         setSaving(true);
         setError(null);
         setSuccess(null);
         try {
-            const updates: Record<string, any> = {};
-            for (const key of changedKeys) {
-                const spec = schema?.settings.find((s) => s.key === key);
-                if (spec?.is_system) continue;
-                updates[key] = values[key];
+            let targetVersionId: string | null = null;
+
+            if (isCreateMode) {
+                targetVersionId = await handleCreatePlan();
+                if (!targetVersionId) {
+                    setSaving(false);
+                    return;
+                }
+                await handleSaveSettings(targetVersionId);
+                setSuccess(`План "${planName}" создан`);
+            } else {
+                if (!versionId) {
+                    setError('versionId не передан');
+                    setSaving(false);
+                    return;
+                }
+                targetVersionId = versionId;
+                const settingsCount = await handleSaveSettings(versionId);
+                const metaSaved = await handleSaveMetadata(versionId);
+                if (settingsCount === 0 && !metaSaved) {
+                    setSuccess('Нет изменений для сохранения');
+                } else {
+                    setSuccess(
+                        `Сохранено: настроек ${settingsCount}` +
+                        (metaSaved ? ', метаданные обновлены' : ''),
+                    );
+                }
             }
 
-            if (Object.keys(updates).length === 0) {
-                setSuccess('Нет изменений для сохранения');
-                setSaving(false);
-                return;
+            if (onSaved && targetVersionId) {
+                const action = isCreateMode
+                    ? 'create-and-build'
+                    : (alsoBuild ? 'save-and-build' : 'save');
+                onSaved(targetVersionId, action);
             }
 
-            await planSettingsApi.updateForVersion(versionId, updates);
-
-            setOriginalValues(values);
-            setSuccess(`Сохранено настроек: ${Object.keys(updates).length}`);
-
-            if (onSaved) {
-                onSaved(versionId, alsoBuild ? 'save-and-build' : 'save');
-            }
-
-            if (alsoBuild) {
+            if (alsoBuild && targetVersionId) {
                 await scheduleApi.build({});
             }
         } catch (err: any) {
             const detail = err.response?.data?.detail;
-            setError(typeof detail === 'string' ? detail : 'Ошибка сохранения настроек плана');
+            setError(typeof detail === 'string' ? detail : 'Ошибка сохранения');
         } finally {
             setSaving(false);
         }
     };
 
     // ==========================================
-    // Сброс к глобальным
+    // Сброс к глобальным (только edit)
     // ==========================================
     const handleReset = async () => {
         if (!versionId) return;
@@ -275,7 +384,7 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
     const handleBack = () => setActiveStep((s) => Math.max(s - 1, 0));
 
     // ==========================================
-    // Рендер одного поля
+    // Рендер поля настройки
     // ==========================================
     const renderField = (spec: SettingSpec) => {
         const value = values[spec.key];
@@ -286,12 +395,8 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
             <Box sx={{display: 'flex', alignItems: 'center', gap: 0.5}}>
                 {spec.label}
                 {isChanged && (
-                    <Chip
-                        label="изменено"
-                        size="small"
-                        color="warning"
-                        sx={{height: 18, fontSize: '0.65rem'}}
-                    />
+                    <Chip label="изменено" size="small" color="warning"
+                          sx={{height: 18, fontSize: '0.65rem'}}/>
                 )}
                 {isDisabled && (
                     <Tooltip title="Системная настройка — управляется режимом смен">
@@ -337,9 +442,7 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                         onChange={(e) => handleChange(spec.key, e.target.value)}
                     >
                         {spec.options.map((opt) => (
-                            <MenuItem key={opt.value} value={opt.value}>
-                                {opt.label}
-                            </MenuItem>
+                            <MenuItem key={opt.value} value={opt.value}>{opt.label}</MenuItem>
                         ))}
                     </Select>
                     {spec.description && (
@@ -368,15 +471,8 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                     <Slider
                         value={typeof value === 'number' ? value : 0}
                         onChange={(_, v) => handleChange(spec.key, v as number)}
-                        min={0}
-                        max={1}
-                        step={0.05}
-                        disabled={isDisabled}
-                        marks={[
-                            {value: 0, label: '0'},
-                            {value: 0.5, label: '0.5'},
-                            {value: 1, label: '1'},
-                        ]}
+                        min={0} max={1} step={0.05} disabled={isDisabled}
+                        marks={[{value: 0, label: '0'}, {value: 0.5, label: '0.5'}, {value: 1, label: '1'}]}
                     />
                     {spec.description && (
                         <Typography variant="caption" color="text.secondary">
@@ -391,21 +487,15 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
             return (
                 <TextField
                     key={spec.key}
-                    fullWidth
-                    size="small"
-                    type="number"
+                    fullWidth size="small" type="number"
                     label={labelNode}
                     value={value ?? ''}
                     onChange={(e) => {
                         const raw = e.target.value;
-                        if (raw === '') {
-                            handleChange(spec.key, null);
-                        } else {
-                            handleChange(
-                                spec.key,
-                                spec.value_type === 'int' ? parseInt(raw, 10) : parseFloat(raw),
-                            );
-                        }
+                        if (raw === '') handleChange(spec.key, null);
+                        else handleChange(spec.key, spec.value_type === 'int'
+                            ? parseInt(raw, 10)
+                            : parseFloat(raw));
                     }}
                     disabled={isDisabled}
                     slotProps={{
@@ -418,8 +508,7 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                     helperText={
                         spec.description
                         + (spec.min_value != null || spec.max_value != null
-                            ? ` (${spec.min_value ?? '−∞'}…${spec.max_value ?? '∞'})`
-                            : '')
+                            ? ` (${spec.min_value ?? '−∞'}…${spec.max_value ?? '∞'})` : '')
                     }
                 />
             );
@@ -429,16 +518,11 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
             return (
                 <TextField
                     key={spec.key}
-                    fullWidth
-                    size="small"
+                    fullWidth size="small"
                     label={labelNode}
                     value={typeof value === 'string' ? value : JSON.stringify(value, null, 2)}
-                    multiline
-                    rows={3}
-                    disabled
-                    slotProps={{
-                        input: {style: {fontFamily: 'monospace', fontSize: '0.85rem'}},
-                    }}
+                    multiline rows={3} disabled
+                    slotProps={{input: {style: {fontFamily: 'monospace', fontSize: '0.85rem'}}}}
                     helperText={spec.description || 'Управляется режимом смен'}
                 />
             );
@@ -447,8 +531,7 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
         return (
             <TextField
                 key={spec.key}
-                fullWidth
-                size="small"
+                fullWidth size="small"
                 label={labelNode}
                 value={value ?? ''}
                 onChange={(e) => handleChange(spec.key, e.target.value)}
@@ -459,164 +542,210 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
     };
 
     // ==========================================
-    // Рендер
+    // Шаг «Метаданные»
+    // ==========================================
+    const renderMetaStep = () => (
+        <Box sx={{display: 'flex', flexDirection: 'column', gap: 2.5}}>
+            <TextField
+                label="Наименование плана"
+                fullWidth required size="small"
+                value={planName}
+                onChange={(e) => setPlanName(e.target.value)}
+                placeholder="Например: План на октябрь 2026"
+                helperText="Отображается в списке планов и на верхней плашке."
+                error={!planName.trim()}
+            />
+
+            <FormControl fullWidth size="small" variant="outlined" disabled={isEditMode}>
+                <InputLabel>Тип плана</InputLabel>
+                <Select
+                    value={planVersionType}
+                    label="Тип плана"
+                    variant="outlined"
+                    onChange={(e) => setPlanVersionType(e.target.value)}
+                >
+                    <MenuItem value="MONTHLY">Месячный (ОКП)</MenuItem>
+                    <MenuItem value="SHIFT">Посменный</MenuItem>
+                    <MenuItem value="WHAT_IF">Сценарий "что если"</MenuItem>
+                </Select>
+                {isEditMode && (
+                    <Typography variant="caption" color="text.secondary" sx={{mt: 0.5, ml: 1.5}}>
+                        Тип существующего плана изменить нельзя.
+                    </Typography>
+                )}
+            </FormControl>
+
+            <TextField
+                label="Комментарий"
+                fullWidth multiline rows={3} size="small"
+                value={planComment}
+                onChange={(e) => setPlanComment(e.target.value)}
+                placeholder="Произвольные заметки к плану"
+                helperText="Необязательно."
+            />
+        </Box>
+    );
+
+    // ==========================================
+    // Кнопки
     // ==========================================
     const currentStep = WIZARD_STEPS[activeStep];
+    const isMetaStep = currentStep?.key === 'meta';
 
-    return (
-        <Dialog
-            open={open}
-            onClose={() => !saving && onClose()}
-            maxWidth="md"
-            fullWidth
-        >
-            <DialogTitle sx={{display: 'flex', alignItems: 'center', gap: 1.5, pb: 1}}>
-                <SettingsIcon color="primary"/>
-                <Box sx={{flexGrow: 1}}>
-                    <Typography variant="h6" component="div" sx={{fontWeight: 600}}>
-                        Мастер настроек плана
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                        {isEditingExisting
-                            ? 'Настройки привязаны к конкретному плану и не влияют на другие.'
-                            : 'Настройки будут применены к новому плану.'}
-                    </Typography>
-                </Box>
-                {changedKeys.length > 0 && (
-                    <Chip
-                        label={`Изменено: ${changedKeys.length}`}
+    const canSave = isCreateMode
+        ? !!planName.trim()
+        : (changedKeys.length > 0 || metadataChanged);
+
+    const totalChanges = changedKeys.length + (metadataChanged ? 1 : 0);
+
+    const renderActions = () => (
+        <Box sx={{display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center'}}>
+            <Box>
+                {isEditMode && versionId && (
+                    <Button
+                        onClick={handleReset}
+                        startIcon={<ResetIcon/>}
                         color="warning"
-                        variant="filled"
-                    />
+                        disabled={saving}
+                        sx={{textTransform: 'none'}}
+                    >
+                        Сбросить к глобальным
+                    </Button>
                 )}
-            </DialogTitle>
+            </Box>
+            <Box sx={{display: 'flex', gap: 1, alignItems: 'center'}}>
+                <Button onClick={handleBack} disabled={activeStep === 0 || saving}
+                        startIcon={<ArrowBackIcon/>} sx={{textTransform: 'none'}}>
+                    Назад
+                </Button>
+                <Button onClick={handleNext} disabled={activeStep === WIZARD_STEPS.length - 1 || saving}
+                        endIcon={<ArrowForwardIcon/>} sx={{textTransform: 'none'}}>
+                    Далее
+                </Button>
+                <Divider orientation="vertical" flexItem sx={{mx: 1}}/>
+                <Button
+                    onClick={() => handleSave(false)}
+                    variant="outlined"
+                    startIcon={<SaveIcon/>}
+                    disabled={saving || !canSave}
+                    sx={{textTransform: 'none'}}
+                >
+                    {isCreateMode ? 'Создать план' : 'Сохранить'}
+                </Button>
+                <Button
+                    onClick={() => handleSave(true)}
+                    variant="contained"
+                    startIcon={saving ? <CircularProgress size={18}/> : <CheckIcon/>}
+                    disabled={saving || !canSave}
+                    sx={{textTransform: 'none'}}
+                >
+                    {isCreateMode ? 'Создать и построить план' : 'Сохранить и построить план'}
+                </Button>
+            </Box>
+        </Box>
+    );
 
-            <Divider/>
-
-            <DialogContent sx={{p: 0}}>
-                {loading ? (
-                    <Box sx={{display: 'flex', justifyContent: 'center', py: 6}}>
-                        <CircularProgress/>
+    // ==========================================
+    // Рендер
+    // ==========================================
+    return (
+        <DraggableDialog
+            open={open}
+            onClose={onClose}
+            draggable resizable
+            closeOnBackdropClick={false}
+            showCloseButton
+            initialWidth={900}
+            initialHeight={640}
+            minWidth={640}
+            minHeight={400}
+            title={
+                <Box sx={{display: 'flex', alignItems: 'center', gap: 1.5}}>
+                    <SettingsIcon color="primary"/>
+                    <Box sx={{flexGrow: 1, minWidth: 0}}>
+                        <Typography variant="h6" component="div" sx={{fontWeight: 600}}>
+                            {isCreateMode ? 'Новый план' : 'Мастер настроек плана'}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                            {isCreateMode
+                                ? 'Заполните метаданные и настройки — план создастся сразу.'
+                                : 'Настройки привязаны к конкретному плану и не влияют на другие.'}
+                        </Typography>
                     </Box>
-                ) : (
-                    <Box sx={{display: 'flex', minHeight: 480}}>
-                        <Box sx={{
-                            width: 260,
-                            flexShrink: 0,
-                            borderRight: '1px solid #e0e0e0',
-                            bgcolor: '#f8f9fa',
-                            p: 1.5,
-                        }}>
-                            <Stepper
-                                activeStep={activeStep}
-                                orientation="vertical"
-                                nonLinear
-                            >
-                                {WIZARD_STEPS.map((step, idx) => (
-                                    <Step key={step.key} completed={idx < activeStep}>
-                                        <StepButton onClick={() => setActiveStep(idx)}>
-                                            <StepLabel>
-                                                <Typography
-                                                    variant="body2"
-                                                    sx={{fontWeight: idx === activeStep ? 700 : 400}}
-                                                >
-                                                    {step.label}
-                                                </Typography>
-                                            </StepLabel>
-                                        </StepButton>
-                                    </Step>
-                                ))}
-                            </Stepper>
-                        </Box>
+                </Box>
+            }
+            titleExtra={
+                <>
+                    {isEditMode && totalChanges > 0 && (
+                        <Chip
+                            label={`Изменено: ${totalChanges}`}
+                            color="warning"
+                            size="small"
+                        />
+                    )}
+                </>
+            }
+            actions={renderActions()}
+        >
+            {loading ? (
+                <Box sx={{display: 'flex', justifyContent: 'center', py: 6}}>
+                    <CircularProgress/>
+                </Box>
+            ) : (
+                <Box sx={{display: 'flex', minHeight: 0}}>
+                    <Box sx={{
+                        width: 260, flexShrink: 0,
+                        borderRight: '1px solid #e0e0e0',
+                        bgcolor: '#f8f9fa', p: 1.5, overflowY: 'auto',
+                    }}>
+                        <Stepper activeStep={activeStep} orientation="vertical" nonLinear>
+                            {WIZARD_STEPS.map((step, idx) => (
+                                <Step key={step.key} completed={idx < activeStep}>
+                                    <StepButton onClick={() => setActiveStep(idx)}>
+                                        <StepLabel>
+                                            <Typography
+                                                variant="body2"
+                                                sx={{fontWeight: idx === activeStep ? 700 : 400}}
+                                            >
+                                                {step.label}
+                                            </Typography>
+                                        </StepLabel>
+                                    </StepButton>
+                                </Step>
+                            ))}
+                        </Stepper>
+                    </Box>
 
-                        <Box sx={{flexGrow: 1, p: 3, overflow: 'auto'}}>
-                            <Typography variant="h6" sx={{fontWeight: 600, mb: 0.5}}>
-                                {currentStep?.label}
-                            </Typography>
-                            <Typography variant="caption" color="text.secondary" sx={{display: 'block', mb: 2}}>
-                                {currentStep?.description}
-                            </Typography>
+                    <Box sx={{flexGrow: 1, p: 3, overflowY: 'auto', minWidth: 0}}>
+                        <Typography variant="h6" sx={{fontWeight: 600, mb: 0.5}}>
+                            {currentStep?.label}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary"
+                                    sx={{display: 'block', mb: 2}}>
+                            {currentStep?.description}
+                        </Typography>
+                        <Divider sx={{mb: 2}}/>
 
-                            <Divider sx={{mb: 2}}/>
-
+                        {isMetaStep ? renderMetaStep() : (
                             <Box sx={{display: 'flex', flexDirection: 'column', gap: 2.5}}>
                                 {currentStepSettings.map(renderField)}
                             </Box>
-                        </Box>
+                        )}
                     </Box>
-                )}
-            </DialogContent>
-
-            <Divider/>
-
-            <DialogActions sx={{p: 2, justifyContent: 'space-between'}}>
-                <Box>
-                    {isEditingExisting && (
-                        <Button
-                            onClick={handleReset}
-                            startIcon={<ResetIcon/>}
-                            color="warning"
-                            disabled={saving}
-                            sx={{textTransform: 'none'}}
-                        >
-                            Сбросить к глобальным
-                        </Button>
-                    )}
                 </Box>
-                <Box sx={{display: 'flex', gap: 1, alignItems: 'center'}}>
-                    <Button
-                        onClick={handleBack}
-                        disabled={activeStep === 0 || saving}
-                        startIcon={<ArrowBackIcon/>}
-                        sx={{textTransform: 'none'}}
-                    >
-                        Назад
-                    </Button>
-                    <Button
-                        onClick={handleNext}
-                        disabled={activeStep === WIZARD_STEPS.length - 1 || saving}
-                        endIcon={<ArrowForwardIcon/>}
-                        sx={{textTransform: 'none'}}
-                    >
-                        Далее
-                    </Button>
-                    <Divider orientation="vertical" flexItem sx={{mx: 1}}/>
-                    <Button
-                        onClick={() => handleSave(false)}
-                        variant="outlined"
-                        startIcon={<SaveIcon/>}
-                        disabled={saving || changedKeys.length === 0 || !isEditingExisting}
-                        sx={{textTransform: 'none'}}
-                    >
-                        Сохранить
-                    </Button>
-                    <Button
-                        onClick={() => handleSave(true)}
-                        variant="contained"
-                        startIcon={saving ? <CircularProgress size={18}/> : <CheckIcon/>}
-                        disabled={saving || changedKeys.length === 0 || !isEditingExisting}
-                        sx={{textTransform: 'none'}}
-                    >
-                        Сохранить и построить план
-                    </Button>
-                </Box>
-            </DialogActions>
+            )}
 
             {error && (
-                <Box sx={{p: 2, pt: 0}}>
-                    <Alert severity="error" onClose={() => setError(null)}>
-                        {error}
-                    </Alert>
+                <Box sx={{mt: 2}}>
+                    <Alert severity="error" onClose={() => setError(null)}>{error}</Alert>
                 </Box>
             )}
             {success && (
-                <Box sx={{p: 2, pt: 0}}>
-                    <Alert severity="success" onClose={() => setSuccess(null)}>
-                        {success}
-                    </Alert>
+                <Box sx={{mt: 2}}>
+                    <Alert severity="success" onClose={() => setSuccess(null)}>{success}</Alert>
                 </Box>
             )}
-        </Dialog>
+        </DraggableDialog>
     );
 };
 
