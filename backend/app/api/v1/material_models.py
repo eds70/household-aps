@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Optional, List
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ==========================================
@@ -44,14 +44,13 @@ class MaterialUpdate(BaseModel):
 
 
 class MaterialResponse(MaterialBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     organization_id: UUID
     # Итерация 13.1: остатки в ответе (JOIN с material_stock)
     stock_qty: Optional[float] = 0.0
     reserved_qty: Optional[float] = 0.0
-
-    class Config:
-        from_attributes = True
 
 
 # ==========================================
@@ -69,13 +68,12 @@ class MaterialStockUpdate(BaseModel):
 
 
 class MaterialStockResponse(MaterialStockBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     material_id: UUID
     organization_id: UUID
     updated_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 # ==========================================
@@ -84,6 +82,8 @@ class MaterialStockResponse(MaterialStockBase):
 
 class MaterialStockLogEntry(BaseModel):
     """Одна запись журнала изменений остатков."""
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     organization_id: UUID
     material_id: UUID
@@ -106,9 +106,6 @@ class MaterialStockLogEntry(BaseModel):
     source: Optional[str] = None
     reason: Optional[str] = None
     comment: Optional[str] = None
-
-    class Config:
-        from_attributes = True
 
 
 class MaterialStockLogListResponse(BaseModel):
@@ -182,14 +179,13 @@ class RecipeItemCreate(RecipeItemBase):
 
 
 class RecipeItemResponse(RecipeItemBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     recipe_id: UUID
     material_name: Optional[str] = None
     material_code: Optional[str] = None
     material_unit: Optional[str] = None
-
-    class Config:
-        from_attributes = True
 
 
 class RecipeBase(BaseModel):
@@ -211,14 +207,13 @@ class RecipeUpdate(BaseModel):
 
 
 class RecipeResponse(RecipeBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     organization_id: UUID
     product_name: Optional[str] = None
     product_code: Optional[str] = None
     items: List[RecipeItemResponse] = []
-
-    class Config:
-        from_attributes = True
 
 
 # ==========================================
@@ -248,6 +243,8 @@ class ProductionOrderUpdate(BaseModel):
 
 
 class ProductionOrderResponse(ProductionOrderBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     organization_id: UUID
     status: str
@@ -255,9 +252,6 @@ class ProductionOrderResponse(ProductionOrderBase):
     product_name: Optional[str] = None
     product_code: Optional[str] = None
     batches_count: int = 0
-
-    class Config:
-        from_attributes = True
 
 
 # ==========================================
@@ -295,6 +289,8 @@ class BatchUpdate(BaseModel):
 
 
 class BatchResponse(BatchBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     organization_id: UUID
     order_id: UUID
@@ -304,6 +300,3 @@ class BatchResponse(BatchBase):
     product_name: Optional[str] = None
     product_code: Optional[str] = None
     equipment_name: Optional[str] = None
-
-    class Config:
-        from_attributes = True

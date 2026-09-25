@@ -1,6 +1,9 @@
-from pydantic import BaseModel, Field
+# backend/app/api/v1/product_models.py
 from typing import Optional
 from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+
 
 class ProductBase(BaseModel):
     code: str
@@ -12,8 +15,10 @@ class ProductBase(BaseModel):
     fill_speed_per_min: Optional[float] = None
     parent_pf_id: Optional[UUID] = None
 
+
 class ProductCreate(ProductBase):
     organization_id: UUID = Field(default=UUID("00000000-0000-0000-0000-000000000001"))
+
 
 class ProductUpdate(BaseModel):
     code: Optional[str] = None
@@ -25,9 +30,9 @@ class ProductUpdate(BaseModel):
     fill_speed_per_min: Optional[float] = None
     parent_pf_id: Optional[UUID] = None
 
+
 class ProductResponse(ProductBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     organization_id: UUID
-
-    class Config:
-        from_attributes = True

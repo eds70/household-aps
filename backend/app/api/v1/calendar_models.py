@@ -1,7 +1,9 @@
-from pydantic import BaseModel, Field
-from typing import Optional
+# backend/app/api/v1/calendar_models.py
 from datetime import datetime
+from typing import Optional
 from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class CalendarEventBase(BaseModel):
@@ -25,8 +27,7 @@ class CalendarEventUpdate(BaseModel):
 
 
 class CalendarEventResponse(CalendarEventBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     organization_id: UUID
-
-    class Config:
-        from_attributes = True

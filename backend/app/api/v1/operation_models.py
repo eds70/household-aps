@@ -1,6 +1,9 @@
-from pydantic import BaseModel, Field
+# backend/app/api/v1/operation_models.py
 from typing import Optional
 from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+
 
 class OperationBase(BaseModel):
     product_id: UUID
@@ -17,8 +20,10 @@ class OperationBase(BaseModel):
     duration_formula: Optional[str] = None
     comment: Optional[str] = None
 
+
 class OperationCreate(OperationBase):
     organization_id: UUID = Field(default=UUID("00000000-0000-0000-0000-000000000001"))
+
 
 class OperationUpdate(BaseModel):
     stage_order: Optional[int] = None
@@ -34,10 +39,10 @@ class OperationUpdate(BaseModel):
     duration_formula: Optional[str] = None
     comment: Optional[str] = None
 
+
 class OperationResponse(OperationBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     organization_id: UUID
     product_name: Optional[str] = None  # Для отображения
-
-    class Config:
-        from_attributes = True
