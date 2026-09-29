@@ -6,6 +6,8 @@ API для диаграммы Ганта.
 Итерация 5 (hotfix): version_id, is_lab_blocked, lab_status, lab_block_reason.
 Итерация 7: cooling_mode.
 Итерация 13.6: depends_on_task_ids для связей между задачами.
+Итерация 13.18: is_pinned, status — для визуальной индикации
+    закреплённых задач и их статуса.
 """
 
 import io
@@ -149,7 +151,7 @@ async def get_gantt_data(
                   AND column_name IN (
                       'linked_equipment_id', 'task_role',
                       'cooling_mode', 'operation_name',
-                      'depends_on_task_ids'
+                      'depends_on_task_ids', 'is_pinned', 'status'
                   )
             """)
         )
@@ -159,6 +161,8 @@ async def get_gantt_data(
         has_cooling = "cooling_mode" in available_cols
         has_opname = "operation_name" in available_cols
         has_deps = "depends_on_task_ids" in available_cols
+        has_pinned = "is_pinned" in available_cols
+        has_status = "status" in available_cols
 
         # Динамический SELECT
         linked_select = (
@@ -184,6 +188,16 @@ async def get_gantt_data(
             if has_deps else
             "'[]'::jsonb AS depends_on_task_ids,"
         )
+        pinned_select = (
+            "COALESCE(st.is_pinned, FALSE) AS is_pinned,"
+            if has_pinned else
+            "FALSE AS is_pinned,"
+        )
+        status_select = (
+            "COALESCE(st.status, 'PLANNED') AS status,"
+            if has_status else
+            "'PLANNED'::text AS status,"
+        )
         linked_join = (
             "LEFT JOIN equipment leq ON st.linked_equipment_id = leq.id"
             if has_linked else
@@ -204,6 +218,8 @@ async def get_gantt_data(
                 b.lab_block_reason AS lab_block_reason,
                 {cooling_select}
                 {deps_select}
+                {pinned_select}
+                {status_select}
                 st.id AS _dummy
             FROM scheduled_task st
             LEFT JOIN equipment eq ON st.equipment_id = eq.id
@@ -259,6 +275,10 @@ async def get_gantt_data(
             deps_raw = _row_get(row, "depends_on_task_ids", None)
             deps_list = _parse_deps(deps_raw)
 
+            # Итерация 13.18: is_pinned и status
+            is_pinned_val = _row_get(row, "is_pinned", False)
+            status_val = _row_get(row, "status", "PLANNED")
+
             gantt_tasks.append(GanttTask(
                 id=str(row.id),
                 batch_id=batch_name,
@@ -285,6 +305,8 @@ async def get_gantt_data(
                 lab_block_reason=row.lab_block_reason,
                 cooling_mode=row.cooling_mode,
                 depends_on_task_ids=deps_list,
+                is_pinned=bool(is_pinned_val) if is_pinned_val is not None else False,
+                status=status_val if status_val is not None else "PLANNED",
             ))
 
         makespan_hours = 0.0
@@ -364,6 +386,8 @@ async def get_gantt_data(
             lab_block_reason=None,
             cooling_mode=task.get("cooling_mode"),
             depends_on_task_ids=task.get("depends_on_task_ids", []),
+            is_pinned=bool(task.get("is_pinned", False)),
+            status=task.get("status", "PLANNED"),
         ))
 
     return GanttResponse(
@@ -400,6 +424,7 @@ async def export_gantt_to_excel(
     headers = [
         "Оборудование", "Связанное оборудование", "Роль", "Операция",
         "Партия", "Продукт", "Начало", "Конец", "Длительность (мин)",
+        "Закреплена", "Статус",
         "Заблокировано", "Причина", "Режим охлаждения", "Зависит от",
     ]
     ws_table.append(headers)
@@ -438,6 +463,8 @@ async def export_gantt_to_excel(
             start_str,
             end_str,
             task.duration_minutes,
+            "Да" if task.is_pinned else "Нет",
+            task.status or "PLANNED",
             "Да" if task.is_lab_blocked else "Нет",
             task.lab_block_reason or "",
             task.cooling_mode or "",

@@ -23,6 +23,11 @@ Pydantic-модели для API планирования и Ганта.
 - timeout_seconds увеличен с 120 до 600.
   Solver получает больше времени на поиск OPTIMAL или корректного
   FEASIBLE с полным propagation.
+
+Итерация 13.18:
+- Добавлено поле is_pinned в GanttTask — для визуальной индикации
+  закреплённых задач на диаграмме Ганта.
+- Добавлено поле status (PLANNED | IN_PROGRESS | DONE | CANCELLED).
 """
 
 from datetime import datetime
@@ -84,6 +89,17 @@ class GanttTask(BaseModel):
     depends_on_task_ids: List[str] = Field(
         default_factory=list,
         description="Список UUID задач-предшественников",
+    )
+    # Итерация 13.18: закрепление задачи
+    is_pinned: bool = Field(
+        default=False,
+        description="Задача закреплена (не двигается при drag-and-drop, "
+                    "но можно изменять длительность)",
+    )
+    # Итерация 13.18: статус задачи
+    status: Optional[str] = Field(
+        default="PLANNED",
+        description="PLANNED | IN_PROGRESS | DONE | CANCELLED",
     )
 
 

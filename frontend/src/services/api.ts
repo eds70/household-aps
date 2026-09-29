@@ -442,6 +442,7 @@ export const shiftApi = {
 // ==========================================
 // Reschedule API (Итерация 13.14: + version_id)
 // ==========================================
+
 export const rescheduleApi = {
     reschedule: async (
         data: import('../types').RescheduleRequest
@@ -477,6 +478,62 @@ export const rescheduleApi = {
         const params = versionId ? { version_id: versionId } : {};
         const response = await api.put(
             `/api/v1/schedule/task/${taskId}/move`,
+            {
+                new_start: newStart,
+                new_end: newEnd,
+            },
+            { params },
+        );
+        return response.data;
+    },
+
+    // ==========================================
+    // Итерация 13.17: каскадный сдвиг
+    // ==========================================
+
+    /**
+     * Перемещает задачу с каскадным сдвигом соседей и последователей.
+     *
+     * Отличается от `moveTask`:
+     *  - не ставит `is_pinned = TRUE`;
+     *  - запускает каскад на сервере;
+     *  - возвращает список сдвинутых задач в `moved_tasks`.
+     *
+     * Может выбросить 409 Conflict, если каскад заблокирован
+     * (pinned/DONE/IN_PROGRESS задача мешает).
+     */
+    moveTaskCascade: async (
+        taskId: string,
+        newStart: string,
+        newEnd: string,
+        versionId?: string,
+    ): Promise<import('../types').MoveTaskResponse> => {
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.put(
+            `/api/v1/schedule/task/${taskId}/move-cascade`,
+            {
+                new_start: newStart,
+                new_end: newEnd,
+            },
+            { params },
+        );
+        return response.data;
+    },
+
+    /**
+     * Изменяет длительность задачи (перетаскивание за края).
+     *
+     * Может выбросить 400 с `detail.reason` и `detail.details`.
+     */
+    resizeTask: async (
+        taskId: string,
+        newStart: string,
+        newEnd: string,
+        versionId?: string,
+    ): Promise<import('../types').MoveTaskResponse> => {
+        const params = versionId ? { version_id: versionId } : {};
+        const response = await api.put(
+            `/api/v1/schedule/task/${taskId}/resize`,
             {
                 new_start: newStart,
                 new_end: newEnd,

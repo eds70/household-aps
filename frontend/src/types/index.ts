@@ -365,6 +365,19 @@ export interface MoveTaskResponse {
     planned_end: string;
     is_pinned: boolean;
     message: string;
+    /** Итерация 13.17: задачи, сдвинутые каскадом. */
+    moved_tasks: MovedTaskInfo[];
+}
+
+/**
+ * Итерация 13.17: информация о сдвинутой задаче (для ответа каскада).
+ */
+export interface MovedTaskInfo {
+    task_id: string;
+    operation_name: string;
+    equipment_id: string;
+    new_start: string;
+    new_end: string;
 }
 
 // ==========================================
@@ -860,4 +873,115 @@ export interface AuditSourceInfo {
     key: AuditSource;
     label: string;
     description: string;
+}
+
+// ==========================================
+// Итерация 13.17: каскадный сдвиг и валидация
+// ==========================================
+
+/**
+ * Ошибка валидации перемещения (возвращается с 400/409).
+ */
+export interface MoveValidationError {
+    reason: string;
+    details?: string[];
+    blocked_task?: {
+        task_id: string;
+        operation_name: string;
+        status?: string;
+    };
+}
+
+/**
+ * Состояние диалога валидации на фронте.
+ */
+export interface ValidationErrorState {
+    open: boolean;
+    reason: string;
+    details: string[];
+    blockedTask?: {
+        task_id: string;
+        operation_name: string;
+        status?: string;
+    };
+}
+
+/**
+ * Состояние tooltip при перетаскивании / изменении длительности.
+ *
+ * Итерация 13.18 (fix #5):
+ *  - Добавлен operationType ('move' | 'resize').
+ *  - Добавлены originalStart / originalEnd — для отображения
+ *    исходного времени рядом с новым.
+ */
+export interface DragTooltipState {
+    x: number;
+    y: number;
+    text: string;
+    warning?: string;
+    deltaMinutes?: number;
+    affectedCount?: number;
+
+    /** Текущее время начала задачи (ISO). */
+    startTime?: string;
+    /** Текущее время окончания задачи (ISO). */
+    endTime?: string;
+    /** Исходное время начала задачи (ISO) — для сравнения. */
+    originalStart?: string;
+    /** Исходное время окончания задачи (ISO). */
+    originalEnd?: string;
+    /** Тип операции: перемещение или изменение длительности. */
+    operationType?: 'move' | 'resize';
+}
+
+// ==========================================
+// Итерация 13.17: типы для диаграммы Ганта
+// ==========================================
+
+/**
+ * Задача на диаграмме Ганта.
+ *
+ * Используется в:
+ *  - GanttPage.tsx (основной потребитель);
+ *  - TaskContextMenu.tsx;
+ *  - MoveValidationDialog.tsx;
+ *  - DragTooltip.tsx;
+ *  - hooks/useTaskResize.ts;
+ *  - hooks/useCascadeMove.ts.
+ *
+ * ПРИМЕЧАНИЕ: типы CoolingMode и CzStatus объявлены выше
+ * (в блоках Batch и Честный Знак), здесь НЕ дублируются.
+ */
+export interface TaskData {
+    id: string;
+    batch_id: string;
+    operation_name: string;
+    equipment_id: string;
+    product_id: string;
+    start: string;
+    end: string;
+    duration_minutes: number;
+
+    item_type?: 'task' | 'setup' | 'downtime';
+    setup_type?: 'same_pf' | 'diff_pf';
+    downtime_type?: 'WEEKEND' | 'REPAIR' | 'BREAKDOWN';
+
+    is_lab_blocked?: boolean;
+    lab_status?: string | null;
+    lab_block_reason?: string | null;
+
+    cooling_mode?: CoolingMode;
+    task_role?: string | null;
+
+    cz_status?: CzStatus | null;
+    cz_marked_qty?: number | null;
+
+    depends_on_task_ids?: string[];
+
+    /**
+     * Итерация 13.17: закреплена ли задача.
+     * Используется в контекстном меню (pin/unpin)
+     * и в визуальной индикации.
+     */
+    is_pinned?: boolean;
 }

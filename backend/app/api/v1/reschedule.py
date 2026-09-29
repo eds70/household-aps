@@ -14,6 +14,7 @@ API перепланирования (Итерация 4).
 """
 
 import logging
+from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
@@ -299,4 +300,216 @@ async def move_task(
         planned_end=updated.planned_end,
         is_pinned=bool(updated.is_pinned),
         message="Задача перемещена и закреплена (is_pinned=TRUE)",
+    )
+
+# backend/app/api/v1/reschedule.py
+# ДОБАВИТЬ В КОНЕЦ ФАЙЛА (перед последней строкой)
+
+from app.scheduler.reschedule_cascade import (
+    apply_cascade,
+    validate_move,
+    CascadeBlockedError,
+)
+
+
+# ==========================================
+# ИЗМЕНЕНИЕ ДЛИТЕЛЬНОСТИ ЗАДАЧИ (resize)
+# ==========================================
+
+@router.put("/task/{task_id}/resize", response_model=MoveTaskResponse)
+async def resize_task(
+        task_id: UUID,
+        request: MoveTaskRequest,
+        version_id: Optional[UUID] = Query(
+            default=None,
+            description="ID плана (для чтения feature-флага и настроек).",
+        ),
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Изменяет длительность задачи (перетаскивание за края).
+
+    Логика:
+      1. Валидация: задача двигаема, времена корректны.
+      2. Применение изменения к целевой задаче.
+      3. Каскадный сдвиг: соседи и последователи пересчитываются.
+      4. Сохранение в БД.
+
+    Каскад детерминированный, не использует solver.
+    """
+    await _check_rescheduling_enabled(db, org_id, version_id=version_id)
+
+    # Определяем версию
+    if version_id is None:
+        active = await db.execute(
+            text("""
+                SELECT id FROM schedule_version
+                WHERE organization_id = :org_id AND is_active = TRUE
+                ORDER BY created_at DESC LIMIT 1
+            """),
+            {"org_id": org_id},
+        )
+        row = active.fetchone()
+        if not row:
+            raise HTTPException(
+                status_code=400,
+                detail="Нет активной версии плана. Откройте план.",
+            )
+        version_id = row.id
+
+    # Читаем настройки
+    from app.scheduler.settings_reader import read_setting, read_bool
+    planning_start_raw = await read_setting(
+        db, org_id, "planning_start_date", None, version_id=version_id,
+    )
+    allow_weekend = read_bool(
+        await read_setting(
+            db, org_id, "allow_weekend_work", False, version_id=version_id,
+        ),
+        default=False,
+    )
+
+    # Парсим planning_start — оставляем NAIVE,
+    # чтобы можно было сравнивать с Pydantic naive-датами.
+    planning_start = None
+    if planning_start_raw:
+        try:
+            if isinstance(planning_start_raw, str):
+                cleaned = planning_start_raw.strip().strip('"').strip("'")
+                planning_start = datetime.fromisoformat(cleaned)
+            else:
+                planning_start = datetime.fromisoformat(str(planning_start_raw))
+            # Убираем timezone, если есть (в БД хранится naive-МСК)
+            if planning_start.tzinfo is not None:
+                planning_start = planning_start.replace(tzinfo=None)
+        except (ValueError, TypeError):
+            planning_start = None
+
+    # Валидация
+    validation = await validate_move(
+        session=db,
+        org_id=org_id,
+        version_id=version_id,
+        task_id=task_id,
+        new_start=request.new_start,
+        new_end=request.new_end,
+        planning_start=planning_start,
+        allow_weekend_work=allow_weekend,
+    )
+    if not validation.allowed:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "reason": validation.reason,
+                "details": validation.details,
+            },
+        )
+
+    # Каскад
+    try:
+        cascade_result = await apply_cascade(
+            session=db,
+            org_id=org_id,
+            version_id=version_id,
+            changed_task_id=task_id,
+            new_start=request.new_start,
+            new_end=request.new_end,
+            allow_weekend_work=allow_weekend,
+        )
+    except CascadeBlockedError as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": e.reason,
+                "blocked_task": e.blocked_task,
+            },
+        )
+
+    await db.commit()
+
+    log_with_context(
+        logger, logging.INFO,
+        f"Resize: task={str(task_id)[:8]}, moved={cascade_result.moved_count}",
+        stage="resize", org_id=str(org_id),
+    )
+
+    return MoveTaskResponse(
+        task_id=str(task_id),
+        planned_start=request.new_start,
+        planned_end=request.new_end,
+        is_pinned=False,
+        message=(
+            f"Длительность изменена. "
+            f"Сдвинуто задач: {cascade_result.moved_count}"
+        ),
+    )
+
+
+# ==========================================
+# ОБНОВЛЁННЫЙ MOVE (с каскадом)
+# ==========================================
+
+@router.put("/task/{task_id}/move-cascade", response_model=MoveTaskResponse)
+async def move_task_cascade(
+        task_id: UUID,
+        request: MoveTaskRequest,
+        version_id: Optional[UUID] = Query(default=None),
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Перемещает задачу с каскадным сдвигом соседей и последователей.
+
+    Отличается от /move тем, что:
+      - Не ставит is_pinned=TRUE (задача остаётся двигаемой).
+      - Запускает каскад.
+      - Возвращает список сдвинутых задач.
+    """
+    await _check_rescheduling_enabled(db, org_id, version_id=version_id)
+
+    if version_id is None:
+        active = await db.execute(
+            text("""
+                SELECT id FROM schedule_version
+                WHERE organization_id = :org_id AND is_active = TRUE
+                ORDER BY created_at DESC LIMIT 1
+            """),
+            {"org_id": org_id},
+        )
+        row = active.fetchone()
+        if not row:
+            raise HTTPException(400, "Нет активной версии плана")
+        version_id = row.id
+
+    # Каскад
+    try:
+        cascade_result = await apply_cascade(
+            session=db,
+            org_id=org_id,
+            version_id=version_id,
+            changed_task_id=task_id,
+            new_start=request.new_start,
+            new_end=request.new_end,
+            allow_weekend_work=False,
+        )
+    except CascadeBlockedError as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": e.reason,
+                "blocked_task": e.blocked_task,
+            },
+        )
+
+    await db.commit()
+
+    return MoveTaskResponse(
+        task_id=str(task_id),
+        planned_start=request.new_start,
+        planned_end=request.new_end,
+        is_pinned=False,
+        message=f"Задача перемещена. Сдвинуто задач: {cascade_result.moved_count}",
     )

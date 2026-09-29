@@ -112,10 +112,6 @@ body {
 
 /* ==========================================
    AgGrid — центрирование содержимого ячеек
-   ==========================================
-   Используется для колонок «Действия» с иконками.
-   Встроенные чекбоксы AgGrid (bool-колонки) — исключены
-   через :has(), чтобы не «уезжали».
    ========================================== */
 
 /* 1. По умолчанию все ячейки — flex с центрированием по вертикали. */
@@ -158,11 +154,8 @@ body {
 
 /* ==========================================
    ALLOTMENT — стилизация сплиттера
-   ==========================================
-   Классы sash-module_* — CSS-модули Allotment.
    ========================================== */
 
-/* Общий стиль */
 [class*="sash-module_sash"] {
   background-color: #ecf0f1;
   transition: background-color 0.15s;
@@ -170,7 +163,6 @@ body {
   z-index: 35;
 }
 
-/* ====== Горизонтальный сплиттер (панели сверху-снизу) ====== */
 [class*="sash-module_horizontal"] {
   height: 8px !important;
   border-top: 1px solid #bdc3c7;
@@ -206,7 +198,6 @@ body {
   opacity: 1;
 }
 
-/* ====== Вертикальный сплиттер (панели слева-справа) ====== */
 [class*="sash-module_vertical"] {
   width: 8px !important;
   border-left: 1px solid #bdc3c7;
@@ -244,9 +235,6 @@ body {
 
 /* ==========================================
    ГАНТ (vis-timeline) — общие стили
-   ==========================================
-   Итерация 11: pan + zoom + drag одновременно.
-   Итерация 13.5: вертикальный скролл, тонкий скроллбар.
    ========================================== */
 
 /* 1. Задачи — базовый hover */
@@ -291,6 +279,8 @@ body {
 
 /* ==========================================
    ГАНТ (vis-timeline) — pan + zoom + drag
+   ==========================================
+   Итерация 13.17 (9o): курсоры для resize-краёв.
    ========================================== */
 
 /* 7. Pan: курсор grab на пустом месте диаграммы */
@@ -306,13 +296,15 @@ body {
   cursor: grabbing;
 }
 
-/* 8. Задачи — grab-курсор (только для реальных задач) */
-.vis-item.vis-range:not(.item-downtime):not(.item-setup) {
+/* 8. Курсор grab — только для тела задачи.
+   vis-timeline сам ставит ew-resize на краях через .vis-drag-left/right. */
+.gantt-container .vis-item.vis-range:not(.item-downtime):not(.item-setup) .vis-drag-center {
   cursor: grab;
 }
 
-.vis-item.vis-range:not(.item-downtime):not(.item-setup):active {
-  cursor: grabbing;
+.gantt-container .vis-item.vis-range:not(.item-downtime):not(.item-setup) .vis-drag-left,
+.gantt-container .vis-item.vis-range:not(.item-downtime):not(.item-setup) .vis-drag-right {
+  cursor: ew-resize;
 }
 
 /* 9. Readonly: pan остаётся, drag отключён */
@@ -328,15 +320,16 @@ body {
 .gantt-readonly .vis-item.vis-dragging {
   cursor: default !important;
 }
+.gantt-readonly .vis-item.vis-range .vis-drag-center,
+.gantt-readonly .vis-item.vis-range .vis-drag-left,
+.gantt-readonly .vis-item.vis-range .vis-drag-right {
+  cursor: default !important;
+}
 
 /* ==========================================
-   ГАНТ — контейнер (Итерация 13.5)
-   ==========================================
-   Вертикальный скролл внутри диаграммы,
-   тонкий скроллбар, запрет горизонтального overflow.
+   ГАНТ — контейнер
    ========================================== */
 
-/* 1. Контейнер диаграммы — растянуть на всю высоту */
 .gantt-container {
   position: relative;
   overflow: hidden;
@@ -348,7 +341,6 @@ body {
   border: none !important;
 }
 
-/* 2. Панели vis-timeline — вертикальный скролл */
 .gantt-container .vis-panel.vis-center,
 .gantt-container .vis-panel.vis-left,
 .gantt-container .vis-panel.vis-right {
@@ -356,7 +348,6 @@ body {
   overflow-y: auto !important;
 }
 
-/* 3. Тонкий скроллбар (Chrome/Edge/Safari) */
 .gantt-container .vis-panel::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -376,19 +367,16 @@ body {
   background: #95a5a6;
 }
 
-/* 4. Firefox */
 .gantt-container .vis-panel {
   scrollbar-width: thin;
   scrollbar-color: #bdc3c7 #f1f1f1;
 }
 
-/* 5. Метки групп — фиксированная высота, разделитель */
 .gantt-container .vis-label {
   border-bottom: 1px solid #ecf0f1;
   box-sizing: border-box;
 }
 
-/* 6. Задачи — hover с тенью */
 .gantt-container .vis-item {
   transition: box-shadow 0.15s;
 }
@@ -398,7 +386,6 @@ body {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
 }
 
-/* 7. Курсоры для pan на панелях */
 .gantt-container .vis-panel.vis-center,
 .gantt-container .vis-panel.vis-left,
 .gantt-container .vis-panel.vis-right {
@@ -411,16 +398,7 @@ body {
   cursor: grabbing;
 }
 
-/* 8. Курсоры для drag на задачах */
-.gantt-container .vis-item.vis-range:not(.item-downtime):not(.item-setup) {
-  cursor: grab;
-}
-
-.gantt-container .vis-item.vis-range:not(.item-downtime):not(.item-setup):active {
-  cursor: grabbing;
-}
-
-/* 9. Setup и downtime — not-allowed */
+/* 9a. Setup и downtime — not-allowed */
 .gantt-container .vis-item.item-downtime,
 .gantt-container .vis-item.item-setup {
   cursor: not-allowed !important;
@@ -482,19 +460,17 @@ body {
    Итерация 13.6: связи между задачами на Ганте
    ========================================== */
 
-/* SVG-overlay поверх диаграммы */
 .gantt-dependencies-svg {
   position: absolute;
   top: 0;
   left: 0;
   width: 100%;
   height: 100%;
-  pointer-events: none;   /* не блокирует клики по задачам */
+  pointer-events: none;
   z-index: 5;
-  overflow: hidden;       /* линии не выходят за пределы контейнера */
+  overflow: hidden;
 }
 
-/* Ортогональный провод между задачами */
 .gantt-dependency-line {
   fill: none;
   stroke-linejoin: round;
@@ -502,12 +478,10 @@ body {
   transition: stroke 0.15s, stroke-width 0.15s, stroke-opacity 0.15s;
 }
 
-/* Стрелка на конце провода */
 .gantt-dependency-arrowhead {
   transition: fill 0.15s, fill-opacity 0.15s;
 }
 
-/* Подсветка при hover на цепочку (задаётся inline в JS) */
 .gantt-dependency-line.highlighted {
   stroke-width: 2.5;
   stroke-opacity: 1;
@@ -517,7 +491,6 @@ body {
   fill-opacity: 1;
 }
 
-/* Задача в подсвеченной цепочке — оранжевая рамка */
 .gantt-container .vis-item.chain-highlighted {
   z-index: 20 !important;
   box-shadow: 0 0 0 2px #e67e22, 0 4px 12px rgba(230, 126, 34, 0.4) !important;
@@ -525,26 +498,19 @@ body {
 
 /* ==========================================
    Итерация 13.10: фоновые полосы выходных
-   ==========================================
-   Выходные — type: 'background' items.
-   Рисуются под задачами в виде вертикальных полос.
-   Не перехватывают клики.
    ========================================== */
 
-/* Фоновая полоса выходного дня */
 .gantt-container .vis-item.weekend-background {
   z-index: 0 !important;
   pointer-events: none !important;
   border-radius: 0 !important;
 }
 
-/* Подсветка субботы и воскресенья в верхней полосе дат (grid) */
 .gantt-container .vis-time-axis .vis-grid.vis-saturday,
 .gantt-container .vis-time-axis .vis-grid.vis-sunday {
   background-color: rgba(155, 89, 182, 0.10);
 }
 
-/* Текст субботы и воскресенья в верхней полосе дат */
 .gantt-container .vis-time-axis .vis-text.vis-saturday,
 .gantt-container .vis-time-axis .vis-text.vis-sunday {
   color: #8e44ad;
@@ -552,5 +518,98 @@ body {
 }
 
 /* ==========================================
-   КОНЕЦ
+   Итерация 13.17: разделители групп на Ганте
    ========================================== */
+
+.gantt-container .vis-label.group-divider-after {
+  border-bottom: 3px solid #2c3e50 !important;
+  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.08);
+  position: relative;
+}
+
+.gantt-container .vis-label.group-divider-after::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -3px;
+  height: 3px;
+  background: linear-gradient(90deg, #2c3e50 0%, #34495e 100%);
+}
+
+.gantt-container .vis-label.group-first {
+  border-top: 2px solid #bdc3c7;
+}
+
+/* ==========================================
+   Итерация 13.17 (9p): resize-зоны vis-timeline
+   ==========================================
+   По умолчанию .vis-item-overflow имеет overflow: hidden,
+   из-за чего .vis-drag-left и .vis-drag-right обрезаются.
+   Разрешаем overflow: visible, чтобы drag-зоны были кликабельны.
+   ========================================== */
+.gantt-container .vis-item.vis-range .vis-item-overflow {
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+/* Drag-зоны должны явно показывать ew-resize, даже если
+   на родителе стоит cursor: help/grab. */
+.gantt-container .vis-item.vis-range .vis-drag-left,
+.gantt-container .vis-item.vis-range .vis-drag-right {
+  cursor: ew-resize !important;
+  pointer-events: auto !important;
+  z-index: 10 !important;
+  width: 10px !important;
+  min-width: 10px !important;
+  max-width: 10px !important;
+}
+
+/* Убираем отрицательный left/top — сдвигаем drag-зоны внутрь задачи */
+.gantt-container .vis-item.vis-range .vis-drag-left {
+  left: 0 !important;
+}
+
+.gantt-container .vis-item.vis-range .vis-drag-right {
+  right: 0 !important;
+}
+.gantt-container .vis-item.vis-range .vis-drag-center {
+  cursor: grab !important;
+  pointer-events: auto !important;
+}
+
+/* ==========================================
+   Итерация 13.18: визуальная индикация is_pinned
+   ==========================================
+   Улучшенная версия. Пин-задача:
+     - светло-синий фон;
+     - плотная синяя рамка (2px + утолщённая левая 6px);
+     - лёгкое свечение (box-shadow);
+     - курсор grab остаётся для resize-краёв (изменение длительности).
+   ========================================== */
+.gantt-container .vis-item.item-pinned {
+  border: 2px solid #1976d2 !important;
+  border-left-width: 6px !important;
+  background-color: #e3f2fd !important;
+  box-shadow: 0 0 4px rgba(25, 118, 210, 0.35);
+}
+
+.gantt-container .vis-item.item-pinned:hover {
+  box-shadow: 0 0 8px rgba(25, 118, 210, 0.55);
+}
+
+.gantt-container .vis-item.item-pinned.vis-selected {
+  outline: 2px dashed #1976d2 !important;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px #1976d2, 0 4px 12px rgba(25, 118, 210, 0.4) !important;
+}
+
+/* Пин-задача в readonly — рамка остаётся, но без hover-эффекта */
+.gantt-readonly .gantt-container .vis-item.item-pinned:hover,
+.gantt-container.gantt-readonly .vis-item.item-pinned:hover {
+  box-shadow: 0 0 4px rgba(25, 118, 210, 0.35);
+}
+
+/* ==========================================
+   КОНЕЦ
+   ==========================================
