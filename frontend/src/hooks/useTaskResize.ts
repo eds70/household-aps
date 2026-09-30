@@ -3,12 +3,13 @@
  * Хук для обработки resize задачи (изменение длительности) на Ганте.
  *
  * Итерация 13.17.
- * Итерация 13.18 (fix #5): убран onDragTooltip — теперь tooltip
- *   управляется через события itemmoving/itemresizing в
- *   useGanttTimeline.
+ * Итерация 13.19: после успешного API-вызова помечаем план «грязным»
+ *   (markPlanDirty), потому что новая длительность задачи влияет
+ *   на следующий пересчёт solver'ом.
  */
 import {useCallback} from 'react';
 import {rescheduleApi} from '../services/api';
+import {usePlan} from '../context/PlainContext';
 import type {TaskData, ValidationErrorState} from '../types';
 
 export interface UseTaskResizeOptions {
@@ -42,6 +43,9 @@ export const useTaskResize = (
         onError,
         onValidationError,
     } = options;
+
+    // Итерация 13.19: пометка плана «грязным»
+    const {markPlanDirty} = usePlan();
 
     const handleMove = useCallback(async (
         item: any,
@@ -107,6 +111,9 @@ export const useTaskResize = (
                 );
             }
 
+            // Итерация 13.19: успешно применили — пометить план
+            markPlanDirty();
+
             const newDuration = Math.round(newDurationMs / 60000);
             onTaskUpdated(taskId, newStart, newEnd, newDuration);
 
@@ -160,6 +167,7 @@ export const useTaskResize = (
         onCascadeMoved,
         onError,
         onValidationError,
+        markPlanDirty,
     ]);
 
     return {handleMove};

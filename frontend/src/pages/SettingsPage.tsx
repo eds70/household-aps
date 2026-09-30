@@ -1,4 +1,7 @@
 // frontend/src/pages/SettingsPage.tsx
+// Итерация 13.19: markPlanDirty() при изменении глобальных настроек
+//   (updateBulk) и при смене режима смен (changeShiftMode).
+
 import React, {useCallback, useEffect, useMemo, useState} from 'react';
 import {
     Accordion,
@@ -28,6 +31,7 @@ import {
     Warning as WarningIcon,
 } from '@mui/icons-material';
 import {settingsApi} from '../services/api';
+import {usePlan} from '../context/PlainContext';
 import type {SettingSpec, SettingsSchema} from '../types';
 import DraggableDialog from '../components/common/DraggableDialog';
 
@@ -190,6 +194,9 @@ const SettingField: React.FC<SettingFieldProps> = ({
 // ==========================================
 
 const SettingsPage: React.FC = () => {
+    // Итерация 13.19: markPlanDirty для пометки плана «грязным»
+    const {markPlanDirty} = usePlan();
+
     const [schema, setSchema] = useState<SettingsSchema | null>(null);
     const [values, setValues] = useState<Record<string, any>>({});
     const [originalValues, setOriginalValues] = useState<Record<string, any>>({});
@@ -249,6 +256,8 @@ const SettingsPage: React.FC = () => {
         setShiftModeDialogOpen(false);
         try {
             await settingsApi.changeShiftMode(pendingShiftMode);
+            // Итерация 13.19: пометить план «грязным»
+            markPlanDirty();
             setSuccess(
                 `Режим смен изменён на "${pendingShiftMode}". Не забудьте пересчитать план.`,
             );
@@ -283,6 +292,8 @@ const SettingsPage: React.FC = () => {
             }
 
             await settingsApi.updateBulk(updates);
+            // Итерация 13.19: пометить план «грязным»
+            markPlanDirty();
             setSuccess(`Сохранено настроек: ${Object.keys(updates).length}`);
             await loadData();
         } catch (err: any) {

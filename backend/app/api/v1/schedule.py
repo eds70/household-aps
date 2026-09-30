@@ -1,15 +1,26 @@
 ﻿# backend/app/api/v1/schedule.py
+"""
+API планирования производства.
+
+Итерация 13.15: POST /versions заполняет снапшоты справочников,
+                GET /versions возвращает has_snapshot.
+Итерация 13.21: GET /versions фильтрует архивные версии
+                (параметр include_archived).
+                Новый эндпоинт PUT /versions/{id}/unarchive.
+"""
+
 from datetime import datetime
 from typing import List, Dict, Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_org_id, get_db_session
 from app.scheduler.snapshot import snapshot_all_catalogs
 from .models import ScheduleBuildRequest, ScheduleBuildResponse
+from .reschedule_models import UnarchiveVersionResponse
 
 router = APIRouter(prefix="/api/v1/schedule", tags=["Планирование"])
 
@@ -80,6 +91,13 @@ async def get_last_result():
 
 @router.get("/versions", response_model=List[dict])
 async def get_schedule_versions(
+        include_archived: bool = Query(
+            default=False,
+            description=(
+                    "Показывать ли архивные версии планов. "
+                    "По умолчанию — только активные и неархивные."
+            ),
+        ),
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
@@ -89,22 +107,70 @@ async def get_schedule_versions(
     Итерация 13.15: добавлено поле has_snapshot — заполнены ли
     снапшот-таблицы для этой версии. UI использует это поле, чтобы
     понять, можно ли открывать план в readonly-режиме.
+
+    Итерация 13.21: фильтр по архивным версиям. По умолчанию
+    архивные не показываются (is_archived = FALSE). Параметр
+    include_archived=true возвращает их все.
+
+    Поля ответа:
+      - id, name, version_type, is_active, created_at, comment
+      - has_snapshot: bool
+      - is_archived: bool (Итерация 13.21)
+      - parent_version_id: Optional[str] (для построения иерархии)
     """
-    result = await db.execute(
+    # ==========================================
+    # Проверяем наличие колонок (graceful для старых БД)
+    # ==========================================
+    col_check = await db.execute(
         text("""
-            SELECT
-                sv.id, sv.name, sv.version_type, sv.is_active,
-                sv.created_at, sv.comment,
-                EXISTS (
-                    SELECT 1 FROM equipment_snapshot
-                    WHERE version_id = sv.id LIMIT 1
-                ) AS has_snapshot
-            FROM schedule_version sv
-            WHERE sv.organization_id = :org_id
-            ORDER BY sv.created_at DESC
-        """),
-        {"org_id": org_id},
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'schedule_version'
+              AND column_name IN ('is_archived', 'parent_version_id')
+        """)
     )
+    available_cols = {row.column_name for row in col_check.fetchall()}
+    has_archived = "is_archived" in available_cols
+    has_parent = "parent_version_id" in available_cols
+
+    # ==========================================
+    # Формируем SELECT с учётом доступных колонок
+    # ==========================================
+    archived_select = (
+        "COALESCE(sv.is_archived, FALSE) AS is_archived,"
+        if has_archived else
+        "FALSE AS is_archived,"
+    )
+    parent_select = (
+        "sv.parent_version_id,"
+        if has_parent else
+        "NULL::uuid AS parent_version_id,"
+    )
+
+    where_clauses = ["sv.organization_id = :org_id"]
+    if has_archived and not include_archived:
+        where_clauses.append("COALESCE(sv.is_archived, FALSE) = FALSE")
+
+    where_sql = " AND ".join(where_clauses)
+
+    query = text(f"""
+        SELECT
+            sv.id, sv.name, sv.version_type, sv.is_active,
+            sv.created_at, sv.comment,
+            {archived_select}
+            {parent_select}
+            EXISTS (
+                SELECT 1 FROM equipment_snapshot
+                WHERE version_id = sv.id LIMIT 1
+            ) AS has_snapshot
+        FROM schedule_version sv
+        WHERE {where_sql}
+        ORDER BY
+            sv.is_active DESC,
+            sv.created_at DESC
+    """)
+
+    result = await db.execute(query, {"org_id": org_id})
+
     return [
         {
             "id": str(row.id),
@@ -114,6 +180,11 @@ async def get_schedule_versions(
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "comment": row.comment,
             "has_snapshot": bool(row.has_snapshot),
+            "is_archived": bool(row.is_archived),
+            "parent_version_id": (
+                str(row.parent_version_id)
+                if row.parent_version_id else None
+            ),
         }
         for row in result.fetchall()
     ]
@@ -141,6 +212,8 @@ async def create_schedule_version(
 
         Это делает план «полноценным» с точки зрения UI: справочники
         открываются, настройки видны, можно пересчитать план.
+
+    Итерация 13.21: новая версия создаётся с is_archived = FALSE.
     """
     version_id = uuid4()
     name = request.get("name", "Без названия")
@@ -148,24 +221,56 @@ async def create_schedule_version(
     comment = request.get("comment", "")
 
     # ==========================================
+    # Проверяем наличие колонки is_archived
+    # ==========================================
+    col_check = await db.execute(
+        text("""
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'schedule_version'
+              AND column_name = 'is_archived'
+        """)
+    )
+    has_archived = col_check.fetchone() is not None
+
+    # ==========================================
     # 1. Создаём версию плана.
     # ==========================================
-    await db.execute(
-        text("""
-            INSERT INTO schedule_version
-                (id, organization_id, name, version_type, is_active,
-                 created_at, comment)
-            VALUES
-                (:id, :org_id, :name, :version_type, FALSE, NOW(), :comment)
-        """),
-        {
-            "id": version_id,
-            "org_id": org_id,
-            "name": name,
-            "version_type": version_type,
-            "comment": comment,
-        },
-    )
+    if has_archived:
+        await db.execute(
+            text("""
+                INSERT INTO schedule_version
+                    (id, organization_id, name, version_type,
+                     is_active, is_archived, created_at, comment)
+                VALUES
+                    (:id, :org_id, :name, :version_type,
+                     FALSE, FALSE, NOW(), :comment)
+            """),
+            {
+                "id": version_id,
+                "org_id": org_id,
+                "name": name,
+                "version_type": version_type,
+                "comment": comment,
+            },
+        )
+    else:
+        await db.execute(
+            text("""
+                INSERT INTO schedule_version
+                    (id, organization_id, name, version_type,
+                     is_active, created_at, comment)
+                VALUES
+                    (:id, :org_id, :name, :version_type,
+                     FALSE, NOW(), :comment)
+            """),
+            {
+                "id": version_id,
+                "org_id": org_id,
+                "name": name,
+                "version_type": version_type,
+                "comment": comment,
+            },
+        )
 
     # ==========================================
     # 2. Заполняем снапшоты.
@@ -187,6 +292,7 @@ async def create_schedule_version(
         "name": name,
         "version_type": version_type,
         "is_active": False,
+        "is_archived": False,
         "created_at": datetime.now().isoformat(),
         "comment": comment,
         "has_snapshot": True,
@@ -245,3 +351,83 @@ async def delete_schedule_version(
         raise HTTPException(status_code=404, detail="Версия плана не найдена")
     await db.commit()
     return {"message": "Версия плана удалена"}
+
+
+# ==========================================
+# ИТЕРАЦИЯ 13.21: РАЗАРХИВАЦИЯ ВЕРСИИ
+# ==========================================
+
+@router.put(
+    "/versions/{version_id}/unarchive",
+    response_model=UnarchiveVersionResponse,
+)
+async def unarchive_schedule_version(
+        version_id: UUID,
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Разархивировать версию плана.
+
+    Итерация 13.21: архивированные версии скрыты из списка по умолчанию.
+    Этот эндпоинт возвращает их в список (is_archived = FALSE).
+    Версия НЕ становится активной автоматически — нужно явно
+    открыть её через UI.
+
+    Используется кнопкой «↩ Разархивировать» в «Истории планов».
+    """
+    # 1. Проверяем наличие колонки is_archived
+    col_check = await db.execute(
+        text("""
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'schedule_version'
+              AND column_name = 'is_archived'
+        """)
+    )
+    if col_check.fetchone() is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Колонка is_archived не найдена. "
+                "Примените миграцию add_23.sql"
+            ),
+        )
+
+    # 2. Проверяем, что версия существует
+    check = await db.execute(
+        text("""
+            SELECT id, name, is_archived, is_active
+            FROM schedule_version
+            WHERE id = :vid AND organization_id = :org_id
+        """),
+        {"vid": version_id, "org_id": org_id},
+    )
+    row = check.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Версия плана не найдена")
+
+    if not row.is_archived:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Версия «{row.name}» не находится в архиве",
+        )
+
+    # 3. Разархивируем
+    await db.execute(
+        text("""
+            UPDATE schedule_version
+            SET is_archived = FALSE
+            WHERE id = :vid AND organization_id = :org_id
+        """),
+        {"vid": version_id, "org_id": org_id},
+    )
+    await db.commit()
+
+    return UnarchiveVersionResponse(
+        status="success",
+        version_id=str(version_id),
+        name=row.name,
+        is_archived=False,
+        is_active=bool(row.is_active),
+        message=f"Версия «{row.name}» разархивирована",
+    )

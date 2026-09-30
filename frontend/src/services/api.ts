@@ -338,8 +338,13 @@ export const scheduleApi = {
         const response = await api.post('/api/v1/schedule/save');
         return response.data;
     },
-    getVersions: async () => {
-        const response = await api.get('/api/v1/schedule/versions');
+    getVersions: async (_includeArchived: boolean = false) => {
+        // Итерация 13.21 (Вариант B): всегда получаем ВСЕ версии.
+        // Фильтрация по архивным — на фронте (в SchedulePage),
+        // чтобы сохранить архивных родителей-контекст.
+        const response = await api.get('/api/v1/schedule/versions', {
+            params: { include_archived: true },
+        });
         return response.data;
     },
     createVersion: async (data: { name: string; version_type: string; comment?: string }) => {
@@ -348,6 +353,14 @@ export const scheduleApi = {
     },
     deleteVersion: async (versionId: string) => {
         const response = await api.delete(`/api/v1/schedule/versions/${versionId}`);
+        return response.data;
+    },
+    /**
+     * Итерация 13.21: разархивация версии плана.
+     * Возвращает версию в список «Истории планов».
+     */
+    unarchiveVersion: async (versionId: string): Promise<import('../types').UnarchiveVersionResponse> => {
+        const response = await api.put(`/api/v1/schedule/versions/${versionId}/unarchive`);
         return response.data;
     },
 };

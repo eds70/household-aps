@@ -88,6 +88,8 @@ REST API системы **APS Production Scheduler**.
 
 **Поля:** `id`, `code`, `name`, `equipment_type`, `capacity_kg`, `is_active`.
 
+**Query-параметр:** `version_id` (optional) — читать из снапшота.
+
 ---
 
 ### Продукты
@@ -98,6 +100,8 @@ REST API системы **APS Production Scheduler**.
 | `POST` | `/api/v1/products` | Создать | ADMIN, PLANNER |
 | `PUT` | `/api/v1/products/{id}` | Обновить | ADMIN, PLANNER |
 | `DELETE` | `/api/v1/products/{id}` | Удалить | ADMIN |
+
+**Query-параметр:** `version_id` (optional).
 
 ---
 
@@ -201,7 +205,8 @@ REST API системы **APS Production Scheduler**.
 
 Список версий плана.
 
-**Итерация 13.15:** в ответе добавлено поле `has_snapshot`.
+**Query:**
+- `include_archived` (optional, bool, default=`false`) — показывать ли архивные версии.
 
 **Ответ:**
 ```json
@@ -210,6 +215,7 @@ REST API системы **APS Production Scheduler**.
     "id": "uuid",
     "name": "План на октябрь",
     "is_active": true,
+    "is_archived": false,
     "parent_version_id": null,
     "created_at": "2026-09-25T10:00:00Z",
     "created_by": "admin@household.ru",
@@ -219,6 +225,8 @@ REST API системы **APS Production Scheduler**.
     "id": "uuid-2",
     "name": "z1",
     "is_active": false,
+    "is_archived": true,
+    "parent_version_id": null,
     "created_at": "2026-09-25T13:46:20Z",
     "has_snapshot": false
   }
@@ -229,7 +237,9 @@ REST API системы **APS Production Scheduler**.
 
 | Поле | Тип | Описание |
 |------|-----|----------|
-| `has_snapshot` | `bool` | `true` — снапшоты справочников заполнены, план можно открыть в readonly-режиме. `false` — план пуст (создан до Итерации 13.15), UI покажет предупреждение. |
+| `has_snapshot` | `bool` | `true` — снапшоты справочников заполнены, план можно открыть в readonly-режиме. `false` — план пуст. |
+| `is_archived` | `bool` | Итерация 13.21: `true` — версия в архиве, скрыта из списка по умолчанию. |
+| `parent_version_id` | `UUID \| null` | Итерация 13.21: ID родительской версии для построения иерархии. |
 
 **Права:** любой.
 
@@ -238,8 +248,6 @@ REST API системы **APS Production Scheduler**.
 ### `POST /api/v1/schedule/versions`
 
 Создать пустую версию (без расчёта).
-
-**Итерация 13.15:** теперь **заполняет снапшоты справочников** сразу при создании.
 
 **Тело:**
 ```json
@@ -257,6 +265,7 @@ REST API системы **APS Production Scheduler**.
   "name": "Черновик",
   "version_type": "MONTHLY",
   "is_active": false,
+  "is_archived": false,
   "created_at": "2026-09-25T17:22:00Z",
   "comment": "...",
   "has_snapshot": true,
@@ -274,15 +283,43 @@ REST API системы **APS Production Scheduler**.
 **Логика (Итерация 13.15):**
 1. `INSERT INTO schedule_version`.
 2. Триггер `copy_app_settings_to_plan` копирует `app_settings` → `plan_settings`.
-3. `snapshot_all_catalogs()` заполняет `equipment_snapshot`, `product_snapshot`, `operation_snapshot`, `calendar_snapshot`.
+3. `snapshot_all_catalogs()` заполняет снапшоты.
 
 ---
 
 ### `DELETE /api/v1/schedule/versions/{id}`
 
-Удалить версию.
+Удалить версию (CASCADE).
 
 **Права:** ADMIN.
+
+---
+
+### `PUT /api/v1/schedule/versions/{id}/unarchive`
+
+**Итерация 13.21:** разархивировать версию плана.
+
+Возвращает версию в список «Истории планов» (`is_archived = FALSE`).
+Версия НЕ становится активной автоматически.
+
+**Ответ:**
+```json
+{
+  "status": "success",
+  "version_id": "uuid",
+  "name": "План на октябрь",
+  "is_archived": false,
+  "is_active": false,
+  "message": "Версия «План на октябрь» разархивирована"
+}
+```
+
+**Ошибки:**
+- `400` — колонка `is_archived` не найдена (не применена миграция `add_23.sql`).
+- `400` — версия не находится в архиве.
+- `404` — версия не найдена.
+
+**Права:** ADMIN, PLANNER.
 
 ---
 
@@ -433,17 +470,47 @@ REST API системы **APS Production Scheduler**.
 ```json
 {
   "from_version_id": "uuid",
-  "change_type": "BREAKDOWN",
-  "change_data": {
+  "reason": "BREAKDOWN",
+  "changes": {
     "equipment_id": "uuid",
     "start_at": "2026-09-25T00:00:00Z",
     "end_at": "2026-09-28T00:00:00Z"
   },
-  "frozen_before": "2026-09-25T00:00:00Z"
+  "frozen_before": "2026-09-25T00:00:00Z",
+  "replace_version_id": "uuid"
 }
 ```
 
 **Типы изменений:** `DELAY`, `BREAKDOWN`, `QTY_CHANGE`, `MANUAL`.
+
+**Итерация 13.21:** `replace_version_id` (optional) — если передан, старая версия архивируется после пересчёта (при условии, что она не используется в what-if).
+
+**Ответ:**
+```json
+{
+  "status": "success",
+  "from_version_id": "uuid",
+  "to_version_id": "uuid",
+  "affected_tasks": 10,
+  "moved_tasks": 282,
+  "frozen_tasks": 0,
+  "message": "Создана новая версия плана",
+  "diff": {},
+  "replace_archived": true,
+  "replace_blocked": false,
+  "replace_blocked_reason": null,
+  "used_by_whatif": []
+}
+```
+
+**Поля ответа (Итерация 13.21):**
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `replace_archived` | `bool` | `true` — старая версия успешно архивирована. |
+| `replace_blocked` | `bool` | `true` — архивация не удалась (версия используется в what-if). |
+| `replace_blocked_reason` | `string \| null` | Причина, по которой архивация пропущена. |
+| `used_by_whatif` | `[str]` | ID what-if сценариев, из-за которых архивация пропущена. |
 
 **Права:** ADMIN, PLANNER.
 
@@ -504,6 +571,50 @@ REST API системы **APS Production Scheduler**.
 ```
 
 **Валидация:** длительность задачи не может меняться при перемещении.
+
+**Права:** ADMIN, PLANNER.
+
+---
+
+### `PUT /api/v1/schedule/task/{id}/resize`
+
+**Итерация 13.17:** изменить длительность задачи.
+
+**Query:**
+- `version_id` (optional).
+
+**Тело:**
+```json
+{
+  "new_start": "2026-09-25T10:00:00Z",
+  "new_end": "2026-09-25T14:00:00Z"
+}
+```
+
+**Ошибки:**
+- `400` — с `detail.reason` и `detail.details`.
+- `409` — каскад заблокирован pinned-задачей.
+
+**Права:** ADMIN, PLANNER.
+
+---
+
+### `PUT /api/v1/schedule/task/{id}/move-cascade`
+
+**Итерация 13.17:** переместить задачу с каскадом.
+
+**Query:**
+- `version_id` (optional).
+
+**Тело:**
+```json
+{
+  "new_start": "2026-09-25T10:00:00Z",
+  "new_end": "2026-09-25T14:00:00Z"
+}
+```
+
+**Ответ:** содержит `moved_tasks: [{task_id, operation_name, equipment_id, new_start, new_end}]`.
 
 **Права:** ADMIN, PLANNER.
 
@@ -841,12 +952,15 @@ REST API системы **APS Production Scheduler**.
 {
   "settings": {
     "horizon_hours": 1440,
-    "timeout_seconds": 900
+    "timeout_seconds": 900,
+    "auto_archive_on_recalc": true
   }
 }
 ```
 
 **Права:** ADMIN, PLANNER.
+
+**Итерация 13.21:** настройка `auto_archive_on_recalc` управляет архивацией старой версии при пересчёте.
 
 ---
 
@@ -1195,6 +1309,7 @@ Authorization: Bearer <token>
 - `401` — не авторизован.
 - `403` — нет прав.
 - `404` — не найдено.
+- `409` — конфликт (например, каскад заблокирован pinned-задачей).
 - `422` — ошибка валидации.
 - `500` — внутренняя ошибка.
 
@@ -1214,12 +1329,21 @@ Authorization: Bearer <token>
 - `true` — снапшоты справочников заполнены, план можно открывать в readonly-режиме.
 - `false` — план пуст (создан до Итерации 13.15 или снапшоты удалены). UI индицирует ⚠.
 
+### `is_archived` (Итерация 13.21)
+
+`GET /api/v1/schedule/versions`:
+- По умолчанию (`include_archived=false`) возвращает только НЕархивные версии.
+- С `include_archived=true` — возвращает все, включая архивные.
+- Каждая версия имеет поле `is_archived: bool`.
+- Разархивация — через `PUT /versions/{id}/unarchive`.
+
 ### Идемпотентность
 
 - `POST /api/v1/cz/scan` — идемпотентен по `cz_code`.
 - `POST /api/v1/plan-settings/version/{id}/reset` — идемпотентен.
 - `POST /api/v1/schedule/versions` — **не** идемпотентен (создаёт новую версию при каждом вызове).
 - `snapshot_all_catalogs` (внутренняя функция) — идемпотентна (`ON CONFLICT DO NOTHING`).
+- `PUT /api/v1/schedule/versions/{id}/unarchive` — идемпотентен (повторная разархивация → `400`, но не сломает данные).
 
 ### Роли
 

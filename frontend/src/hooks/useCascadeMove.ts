@@ -5,9 +5,14 @@
  * Используется для:
  *  - сдвига задачи на ±1 час из контекстного меню;
  *  - pin/unpin задачи.
+ *
+ * Итерация 13.19: после успешного API-вызова помечаем план «грязным»
+ * (markPlanDirty), потому что новая позиция задачи / is_pinned
+ * влияют на следующий пересчёт solver'ом.
  */
 import {useCallback} from 'react';
 import {rescheduleApi} from '../services/api';
+import {usePlan} from '../context/PlainContext';
 import type {TaskData, ValidationErrorState} from '../types';
 
 export interface UseCascadeMoveOptions {
@@ -29,6 +34,9 @@ export const useCascadeMove = (options: UseCascadeMoveOptions) => {
         onSuccess,
     } = options;
 
+    // Итерация 13.19: пометка плана «грязным»
+    const {markPlanDirty} = usePlan();
+
     /**
      * Сдвигает задачу на deltaMinutes (может быть отрицательным).
      */
@@ -49,6 +57,9 @@ export const useCascadeMove = (options: UseCascadeMoveOptions) => {
                 newEnd.toISOString(),
                 versionId || undefined,
             );
+
+            // Итерация 13.19: успешно применили — пометить план
+            markPlanDirty();
 
             onTaskUpdated(
                 task.id,
@@ -97,7 +108,7 @@ export const useCascadeMove = (options: UseCascadeMoveOptions) => {
                 );
             }
         }
-    }, [versionId, onTaskUpdated, onCascadeMoved, onError, onValidationError, onSuccess]);
+    }, [versionId, onTaskUpdated, onCascadeMoved, onError, onValidationError, onSuccess, markPlanDirty]);
 
     /**
      * Закрепляет или открепляет задачу.
@@ -112,6 +123,8 @@ export const useCascadeMove = (options: UseCascadeMoveOptions) => {
                 isPinned,
                 versionId || undefined,
             );
+            // Итерация 13.19: успешно применили — пометить план
+            markPlanDirty();
             if (onSuccess) {
                 onSuccess(isPinned ? 'Задача закреплена' : 'Задача откреплена');
             }
@@ -123,7 +136,7 @@ export const useCascadeMove = (options: UseCascadeMoveOptions) => {
                     : 'Ошибка закрепления',
             );
         }
-    }, [versionId, onError, onSuccess]);
+    }, [versionId, onError, onSuccess, markPlanDirty]);
 
     return {shiftTask, togglePin};
 };

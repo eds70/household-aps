@@ -1,6 +1,16 @@
 /* ==========================================
    frontend/src/index.css
    Базовые стили APS Scheduler
+
+   Итерация 14.0: миграция AG Grid на Theming API.
+   Все правила .ag-theme-alpine удалены — AG Grid v33+
+   инжектит CSS сам через theme={agGridTheme}.
+   Оставлены только функциональные правила (курсоры,
+   flex-центрирование для actions-ячеек).
+   ========================================== */
+
+/* ==========================================
+   БАЗОВЫЕ СТИЛИ
    ========================================== */
 * {
   box-sizing: border-box;
@@ -45,45 +55,50 @@ body {
 }
 
 /* ==========================================
-   AgGrid — базовые стили
+   AG GRID — функциональные правила
+
+   Итерация 14.0: цвета, границы и header управляются
+   через agGridTheme (Theming API). Здесь оставлены только
+   правила, которые AG Grid не может задать через параметры:
+   - flex-центрирование содержимого ячеек;
+   - курсоры для actions-ячеек.
    ========================================== */
-.ag-theme-alpine {
+
+/* 1. Ячейки с классом-маркером `ag-cell-actions` — центрируем
+      и по горизонтали, и по вертикали. Используется в таблицах
+      с IconButton (ProductsPage, RecipesPage и т.п.). */
+.ag-cell.ag-cell-actions {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+/* 2. Внутренние элементы (Button, IconButton) — по центру
+      по вертикали, без внешних отступов. */
+.ag-cell .MuiButton-root,
+.ag-cell .MuiIconButton-root {
+  align-self: center !important;
+  margin: 0 !important;
+}
+
+/* 3. Ячейки с MUI Box (flex-контейнер) — растягиваем
+      на всю высоту и ширину, чтобы внутренний flex
+      работал предсказуемо. */
+.ag-cell .MuiBox-root {
+  display: flex;
+  align-items: center;
   height: 100%;
   width: 100%;
 }
 
-.ag-theme-alpine .ag-root-wrapper {
-  height: 100%;
+/* 4. Ячейка с классом-маркером — растягиваем внутренний Box
+      на всю ширину и центрируем содержимое. */
+.ag-cell.ag-cell-actions .MuiBox-root {
+  justify-content: center;
 }
 
-.ag-theme-alpine .ag-cell {
-  border-right: 1px solid #e0e0e0 !important;
-}
-
-.ag-theme-alpine .ag-header-cell {
-  border-right: 1px solid #d0d0d0 !important;
-}
-
-.ag-theme-alpine .ag-row {
-  border-bottom: 1px solid #f0f0f0 !important;
-}
-
-.ag-theme-alpine .ag-cell:last-child,
-.ag-theme-alpine .ag-header-cell:last-child {
-  border-right: none !important;
-}
-
-.ag-theme-alpine .ag-row-hover {
-  background-color: #f5f7fa !important;
-}
-
-.ag-theme-alpine .ag-row-selected {
-  background-color: #e3f2fd !important;
-}
-
-/* ==========================================
-   AgGrid — Tooltip (переопределение стилей)
-   ========================================== */
+/* 5. Tooltip AG Grid — оставляем тёмный фон,
+      т.к. он используется для читаемости длинных описаний. */
 .ag-tooltip {
   background-color: #2c3e50 !important;
   color: #ffffff !important;
@@ -108,48 +123,6 @@ body {
 .ag-tooltip .ag-tooltip-value {
   color: #ffffff !important;
   font-weight: 500 !important;
-}
-
-/* ==========================================
-   AgGrid — центрирование содержимого ячеек
-   ========================================== */
-
-/* 1. По умолчанию все ячейки — flex с центрированием по вертикали. */
-.ag-theme-alpine .ag-cell {
-  display: flex !important;
-  align-items: center !important;
-}
-
-/* 2. Ячейки с чекбоксами AgGrid (bool-колонки) — возвращаем
-   исходное поведение, чтобы чекбоксы не «уезжали». */
-.ag-theme-alpine .ag-cell:has(.ag-checkbox-input-wrapper) {
-  display: block !important;
-}
-
-/* 3. Ячейки с классом-маркером — центрируем и по горизонтали. */
-.ag-theme-alpine .ag-cell.ag-cell-actions {
-  justify-content: center !important;
-}
-
-/* 4. Внутренние элементы (Button, IconButton) — по центру по вертикали. */
-.ag-theme-alpine .ag-cell .MuiButton-root,
-.ag-theme-alpine .ag-cell .MuiIconButton-root {
-  align-self: center !important;
-  margin: 0 !important;
-}
-
-/* 5. Ячейки с MUI Box (flex-контейнер) — растягиваем на всю высоту. */
-.ag-theme-alpine .ag-cell .MuiBox-root {
-  display: flex;
-  align-items: center;
-  height: 100%;
-  width: 100%;
-}
-
-/* 6. Ячейка с классом-маркером — растягиваем внутренний Box
-   на всю ширину и центрируем содержимое. */
-.ag-theme-alpine .ag-cell.ag-cell-actions .MuiBox-root {
-  justify-content: center;
 }
 
 /* ==========================================
@@ -235,6 +208,9 @@ body {
 
 /* ==========================================
    ГАНТ (vis-timeline) — общие стили
+   ==========================================
+   ВАЖНО: vis-timeline НЕ трогается миграцией AG Grid.
+   Здесь свои CSS-классы .vis-*. Оставляем как есть.
    ========================================== */
 
 /* 1. Задачи — базовый hover */
@@ -273,14 +249,13 @@ body {
 .gantt-readonly .vis-item.vis-range {
   cursor: default !important;
 }
+
 .gantt-readonly .vis-item.vis-drag-center {
   cursor: default !important;
 }
 
 /* ==========================================
-   ГАНТ (vis-timeline) — pan + zoom + drag
-   ==========================================
-   Итерация 13.17 (9o): курсоры для resize-краёв.
+   ГАНТ — pan + zoom + drag
    ========================================== */
 
 /* 7. Pan: курсор grab на пустом месте диаграммы */
@@ -297,7 +272,8 @@ body {
 }
 
 /* 8. Курсор grab — только для тела задачи.
-   vis-timeline сам ставит ew-resize на краях через .vis-drag-left/right. */
+      vis-timeline сам ставит ew-resize на краях
+      через .vis-drag-left/right. */
 .gantt-container .vis-item.vis-range:not(.item-downtime):not(.item-setup) .vis-drag-center {
   cursor: grab;
 }
@@ -313,13 +289,16 @@ body {
 .gantt-readonly .vis-panel.vis-right {
   cursor: grab;
 }
+
 .gantt-readonly .vis-item.vis-range {
   cursor: default !important;
 }
+
 .gantt-readonly .vis-item.vis-drag-center,
 .gantt-readonly .vis-item.vis-dragging {
   cursor: default !important;
 }
+
 .gantt-readonly .vis-item.vis-range .vis-drag-center,
 .gantt-readonly .vis-item.vis-range .vis-drag-left,
 .gantt-readonly .vis-item.vis-range .vis-drag-right {
@@ -398,21 +377,22 @@ body {
   cursor: grabbing;
 }
 
-/* 9a. Setup и downtime — not-allowed */
+/* 10. Setup и downtime — not-allowed */
 .gantt-container .vis-item.item-downtime,
 .gantt-container .vis-item.item-setup {
   cursor: not-allowed !important;
 }
 
-/* 10. Readonly-режим — курсор default на задачах */
+/* 11. Readonly-режим — курсор default на задачах */
 .gantt-container.gantt-readonly .vis-item.vis-range {
   cursor: default !important;
 }
 
-/* 11. Подсветка проблемных задач */
+/* 12. Подсветка проблемных задач */
 .gantt-container .item-blocked {
   box-shadow: 0 0 8px rgba(231, 76, 60, 0.4);
 }
+
 .gantt-container .item-blocked:hover {
   box-shadow: 0 0 12px rgba(231, 76, 60, 0.7);
 }
@@ -420,6 +400,7 @@ body {
 .gantt-container .item-cooling-slow {
   box-shadow: 0 0 8px rgba(230, 126, 34, 0.4);
 }
+
 .gantt-container .item-cooling-slow:hover {
   box-shadow: 0 0 12px rgba(230, 126, 34, 0.7);
 }
@@ -427,11 +408,12 @@ body {
 .gantt-container .item-cz-incomplete {
   box-shadow: 0 0 8px rgba(25, 118, 210, 0.4);
 }
+
 .gantt-container .item-cz-incomplete:hover {
   box-shadow: 0 0 12px rgba(25, 118, 210, 0.7);
 }
 
-/* 12. Миникарта — упрощённый вид */
+/* 13. Миникарта — упрощённый вид */
 .gantt-container + .MuiPaper-root .vis-item,
 .gantt-container ~ .MuiPaper-root .vis-item {
   border-color: transparent;
@@ -543,18 +525,13 @@ body {
 
 /* ==========================================
    Итерация 13.17 (9p): resize-зоны vis-timeline
-   ==========================================
-   По умолчанию .vis-item-overflow имеет overflow: hidden,
-   из-за чего .vis-drag-left и .vis-drag-right обрезаются.
-   Разрешаем overflow: visible, чтобы drag-зоны были кликабельны.
    ========================================== */
+
 .gantt-container .vis-item.vis-range .vis-item-overflow {
   overflow: hidden;
   pointer-events: auto;
 }
 
-/* Drag-зоны должны явно показывать ew-resize, даже если
-   на родителе стоит cursor: help/grab. */
 .gantt-container .vis-item.vis-range .vis-drag-left,
 .gantt-container .vis-item.vis-range .vis-drag-right {
   cursor: ew-resize !important;
@@ -565,7 +542,6 @@ body {
   max-width: 10px !important;
 }
 
-/* Убираем отрицательный left/top — сдвигаем drag-зоны внутрь задачи */
 .gantt-container .vis-item.vis-range .vis-drag-left {
   left: 0 !important;
 }
@@ -573,6 +549,7 @@ body {
 .gantt-container .vis-item.vis-range .vis-drag-right {
   right: 0 !important;
 }
+
 .gantt-container .vis-item.vis-range .vis-drag-center {
   cursor: grab !important;
   pointer-events: auto !important;
@@ -580,13 +557,8 @@ body {
 
 /* ==========================================
    Итерация 13.18: визуальная индикация is_pinned
-   ==========================================
-   Улучшенная версия. Пин-задача:
-     - светло-синий фон;
-     - плотная синяя рамка (2px + утолщённая левая 6px);
-     - лёгкое свечение (box-shadow);
-     - курсор grab остаётся для resize-краёв (изменение длительности).
    ========================================== */
+
 .gantt-container .vis-item.item-pinned {
   border: 2px solid #1976d2 !important;
   border-left-width: 6px !important;
@@ -604,7 +576,6 @@ body {
   box-shadow: 0 0 0 2px #1976d2, 0 4px 12px rgba(25, 118, 210, 0.4) !important;
 }
 
-/* Пин-задача в readonly — рамка остаётся, но без hover-эффекта */
 .gantt-readonly .gantt-container .vis-item.item-pinned:hover,
 .gantt-container.gantt-readonly .vis-item.item-pinned:hover {
   box-shadow: 0 0 4px rgba(25, 118, 210, 0.35);
@@ -612,4 +583,4 @@ body {
 
 /* ==========================================
    КОНЕЦ
-   ==========================================
+   ========================================== */

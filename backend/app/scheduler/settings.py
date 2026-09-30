@@ -4,6 +4,7 @@
 
 Итерация 11: централизация настроек в модуле app_settings.
 Итерация 12: категория optimization — веса multi-objective.
+Итерация 13.21: категория planning — auto_archive_on_recalc.
 
 Все настройки описаны в SETTINGS_REGISTRY. UI и API читают
 метаданные оттуда — это обеспечивает единый источник правды.
@@ -96,6 +97,20 @@ SETTINGS_REGISTRY: List[SettingSpec] = [
         min_value=0.1,
         max_value=1.0,
         display_order=40,
+    ),
+    # Итерация 13.21: архивация версий планов
+    SettingSpec(
+        key="auto_archive_on_recalc",
+        category="planning",
+        label="Архивировать старую версию после пересчёта",
+        value_type="bool",
+        default=True,
+        description=(
+            "Если включено — при пересчёте плана старая версия уходит в архив "
+            "(скрывается из списка). Если выключено — старая версия остаётся "
+            "в списке как обычная."
+        ),
+        display_order=50,
     ),
 
     # ==========================================

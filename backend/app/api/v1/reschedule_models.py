@@ -11,6 +11,11 @@ Pydantic-модели для API перепланирования (Итерац�
   - сравнение aware и naive падает с TypeError.
 
 Валидатор приводит все времена к одной форме — naive-UTC.
+
+Итерация 13.21: RescheduleRequest получил опциональное поле
+replace_version_id — ID версии для архивации после пересчёта.
+Если передан, старая версия помечается is_archived = TRUE
+(если не используется в what-if сценариях).
 """
 
 from datetime import datetime, timezone
@@ -25,7 +30,14 @@ from pydantic import BaseModel, Field, field_validator
 # ==========================================
 
 class RescheduleRequest(BaseModel):
-    """Запрос на перепланирование."""
+    """
+    Запрос на перепланирование.
+
+    Итерация 13.21: replace_version_id — если передан, после
+    успешного пересчёта старая версия архивируется.
+    Используется кнопкой «Пересчитать» на Ганте, чтобы список
+    планов не засорялся старыми версиями.
+    """
     from_version_id: UUID = Field(..., description="ID исходной версии плана")
     reason: str = Field(..., description="DELAY | BREAKDOWN | QTY_CHANGE | MANUAL")
     changes: Dict[str, Any] = Field(default_factory=dict, description="Параметры изменения")
@@ -35,12 +47,28 @@ class RescheduleRequest(BaseModel):
     )
     comment: Optional[str] = None
 
+    # Итерация 13.21: архивация старой версии
+    replace_version_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "ID версии, которую нужно архивировать после пересчёта. "
+            "Обычно совпадает с from_version_id. Если версия используется "
+            "в what-if сценарии (DRAFT/RUNNING) — архивация пропускается, "
+            "в ответе будет replace_blocked=true."
+        ),
+    )
+
 
 # ==========================================
 # ОТВЕТ
 # ==========================================
 
 class RescheduleResponse(BaseModel):
+    """
+    Ответ на перепланирование.
+
+    Итерация 13.21: добавлены поля для отчёта об архивации.
+    """
     status: str
     from_version_id: Optional[str] = None
     to_version_id: Optional[str] = None
@@ -49,6 +77,27 @@ class RescheduleResponse(BaseModel):
     frozen_tasks: int = 0
     message: str = ""
     diff: Dict[str, Any] = Field(default_factory=dict)
+
+    # Итерация 13.21: результаты архивации старой версии
+    replace_archived: bool = Field(
+        default=False,
+        description="True, если старая версия была архивирована.",
+    )
+    replace_blocked: bool = Field(
+        default=False,
+        description=(
+            "True, если архивация не удалась (версия используется "
+            "в what-if сценарии)."
+        ),
+    )
+    replace_blocked_reason: Optional[str] = Field(
+        default=None,
+        description="Причина, по которой архивация была пропущена.",
+    )
+    used_by_whatif: List[str] = Field(
+        default_factory=list,
+        description="ID what-if сценариев, из-за которых архивация пропущена.",
+    )
 
 
 # ==========================================
@@ -133,3 +182,21 @@ class MoveTaskResponse(BaseModel):
     is_pinned: bool
     message: str
     moved_tasks: List[dict] = []
+
+
+# ==========================================
+# ИТЕРАЦИЯ 13.21: UNARCHIVE VERSION
+# ==========================================
+
+class UnarchiveVersionResponse(BaseModel):
+    """
+    Ответ на разархивацию версии плана.
+
+    Эндпоинт: PUT /api/v1/schedule/versions/{id}/unarchive
+    """
+    status: str = "success"
+    version_id: str
+    name: str
+    is_archived: bool = False
+    is_active: bool
+    message: str

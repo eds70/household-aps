@@ -56,17 +56,25 @@ plan_settings  →  app_settings  →  .env  →  значения по умол
 | `planning_start_date` | `str` | `2026-09-01` | — | — | Дата старта планирования |
 | `horizon_hours` | `int` | `720` | `24` | `8760` | Горизонт планирования (ч) |
 | `timeout_seconds` | `int` | `600` | `10` | `3600` | Таймаут solver (сек) |
-| `max_fill_percent` | `float` | `0.95` | `0.5` | `1.0` | Макс. загрузка реактора |
+| `max_fill_percent` | `float` | `0.70` | `0.1` | `1.0` | Макс. загрузка реактора |
+| **`auto_archive_on_recalc`** | **`bool`** | **`true`** | — | — | **Итерация 13.21:** архивировать старую версию после пересчёта |
+
+**Про `auto_archive_on_recalc`:**
+- `true` (по умолчанию) — при пересчёте плана старая версия уходит
+  в архив (скрывается из «Истории планов»).
+- `false` — старая версия остаётся в списке как обычная.
+- Управляется через `PlanSettingsWizard` (шаг «Основные») или
+  через `PUT /api/v1/settings/auto_archive_on_recalc`.
 
 ### Категория `shifts` — Режим смен
 
 | Ключ | Тип | По умолчанию | Описание |
 |------|-----|--------------|----------|
-| `shift_mode` | `select` | `1x8` | Режим смен: `1x8`, `3x8`, `2x12` |
-| `shift_intervals` | `json` | `[{"start":"08:00","end":"16:00"}]` | Интервалы смен (is_system) |
-| `shift_duration_hours` | `int` | `8` | Длительность смены (is_system) |
+| `shift_mode` | `select` | `2x12` | Режим смен: `1x8`, `3x8`, `2x12` |
+| `shift_intervals` | `json` | `[{"start":"08:00","end":"20:00"},{"start":"20:00","end":"08:00"}]` | Интервалы смен (is_system) |
+| `shift_duration_hours` | `int` | `12` | Длительность смены (is_system) |
 | `work_start_time` | `str` | `08:00` | Начало рабочего дня |
-| `work_end_time` | `str` | `16:00` | Конец рабочего дня |
+| `work_end_time` | `str` | `20:00` | Конец рабочего дня |
 
 **Режимы:**
 - `1x8` → `[{"start": "08:00", "end": "16:00"}]`, 8 ч.
@@ -85,9 +93,9 @@ plan_settings  →  app_settings  →  .env  →  значения по умол
 
 | Ключ | Тип | По умолчанию | Описание |
 |------|-----|--------------|----------|
-| `max_task_hours_for_calendar` | `int` | `24` | Макс. длительность задачи (ч) |
-| `max_fill_part_hours` | `int` | `6` | Макс. длительность подзадачи LINE_FILL (ч) |
 | `allow_weekend_work` | `bool` | `false` | Разрешить работу в выходные |
+| `max_task_hours_for_calendar` | `float` | `12.0` | Макс. длительность задачи (ч) |
+| `max_fill_part_hours` | `float` | `8.0` | Макс. длительность подзадачи LINE_FILL (ч) |
 
 ### Категория `lab` — Лаборатория
 
@@ -106,7 +114,7 @@ plan_settings  →  app_settings  →  .env  →  значения по умол
 | Ключ | Тип | По умолчанию | Min | Max | Описание |
 |------|-----|--------------|-----|-----|----------|
 | `enable_cz_integration` | `bool` | `true` | — | — | Включить ЧЗ |
-| `cz_completion_threshold` | `float` | `0.95` | `0.5` | `1.0` | Порог завершения маркировки |
+| `cz_completion_threshold` | `float` | `0.95` | `0.1` | `1.0` | Порог завершения маркировки |
 | `cz_api_key` | `str` | `dev-cz-api-key-change-in-production` | — | — | API-key для камер |
 | `enable_cz_auto_close` | `bool` | `false` | — | — | Автозакрытие задачи слива |
 
@@ -146,15 +154,15 @@ plan_settings  →  app_settings  →  .env  →  значения по умол
 
 ### Логика
 
-1. **При создании плана** (`INSERT INTO schedule_version`) триггер `copy_app_settings_to_plan` автоматически копирует все 32 настройки из `app_settings` в `plan_settings` этого плана.
+1. **При создании плана** (`INSERT INTO schedule_version`) триггер `copy_app_settings_to_plan` автоматически копирует все настройки из `app_settings` в `plan_settings` этого плана.
 2. **Мастер настроек плана** (`PlanSettingsWizard.tsx`) позволяет переопределить значения для конкретного плана через `PUT /api/v1/plan-settings/version/{id}`.
 3. **Планировщик** (`DataLoader`) читает настройки из `plan_settings`, если передан `version_id`. Если `version_id=None` или `plan_settings` пуст — fallback на `app_settings`.
 
-### Категории, влияющие на план (23 из 32)
+### Категории, влияющие на план
 
 | Категория | Ключи |
 |-----------|-------|
-| `planning` | `planning_start_date`, `horizon_hours`, `timeout_seconds`, `max_fill_percent` |
+| `planning` | `planning_start_date`, `horizon_hours`, `timeout_seconds`, `max_fill_percent`, `auto_archive_on_recalc` |
 | `shifts` | `shift_mode`, `shift_intervals`, `shift_duration_hours`, `work_start_time`, `work_end_time` |
 | `calendar` | `allow_weekend_work`, `max_task_hours_for_calendar`, `max_fill_part_hours` |
 | `cooling` | `enable_cooling_degradation`, `cooling_degradation_factor`, `cooling_zone_capacity` |
@@ -166,15 +174,16 @@ plan_settings  →  app_settings  →  .env  →  значения по умол
 
 ### Мастер настроек плана — 9 шагов
 
-1. Основные (`planning`).
-2. Режим смен (`shifts`).
-3. Календарь (`calendar`).
-4. Охлаждение (`cooling`).
-5. Ресурсы (`resources`).
-6. Материалы и лаборатория (`materials` + `lab`).
-7. Маршруты и функции (`features`).
-8. Честный Знак (`cz`).
-9. Оптимизация (`optimization`).
+1. Метаданные (только в create-режиме).
+2. Основные (`planning`).
+3. Режим смен (`shifts`).
+4. Календарь (`calendar`).
+5. Охлаждение (`cooling`).
+6. Ресурсы (`resources`).
+7. Материалы и лаборатория (`materials` + `lab`).
+8. Маршруты и функции (`features`).
+9. Честный Знак (`cz`).
+10. Оптимизация (`optimization`).
 
 ### Права
 
@@ -183,6 +192,14 @@ plan_settings  →  app_settings  →  .env  →  значения по умол
 ### Системные настройки
 
 `shift_intervals`, `shift_duration_hours` — `is_system = true`, не редактируются через мастер. Управляются режимом смен (`shift_mode`).
+
+### Связь с архивацией (Итерация 13.21)
+
+`plan_settings` **не влияет** на архивацию версий. При архивации:
+- `plan_settings` старой версии **сохраняются** (не удаляются).
+- При разархивации — версия возвращается с теми же настройками.
+- При пересчёте с заменой — у новой версии свои `plan_settings`
+  (создаются через триггер), настройки старой остаются.
 
 ---
 
@@ -299,7 +316,8 @@ docker run --name aps_postgres \
 
 ### На уровне БД
 
-- `UNIQUE (schedule_version_id, setting_key)` — защита от дублей.
+- `UNIQUE (schedule_version_id, setting_key)` — защита от дублей в `plan_settings`.
+- `UNIQUE (organization_id, setting_key)` — защита от дублей в `app_settings`.
 - `FOREIGN KEY ... ON DELETE CASCADE` — при удалении плана настройки удаляются.
 - `CHECK (value_type IN ('int', 'float', 'bool', 'str', 'json', 'select'))`.
 
@@ -362,6 +380,36 @@ curl -X POST http://localhost:8000/api/v1/settings/shift-mode \
 ```
 
 **⚠️ Внимание:** при смене режима смен таблица `shift` пересоздаётся, `shift_id` в `scheduled_task` сбрасывается. Требуется пересчитать план.
+
+### Отключить архивацию версий (Итерация 13.21)
+
+```bash
+curl -X PUT http://localhost:8000/api/v1/settings/auto_archive_on_recalc \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"value": false}'
+```
+
+**Эффект:** старая версия останется в списке как обычная после пересчёта.
+Полезно, если нужно сохранять историю планов для сравнения.
+
+### Разархивировать конкретную версию
+
+```bash
+curl -X PUT http://localhost:8000/api/v1/schedule/versions/$VERSION_ID/unarchive \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Проверка из БД:**
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT id, name, is_archived, is_active
+FROM schedule_version
+WHERE organization_id = '00000000-0000-0000-0000-000000000001'
+ORDER BY created_at DESC
+LIMIT 10;
+"
+```
 
 ---
 

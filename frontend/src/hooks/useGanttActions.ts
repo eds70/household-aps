@@ -1,6 +1,6 @@
 // frontend/src/hooks/useGanttActions.ts
 /**
- * Хук-агрегатор действий на диаграмме Ганта (Итерация 13.17 + 13.18).
+ * Хук-агрегатор действий на диаграмме Ганта (Итерация 13.17 + 13.19 + 13.21).
  *
  * Объединяет:
  *  - useCascadeMove (pin/unpin/shift через каскад);
@@ -9,13 +9,16 @@
  *  - useRecalculate (пересчёт плана + проверка plan_settings);
  *  - колбэки для TaskContextMenu (копирование ID, показать операции).
  *
- * Итерация 13.18 (fix #5):
- *  - Tooltip теперь показывается из нативных mousemove/mouseup
- *    слушателей (см. useGanttTimeline).
- *  - handleItemChange различает:
- *      * (itemId, start, end, x, y) — полное обновление;
- *      * (itemId, null, null, x, y) — только позиция;
- *      * (null, null, null, 0, 0) — скрыть tooltip.
+ * Итерация 13.19:
+ *  - recalculate(skipSettingsCheck?) — флаг для форс-режима.
+ *  - handleForceRecalculate — обёртка для кнопки «Пересчитать
+ *    без изменений» в RecalcSettingsDialog.
+ *
+ * Итерация 13.21:
+ *  - onRecalcSuccess теперь принимает второй аргумент — полный
+ *    RescheduleResponse с полями replace_archived / replace_blocked.
+ *    Это позволяет GanttPage показать Alert «старая версия не
+ *    архивирована, потому что используется в what-if».
  */
 import {useCallback} from 'react';
 import type {Timeline} from 'vis-timeline/standalone';
@@ -23,37 +26,33 @@ import {useCascadeMove} from './useCascadeMove';
 import {useTaskResize} from './useTaskResize';
 import {useDragTooltip} from './useDragTooltip';
 import {useRecalculate} from './useRecalculate';
-import {ROLE_COLORS, ROLE_COLORS_DEFAULT,} from '../components/gantt/constants';
-import type {TaskData, ValidationErrorState} from '../types';
+import {ROLE_COLORS, ROLE_COLORS_DEFAULT} from '../components/gantt/constants';
+import type {RescheduleResponse, TaskData, ValidationErrorState,} from '../types';
 
 export interface UseGanttActionsOptions {
-    /** Все задачи текущего плана. */
     tasks: TaskData[];
-    /** Сеттер задач (для оптимистичного обновления). */
     setTasks: React.Dispatch<React.SetStateAction<TaskData[]>>;
-    /** ID открытого плана (или null в режиме редактирования). */
     versionId: string | null;
-    /** Общий сеттер ошибок (показывается вверху страницы). */
     setError: (message: string | null) => void;
-    /** Сеттер состояния ошибки валидации (для MoveValidationDialog). */
     setValidationError: (state: ValidationErrorState) => void;
-    /** Открыть диалог задачи (для «Все операции партии»). */
     onOpenTaskDialog: (task: TaskData) => void;
-    /** Успешный пересчёт: переключиться на новую версию. */
-    onRecalcSuccess: (newVersionId: string) => void;
-    /** Пересчёт: у плана нет plan_settings — открыть RecalcSettingsDialog. */
+    /**
+     * Итерация 13.21: второй аргумент — полный RescheduleResponse.
+     */
+    onRecalcSuccess: (
+        newVersionId: string,
+        response: RescheduleResponse,
+    ) => void;
     onRecalcNeedsSettings: () => void;
-    /** Реф на Timeline, чтобы обновлять отдельные элементы. */
     timelineRef?: React.MutableRefObject<Timeline | null>;
-    /** Активен ли фильтр «только закреплённые». */
     showOnlyPinned?: boolean;
-    /** Колбэк для пересчёта filteredCount. */
     onFilteredCountChange?: (count: number) => void;
 }
 
 export interface UseGanttActionsResult {
-    recalculate: () => Promise<void>;
+    recalculate: (skipSettingsCheck?: boolean) => Promise<void>;
     recalculating: boolean;
+    handleForceRecalculate: () => Promise<void>;
     handleMove: (item: any, callback: (item: any) => void) => Promise<void>;
     handlePinTask: (task: TaskData) => Promise<void>;
     handleUnpinTask: (task: TaskData) => Promise<void>;
@@ -61,14 +60,6 @@ export interface UseGanttActionsResult {
     handleCopyTaskId: (task: TaskData) => void;
     handleCopyBatchId: (task: TaskData) => void;
     handleShowBatchOperations: (task: TaskData) => void;
-    /**
-     * Колбэк показа tooltip при drag / resize.
-     *
-     *  - (itemId, start, end, x, y) — полное обновление (показать
-     *    новый текст).
-     *  - (itemId, null, null, x, y) — только позиция.
-     *  - (null, null, null, 0, 0) — скрыть tooltip.
-     */
     handleItemChange: (
         itemId: string | null,
         start: Date | null,
@@ -100,7 +91,10 @@ export const useGanttActions = (
 
     const recalc = useRecalculate({
         versionId,
-        onSuccess: onRecalcSuccess,
+        onSuccess: (newVersionId, response) => {
+            // Итерация 13.21: пробрасываем полный Response дальше
+            onRecalcSuccess(newVersionId, response);
+        },
         onNeedsSettings: onRecalcNeedsSettings,
         onError: (message) => setError(message),
     });
@@ -168,9 +162,6 @@ export const useGanttActions = (
         onValidationError: setValidationError,
     });
 
-    // ==========================================
-    // handleItemChange — показ tooltip
-    // ==========================================
     const handleItemChange = useCallback((
         itemId: string | null,
         start: Date | null,
@@ -178,17 +169,14 @@ export const useGanttActions = (
         mouseX: number,
         mouseY: number,
     ) => {
-        // Скрыть tooltip
         if (!itemId) {
             tooltip.hide();
             return;
         }
 
-        // Найти задачу
         const task = tasks.find((t) => t.id === itemId);
         if (!task) return;
 
-        // Не показываем для setup / downtime / group
         if (
             itemId.startsWith('setup_') ||
             itemId.startsWith('weekend_') ||
@@ -197,13 +185,11 @@ export const useGanttActions = (
             return;
         }
 
-        // Только позиция (без обновления текста)
         if (start === null && end === null) {
             tooltip.updatePosition(mouseX, mouseY);
             return;
         }
 
-        // Полное обновление (позиция + текст)
         const realStart = start ?? new Date(task.start);
         const realEnd = end ?? new Date(task.end);
 
@@ -213,7 +199,6 @@ export const useGanttActions = (
         const originalDurationMin = task.duration_minutes;
         const deltaMinutes = durationMin - originalDurationMin;
 
-        // Определяем resize: длительность изменилась > 1 мин
         const isResize = Math.abs(deltaMinutes) > 0;
 
         const operationType: 'move' | 'resize' = isResize
@@ -235,14 +220,10 @@ export const useGanttActions = (
         );
     }, [tasks, tooltip]);
 
-    // ==========================================
-    // Обновление конкретного item в vis-timeline
-    // ==========================================
     const updateTimelineItem = useCallback(
         (task: TaskData, isPinned: boolean) => {
             if (!timelineRef?.current) return;
-            const itemsData: any = (timelineRef.current as any)
-                .itemsData;
+            const itemsData: any = (timelineRef.current as any).itemsData;
             if (!itemsData) return;
 
             const existing = itemsData.get(task.id);
@@ -264,8 +245,7 @@ export const useGanttActions = (
     const removeTimelineItem = useCallback(
         (taskId: string) => {
             if (!timelineRef?.current) return;
-            const itemsData: any = (timelineRef.current as any)
-                .itemsData;
+            const itemsData: any = (timelineRef.current as any).itemsData;
             if (!itemsData) return;
 
             try {
@@ -277,15 +257,9 @@ export const useGanttActions = (
         [timelineRef],
     );
 
-    // ==========================================
-    // Пересчёт filteredCount
-    // ==========================================
     const recalcFilteredCount = useCallback(() => {
-        if (!onFilteredCountChange || !timelineRef?.current) {
-            return;
-        }
-        const itemsData: any = (timelineRef.current as any)
-            .itemsData;
+        if (!onFilteredCountChange || !timelineRef?.current) return;
+        const itemsData: any = (timelineRef.current as any).itemsData;
         if (!itemsData) return;
 
         const visibleIds: string[] = itemsData.getIds() || [];
@@ -299,9 +273,6 @@ export const useGanttActions = (
         onFilteredCountChange(realTaskCount);
     }, [onFilteredCountChange, timelineRef]);
 
-    // ==========================================
-    // Pin / Unpin
-    // ==========================================
     const handlePinTask = useCallback(
         async (task: TaskData) => {
             await cascadeMove.togglePin(task, true);
@@ -313,12 +284,7 @@ export const useGanttActions = (
             updateTimelineItem(task, true);
             recalcFilteredCount();
         },
-        [
-            cascadeMove,
-            setTasks,
-            updateTimelineItem,
-            recalcFilteredCount,
-        ],
+        [cascadeMove, setTasks, updateTimelineItem, recalcFilteredCount],
     );
 
     const handleUnpinTask = useCallback(
@@ -371,9 +337,17 @@ export const useGanttActions = (
         [onOpenTaskDialog],
     );
 
+    /**
+     * Форс-режим пересчёта: пропускаем проверку plan_settings.
+     */
+    const handleForceRecalculate = useCallback(async () => {
+        await recalc.recalculate(true);
+    }, [recalc]);
+
     return {
         recalculate: recalc.recalculate,
         recalculating: recalc.recalculating,
+        handleForceRecalculate,
         handleMove: taskResize.handleMove,
         handlePinTask,
         handleUnpinTask,
@@ -387,7 +361,7 @@ export const useGanttActions = (
 };
 
 // ==========================================
-// Утилиты построения content и style
+// Утилиты
 // ==========================================
 
 const buildTaskContent = (
@@ -396,8 +370,7 @@ const buildTaskContent = (
 ): string => {
     const prefix = isPinned ? '📌 ' : '';
     const blockedIcon = task.is_lab_blocked ? '🔒 ' : '';
-    const slowCoolingIcon =
-        task.cooling_mode === 'slow' ? '⏳ ' : '';
+    const slowCoolingIcon = task.cooling_mode === 'slow' ? '⏳ ' : '';
     const czIcon =
         task.task_role === 'LINE_FILL' &&
         task.cz_status &&

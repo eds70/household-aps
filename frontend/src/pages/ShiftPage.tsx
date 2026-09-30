@@ -1,4 +1,7 @@
 // frontend/src/pages/ShiftPage.tsx
+// Итерация 13.19: markPlanDirty() при лабораторных блокировках,
+//   разблокировках и внесении факта выполнения задач.
+
 import React, {useCallback, useEffect, useState} from 'react';
 import {
     Accordion,
@@ -40,6 +43,7 @@ import {
     Warning as WarningIcon,
 } from '@mui/icons-material';
 import {czApi, labApi, shiftApi} from '../services/api';
+import {usePlan} from '../context/PlainContext';
 import type {
     CoolingMode,
     CzProgress,
@@ -113,6 +117,9 @@ const CZ_STATUS_COLORS: Record<CzStatus, 'default' | 'warning' | 'info' | 'succe
 // ==========================================
 
 const ShiftPage: React.FC = () => {
+    // Итерация 13.19: markPlanDirty для пометки плана «грязным»
+    const {markPlanDirty} = usePlan();
+
     const [selectedDate, setSelectedDate] = useState<string>(
         new Date().toISOString().split('T')[0]
     );
@@ -269,6 +276,8 @@ const ShiftPage: React.FC = () => {
         if (!selectedTask) return;
         try {
             await shiftApi.updateTaskFact(selectedTask.id, factForm);
+            // Итерация 13.19: пометить план «грязным»
+            markPlanDirty();
             setEditDialogOpen(false);
             if (currentShift) {
                 const tasks = await shiftApi.getTasks(currentShift.id);
@@ -287,6 +296,8 @@ const ShiftPage: React.FC = () => {
                 material_load_at: new Date().toISOString(),
                 status: 'IN_PROGRESS',
             });
+            // Итерация 13.19: пометить план «грязным»
+            markPlanDirty();
             if (currentShift) {
                 const tasks = await shiftApi.getTasks(currentShift.id);
                 setTasksData(tasks);
@@ -302,6 +313,8 @@ const ShiftPage: React.FC = () => {
                 actual_end: new Date().toISOString(),
                 status: 'DONE',
             });
+            // Итерация 13.19: пометить план «грязным»
+            markPlanDirty();
             if (currentShift) {
                 const tasks = await shiftApi.getTasks(currentShift.id);
                 setTasksData(tasks);
@@ -336,6 +349,8 @@ const ShiftPage: React.FC = () => {
                 scheduled_task_id: blockingTask.id,
                 comment: blockComment || null,
             });
+            // Итерация 13.19: пометить план «грязным»
+            markPlanDirty();
             setBlockDialogOpen(false);
             if (currentShift) {
                 const tasks = await shiftApi.getTasks(currentShift.id);
@@ -362,6 +377,8 @@ const ShiftPage: React.FC = () => {
             await labApi.unblockBatch(unblockingTask.batch_id, {
                 comment: unblockComment || null,
             });
+            // Итерация 13.19: пометить план «грязным»
+            markPlanDirty();
             setUnblockDialogOpen(false);
             if (currentShift) {
                 const tasks = await shiftApi.getTasks(currentShift.id);

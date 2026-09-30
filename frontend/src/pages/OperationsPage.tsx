@@ -1,4 +1,6 @@
-// src/pages/OperationsPage.tsx
+// frontend/src/pages/OperationsPage.tsx
+// Итерация 13.19: markPlanDirty() при изменениях.
+
 import React, {useEffect, useState} from 'react';
 import {
     Alert,
@@ -19,11 +21,8 @@ import {
     Typography,
 } from '@mui/material';
 import {Add as AddIcon, Delete as DeleteIcon, Lock as LockIcon} from '@mui/icons-material';
-import {AgGridReact} from 'ag-grid-react';
 import type {ColDef, GridReadyEvent} from 'ag-grid-community';
 import {AllCommunityModule, ModuleRegistry} from 'ag-grid-community';
-import 'ag-grid-community/styles/ag-grid.css';
-import 'ag-grid-community/styles/ag-theme-alpine.css';
 import type {Operation, ProductOption} from '../types';
 import axios from 'axios';
 import {API_BASE_URL} from '../config';
@@ -32,9 +31,10 @@ import DraggableDialog from '../components/common/DraggableDialog';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
+import AppAgGrid from '../components/common/AppAgGrid';
+
 const OperationsPage: React.FC = () => {
-    // ✅ Получаем версию плана из контекста
-    const { currentVersionId, currentPlanName } = usePlan();
+    const { currentVersionId, currentPlanName, markPlanDirty } = usePlan();
     const isReadOnly = currentVersionId !== null;
 
     const [operations, setOperations] = useState<Operation[]>([]);
@@ -50,9 +50,7 @@ const OperationsPage: React.FC = () => {
         needs_lab: false, duration_formula: '', comment: '',
     });
 
-    useEffect(() => {
-        loadData();
-    }, [currentVersionId]); // ✅ Перезагружаем при смене версии
+    useEffect(() => { loadData(); }, [currentVersionId]);
 
     const loadData = async () => {
         setLoading(true);
@@ -128,6 +126,8 @@ const OperationsPage: React.FC = () => {
         try {
             await axios.put(`${API_BASE_URL}/api/v1/operations/${data.id}`, { [field]: newValue });
             setOperations((prev) => prev.map((op) => op.id === data.id ? { ...op, [field]: newValue } : op));
+            // Итерация 13.19
+            markPlanDirty();
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Ошибка сохранения');
             setOperations((prev) => prev.map((op) => op.id === data.id ? { ...op, [field]: oldValue } : op));
@@ -140,6 +140,8 @@ const OperationsPage: React.FC = () => {
         try {
             await axios.delete(`${API_BASE_URL}/api/v1/operations/${id}`);
             setOperations((prev) => prev.filter((op) => op.id !== id));
+            // Итерация 13.19
+            markPlanDirty();
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Ошибка удаления');
         }
@@ -164,6 +166,8 @@ const OperationsPage: React.FC = () => {
             });
             setOperations((prev) => [...prev, response.data]);
             setDialogOpen(false);
+            // Итерация 13.19
+            markPlanDirty();
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Ошибка создания');
         }
@@ -197,7 +201,6 @@ const OperationsPage: React.FC = () => {
                 </Box>
             </Box>
 
-            {/* ✅ Индикатор режима просмотра */}
             {isReadOnly && (
                 <Alert severity="info" sx={{ mb: 2 }} icon={<LockIcon fontSize="inherit" />}>
                     Режим просмотра: <b>{currentPlanName}</b>. Редактирование недоступно.
@@ -217,8 +220,8 @@ const OperationsPage: React.FC = () => {
 
             <Card sx={{ boxShadow: '0 2px 8px rgba(0,0,0,0.1)', flexGrow: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
                 <CardContent sx={{ p: 2, flexGrow: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                    <Box className="ag-theme-alpine" sx={{ flexGrow: 1, width: '100%', minHeight: 0 }}>
-                        <AgGridReact
+                    <Box sx={{ flexGrow: 1, width: '100%', minHeight: 0 }}>
+                        <AppAgGrid
                             rowData={filteredOperations}
                             columnDefs={columnDefs}
                             defaultColDef={defaultColDef}
@@ -227,14 +230,12 @@ const OperationsPage: React.FC = () => {
                             paginationPageSize={20}
                             paginationPageSizeSelector={[20, 50, 100]}
                             onCellValueChanged={handleCellValueChanged}
-                            suppressPropertyNamesCheck={true}
                             onGridReady={(params: GridReadyEvent) => params.api.sizeColumnsToFit()}
                         />
                     </Box>
                 </CardContent>
             </Card>
 
-            {/* Диалог добавления (только для режима редактирования) */}
             {!isReadOnly && (
                 <DraggableDialog
                     open={dialogOpen}

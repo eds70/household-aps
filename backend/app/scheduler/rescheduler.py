@@ -29,12 +29,20 @@ QTY_CHANGE не влияли на план, а поле parent_version_id у н�
 Это гарантирует, что перепланирование использует ТЕ ЖЕ настройки,
 с которыми план был построен.
 
+Итерация 13.21: параметр replace_version_id.
+  Если передан, ScheduleSaver получит его в schedule_data и
+  архивирует старую версию (если она не используется в what-if).
+  Это позволяет кнопке «Пересчитать» делать вид «перезаписи»:
+  пользователь видит только новую версию в списке.
+
 Ключевые гарантии:
   - Явно помеченные is_pinned=TRUE не двигаются.
   - Начатые задачи (actual_start IS NOT NULL) не двигаются.
   - Заблокированные лабораторией партии исключаются из scheduler'а.
   - Все старые версии деактивируются (is_active=FALSE).
   - Если pinned конфликтуют — solver отработает без них с warning.
+  - Итерация 13.21: если replace_version_id передан и версия
+    не используется в what-if — она архивируется.
 """
 
 import json
@@ -89,6 +97,11 @@ class RescheduleResult:
     frozen_tasks: int = 0
     message: str = ""
     diff: Dict[str, Any] = field(default_factory=dict)
+    # Итерация 13.21: результаты архивации старой версии
+    replace_archived: bool = False
+    replace_blocked: bool = False
+    replace_blocked_reason: Optional[str] = None
+    used_by_whatif: List[str] = field(default_factory=list)
 
 
 class Rescheduler:
@@ -102,6 +115,7 @@ class Rescheduler:
             reason=RescheduleReason.DELAY,
             changes={...},
             frozen_before=...,
+            replace_version_id=...,
         )
     """
 
@@ -397,6 +411,7 @@ class Rescheduler:
             changes: Dict[str, Any],
             frozen_before: Optional[datetime] = None,
             comment: Optional[str] = None,
+            replace_version_id: Optional[UUID] = None,
     ) -> RescheduleResult:
         """
         Выполняет перепланирование с реальным пересчётом.
@@ -416,12 +431,18 @@ class Rescheduler:
         app_settings). Это гарантирует, что перепланирование использует
         ТЕ ЖЕ настройки, с которыми план был построен.
 
+        Итерация 13.21: replace_version_id.
+          Если передан, ScheduleSaver архивирует старую версию (если она
+          не используется в what-if). Возвращает флаги replace_archived
+          и replace_blocked.
+
         Args:
             from_version_id: Исходная версия.
             reason: DELAY | BREAKDOWN | QTY_CHANGE | MANUAL.
             changes: Параметры изменения.
             frozen_before: Заморозить задачи до этого момента (метаданные).
             comment: Комментарий к перепланированию.
+            replace_version_id: ID версии для архивации после пересчёта.
 
         Returns:
             RescheduleResult с to_version_id — ID новой версии.
@@ -444,7 +465,8 @@ class Rescheduler:
             log_with_context(
                 logger, logging.INFO,
                 f"A3: ПЕРЕПЛАНИРОВАНИЕ START: from={str(from_version_id)[:8]}, "
-                f"reason={reason}, frozen_before={frozen_before}",
+                f"reason={reason}, frozen_before={frozen_before}, "
+                f"replace_version_id={replace_version_id}",
                 stage="reschedule", org_id=str(self.org_id),
             )
 
@@ -557,13 +579,19 @@ class Rescheduler:
                 stage="reschedule", org_id=str(self.org_id),
             )
 
-            # 7. Сохраняем через ScheduleSaver
+            # 7. Итерация 13.21: пробрасываем replace_version_id в saver
+            if replace_version_id is not None:
+                schedule_result["replace_version_id"] = replace_version_id
+
+            # 8. Сохраняем через ScheduleSaver
             # Saver САМ деактивирует старые версии (см. hotfix Итерации 5).
+            # Итерация 13.21: saver также архивирует старую версию, если
+            # передан replace_version_id.
             saver = ScheduleSaver(org_id=self.org_id)
             save_stats = await saver.save_schedule(schedule_result)
             new_version_id = save_stats["version_id"]
 
-            # 8. Обновляем метаданные новой версии:
+            # 9. Обновляем метаданные новой версии:
             #    parent_version_id = from_version_id, frozen_before, comment.
             await session.execute(
                 text("""
@@ -583,7 +611,7 @@ class Rescheduler:
                 },
             )
 
-            # 9. Пишем запись в reschedule_log
+            # 10. Пишем запись в reschedule_log
             affected_batch_ids = list(self._find_affected_batch_ids(from_tasks, changes))
             await session.execute(
                 text("""
@@ -615,7 +643,9 @@ class Rescheduler:
                 logger, logging.INFO,
                 f"A3: ПЕРЕПЛАНИРОВАНИЕ DONE: from={str(from_version_id)[:8]} → "
                 f"to={str(new_version_id)[:8]}, tasks={save_stats['tasks_saved']}, "
-                f"pinned={len(pinned_tasks)}, fallback={fallback_used}",
+                f"pinned={len(pinned_tasks)}, fallback={fallback_used}, "
+                f"archived={save_stats.get('replace_archived', False)}, "
+                f"blocked={save_stats.get('replace_blocked', False)}",
                 stage="reschedule", org_id=str(self.org_id),
             )
 
@@ -640,6 +670,11 @@ class Rescheduler:
                     "deactivated_versions": save_stats.get("deactivated_versions", 0),
                     "fallback_used": fallback_used,
                 },
+                # Итерация 13.21: пробрасываем флаги архивации
+                replace_archived=save_stats.get("replace_archived", False),
+                replace_blocked=save_stats.get("replace_blocked", False),
+                replace_blocked_reason=save_stats.get("replace_blocked_reason"),
+                used_by_whatif=save_stats.get("used_by_whatif", []),
             )
 
     # ==========================================

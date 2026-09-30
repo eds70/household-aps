@@ -305,6 +305,13 @@ export interface RescheduleRequest {
     changes: Record<string, any>;
     frozen_before?: string | null;
     comment?: string | null;
+    /**
+     * Итерация 13.21: ID версии для архивации после пересчёта.
+     * Обычно совпадает с from_version_id.
+     * Если версия используется в what-if — архивация пропускается,
+     * в ответе будет replace_blocked=true.
+     */
+    replace_version_id?: string | null;
 }
 
 export interface RescheduleResponse {
@@ -316,6 +323,13 @@ export interface RescheduleResponse {
     frozen_tasks: number;
     message: string;
     diff: Record<string, any>;
+    /**
+     * Итерация 13.21: результаты архивации старой версии.
+     */
+    replace_archived: boolean;
+    replace_blocked: boolean;
+    replace_blocked_reason?: string | null;
+    used_by_whatif: string[];
 }
 
 export interface MovedTaskInfo {
@@ -984,4 +998,22 @@ export interface TaskData {
      * и в визуальной индикации.
      */
     is_pinned?: boolean;
+}
+
+// ==========================================
+// ИТЕРАЦИЯ 13.21: АРХИВАЦИЯ ВЕРСИЙ ПЛАНОВ
+// ==========================================
+
+/**
+ * Ответ на разархивацию версии плана.
+ *
+ * Эндпоинт: PUT /api/v1/schedule/versions/{id}/unarchive
+ */
+export interface UnarchiveVersionResponse {
+    status: string;
+    version_id: string;
+    name: string;
+    is_archived: boolean;
+    is_active: boolean;
+    message: string;
 }

@@ -11,6 +11,7 @@
 - [Бэкапы и восстановление](#бэкапы-и-восстановление)
 - [Мониторинг](#мониторинг)
 - [Проверка конкретных таблиц](#проверка-конкретных-таблиц)
+- [Архивация версий планов (Итерация 13.21)](#архивация-версий-планов-итерация-1321)
 - [Диагностика](#диагностика)
 
 ---
@@ -96,15 +97,15 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT pg_terminate_bac
 ### Правильный способ
 
 ```bash
-docker cp backend/migrations/add_21.sql aps_postgres:/tmp/add_21.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_21.sql
+docker cp backend/migrations/add_23.sql aps_postgres:/tmp/add_23.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_23.sql
 ```
 
 ### Неправильный способ (НЕ ИСПОЛЬЗОВАТЬ)
 
 ```bash
 # ❌ PowerShell испортит кириллицу
-Get-Content backend/migrations/add_21.sql | docker exec -i aps_postgres psql -U aps -d household
+Get-Content backend/migrations/add_23.sql | docker exec -i aps_postgres psql -U aps -d household
 ```
 
 ### История миграций
@@ -130,6 +131,7 @@ Get-Content backend/migrations/add_21.sql | docker exec -i aps_postgres psql -U 
 | `add_15.sql` | 12 | Веса optimization |
 | `add_16.sql` | 12 | `whatif_scenario` |
 | `add_21.sql` | 13.14 | `plan_settings` |
+| `add_23.sql` | 13.21 | **Архивация версий планов** |
 | `fix_shift_names.sql` | — | Исправление имён смен |
 
 ### Применить все миграции по порядку
@@ -141,7 +143,8 @@ $migrations = @(
     "add_09.sql", "add_09b.sql", "add_09c.sql", "add_09d.sql",
     "add_10.sql", "add_10b.sql", "add_11.sql", "add_12.sql",
     "add_13.sql", "add_14.sql", "add_15.sql", "add_16.sql",
-    "add_21.sql", "fix_shift_names.sql"
+    "add_21.sql", "add_23.sql",
+    "fix_shift_names.sql"
 )
 
 foreach ($m in $migrations) {
@@ -153,13 +156,14 @@ foreach ($m in $migrations) {
 
 ### Проверить, применена ли миграция
 
-Например, для `add_21.sql` (plan_settings):
+Например, для `add_23.sql` (архивация):
 
 ```bash
 docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT EXISTS (
-    SELECT 1 FROM information_schema.tables
-    WHERE table_name = 'plan_settings'
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'schedule_version'
+      AND column_name = 'is_archived'
 );
 "
 ```
@@ -331,6 +335,129 @@ WHERE sv.is_active = true;
 
 ## Проверка конкретных таблиц
 
+### `schedule_version` (Итерации 4, 13.21)
+
+**Полный список колонок:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_name = 'schedule_version'
+ORDER BY ordinal_position;
+"
+```
+
+**Общая статистика по версиям (Итерация 13.21):**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT
+    COUNT(*)                                             AS total_versions,
+    COUNT(*) FILTER (WHERE is_active = TRUE)             AS active_versions,
+    COUNT(*) FILTER (WHERE is_archived = TRUE)           AS archived_versions,
+    COUNT(*) FILTER (WHERE is_archived = FALSE)          AS visible_versions,
+    COUNT(*) FILTER (WHERE parent_version_id IS NOT NULL) AS with_parent
+FROM schedule_version
+WHERE organization_id = '00000000-0000-0000-0000-000000000001';
+"
+```
+
+**Ожидаемый вывод после миграции add_23.sql:**
+
+| total_versions | active_versions | archived_versions | visible_versions | with_parent |
+|----------------|-----------------|-------------------|------------------|-------------|
+| 55             | 1               | 54                | 1                | 5           |
+
+**Все неархивные версии (то, что видит пользователь):**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT
+    id, name, is_active, parent_version_id, created_at
+FROM schedule_version
+WHERE organization_id = '00000000-0000-0000-0000-000000000001'
+  AND COALESCE(is_archived, FALSE) = FALSE
+ORDER BY created_at DESC;
+"
+```
+
+**Все версии с флагами (включая архивные):**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT
+    sv.id,
+    sv.name,
+    sv.is_active,
+    sv.is_archived,
+    sv.parent_version_id,
+    (SELECT COUNT(*) FROM whatif_scenario ws
+     WHERE ws.base_version_id = sv.id OR ws.result_version_id = sv.id) AS in_whatif,
+    (SELECT COUNT(*) FROM reschedule_log rl
+     WHERE rl.from_version_id = sv.id OR rl.to_version_id = sv.id) AS in_log
+FROM schedule_version sv
+WHERE sv.organization_id = '00000000-0000-0000-0000-000000000001'
+ORDER BY sv.created_at DESC
+LIMIT 20;
+"
+```
+
+**Проверка иерархии (родитель → дети):**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+WITH RECURSIVE tree AS (
+    SELECT id, name, parent_version_id, 0 AS depth
+    FROM schedule_version
+    WHERE organization_id = '00000000-0000-0000-0000-000000000001'
+      AND parent_version_id IS NULL
+    UNION ALL
+    SELECT sv.id, sv.name, sv.parent_version_id, t.depth + 1
+    FROM schedule_version sv
+    JOIN tree t ON sv.parent_version_id = t.id
+)
+SELECT
+    REPEAT('  ', depth) || name AS tree_view,
+    depth,
+    id
+FROM tree
+ORDER BY depth, name;
+"
+```
+
+---
+
+### `app_settings` — настройка auto_archive_on_recalc (Итерация 13.21)
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT setting_key, setting_value, value_type, category, label
+FROM app_settings
+WHERE organization_id = '00000000-0000-0000-0000-000000000001'
+  AND setting_key = 'auto_archive_on_recalc';
+"
+```
+
+**Ожидаемый вывод:**
+
+| setting_key | setting_value | value_type | category | label |
+|-------------|---------------|------------|----------|-------|
+| `auto_archive_on_recalc` | `true` | `bool` | `planning` | Архивировать старую версию после пересчёта |
+
+**Изменить через SQL (если нужно вручную):**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+UPDATE app_settings
+SET setting_value = 'false'::jsonb, updated_at = NOW()
+WHERE organization_id = '00000000-0000-0000-0000-000000000001'
+  AND setting_key = 'auto_archive_on_recalc';
+"
+```
+
+---
+
 ### `plan_settings` (Итерация 13.14)
 
 **Структура:**
@@ -382,6 +509,8 @@ SELECT
 "
 ```
 
+---
+
 ### `snapshot`-таблицы (Итерация 13.15)
 
 **Снапшоты всех планов (последние 10):**
@@ -391,6 +520,7 @@ docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT
     sv.name,
     sv.is_active,
+    sv.is_archived,
     (SELECT COUNT(*) FROM product_snapshot WHERE version_id = sv.id) AS products,
     (SELECT COUNT(*) FROM equipment_snapshot WHERE version_id = sv.id) AS equipment,
     (SELECT COUNT(*) FROM operation_snapshot WHERE version_id = sv.id) AS ops,
@@ -410,6 +540,7 @@ docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT
     sv.id,
     sv.name,
+    sv.is_archived,
     sv.created_at
 FROM schedule_version sv
 WHERE sv.organization_id = '00000000-0000-0000-0000-000000000001'
@@ -420,69 +551,7 @@ ORDER BY sv.created_at DESC;
 "
 ```
 
-**Количество пустых планов:**
-
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT COUNT(*) AS empty_plans
-FROM schedule_version sv
-WHERE sv.organization_id = '00000000-0000-0000-0000-000000000001'
-  AND NOT EXISTS (
-      SELECT 1 FROM equipment_snapshot WHERE version_id = sv.id LIMIT 1
-  );
-"
-```
-
-### `app_settings` (Итерация 11)
-
-**Настройки режима смен:**
-
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT setting_key, setting_value
-FROM app_settings
-WHERE setting_key IN (
-    'shift_mode', 'shift_intervals', 'shift_duration_hours', 'allow_weekend_work'
-)
-ORDER BY setting_key;
-"
-```
-
-**Веса multi-objective:**
-
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT setting_key, setting_value
-FROM app_settings
-WHERE category = 'optimization'
-ORDER BY display_order;
-"
-```
-
-**Настройки охлаждения:**
-
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT setting_key, setting_value
-FROM app_settings
-WHERE setting_key IN (
-    'enable_cooling_degradation',
-    'cooling_degradation_factor',
-    'cooling_zone_capacity'
-);
-"
-```
-
-**Настройки ЧЗ:**
-
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT setting_key, setting_value
-FROM app_settings
-WHERE setting_key LIKE 'cz_%' OR setting_key = 'enable_cz_integration'
-ORDER BY setting_key;
-"
-```
+---
 
 ### `resource_pool` (Итерация 6)
 
@@ -502,6 +571,8 @@ SELECT type, capacity FROM resource_pool ORDER BY type;
 | `LINE_OPERATOR` | 2 |
 | `MANUAL_OPERATOR` | 1 |
 | `REACTOR_OPERATOR` | 3 |
+
+---
 
 ### `shift` (Итерация 11)
 
@@ -529,7 +600,9 @@ SELECT COUNT(*), is_working FROM shift GROUP BY is_working;
 "
 ```
 
-### `scheduled_task` (Итерации 1–13.14)
+---
+
+### `scheduled_task` (Итерации 1–13.21)
 
 **Распределение cooling_mode в активной версии:**
 
@@ -568,6 +641,8 @@ WHERE sv.is_active = true AND st.is_pinned = true;
 "
 ```
 
+---
+
 ### `batch` (Итерации 5, 8)
 
 **Статистика ЧЗ:**
@@ -592,7 +667,11 @@ WHERE is_lab_blocked = true;
 "
 ```
 
+---
+
 ### `whatif_scenario` (Итерация 12)
+
+**Все сценарии:**
 
 ```bash
 docker exec -i aps_postgres psql -U aps -d household -c "
@@ -602,6 +681,41 @@ WHERE organization_id = '00000000-0000-0000-0000-000000000001'
 ORDER BY created_at DESC;
 "
 ```
+
+**Сценарии, блокирующие архивацию (DRAFT/RUNNING):**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT ws.id, ws.name, ws.status, ws.base_version_id
+FROM whatif_scenario ws
+WHERE ws.organization_id = '00000000-0000-0000-0000-000000000001'
+  AND ws.status IN ('DRAFT', 'RUNNING');
+"
+```
+
+**Какие версии используются в сценариях:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT
+    sv.id AS version_id,
+    sv.name AS version_name,
+    sv.is_archived,
+    (SELECT COUNT(*) FROM whatif_scenario ws
+     WHERE ws.base_version_id = sv.id AND ws.status IN ('DRAFT', 'RUNNING')) AS as_base_active,
+    (SELECT COUNT(*) FROM whatif_scenario ws
+     WHERE ws.result_version_id = sv.id AND ws.status IN ('DRAFT', 'RUNNING')) AS as_result_active
+FROM schedule_version sv
+WHERE sv.organization_id = '00000000-0000-0000-0000-000000000001'
+ORDER BY sv.created_at DESC
+LIMIT 20;
+"
+```
+
+**ВАЖНО:** если `as_base_active > 0` или `as_result_active > 0` — версия НЕ будет
+архивирована при пересчёте с заменой (флаг `replace_blocked = true`).
+
+---
 
 ### `audit` (Итерация 13.3)
 
@@ -621,13 +735,153 @@ SELECT 'cz_scan_log', COUNT(*) FROM cz_scan_log;
 
 ---
 
+## Архивация версий планов (Итерация 13.21)
+
+Раздел посвящён операциям с архивацией версий. Все команды — через docker.
+
+### Проверка состояния архивации
+
+**Общая сводка:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT
+    COUNT(*)                                             AS total,
+    COUNT(*) FILTER (WHERE is_active = TRUE)             AS active,
+    COUNT(*) FILTER (WHERE is_archived = TRUE)           AS archived,
+    COUNT(*) FILTER (WHERE is_archived = FALSE)          AS visible
+FROM schedule_version
+WHERE organization_id = '00000000-0000-0000-0000-000000000001';
+"
+```
+
+### Разархивация через SQL (вручную)
+
+Если нужно разархивировать версию напрямую в БД (например, через CLI):
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+UPDATE schedule_version
+SET is_archived = FALSE
+WHERE id = '<version-uuid>'
+  AND organization_id = '00000000-0000-0000-0000-000000000001';
+"
+```
+
+### Массовая архивация всех неактивных версий
+
+Если нужно снова почистить список (например, после отключения
+`auto_archive_on_recalc` накопились версии):
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+UPDATE schedule_version
+SET is_archived = TRUE
+WHERE organization_id = '00000000-0000-0000-0000-000000000001'
+  AND is_active = FALSE
+  AND is_archived = FALSE;
+"
+```
+
+**Вывод покажет количество затронутых строк:**
+```
+UPDATE 12
+```
+
+### Массовая разархивация всех версий
+
+Если нужно вернуть все архивные версии в список:
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+UPDATE schedule_version
+SET is_archived = FALSE
+WHERE organization_id = '00000000-0000-0000-0000-000000000001'
+  AND is_archived = TRUE;
+"
+```
+
+**Осторожно:** после этого в «Истории планов» может быть 50+ версий.
+
+### Проверка: почему версия не архивируется
+
+**Симптом:** пользователь нажимает «Пересчитать», ожидает архивацию,
+но старая версия остаётся в списке.
+
+**Причина:** версия используется в `whatif_scenario` со статусом
+`DRAFT` или `RUNNING`.
+
+**Проверка:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT id, name, status, base_version_id, result_version_id
+FROM whatif_scenario
+WHERE organization_id = '00000000-0000-0000-0000-000000000001'
+  AND status IN ('DRAFT', 'RUNNING')
+  AND (base_version_id = '<version-uuid>' OR result_version_id = '<version-uuid>');
+"
+```
+
+**Решение:**
+1. Открыть what-if сценарий и запустить его (переведёт в `DONE`).
+2. Или удалить сценарий (`DELETE /api/v1/whatif/scenarios/{id}`).
+3. Или разархивировать версию вручную (см. выше).
+
+### Проверка индекса по архивным версиям
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT indexname, indexdef
+FROM pg_indexes
+WHERE tablename = 'schedule_version'
+  AND indexname = 'idx_schedule_version_archived';
+"
+```
+
+**Ожидаемый вывод:**
+
+```
+indexname                        | indexdef
+---------------------------------+-------------------------------------------
+idx_schedule_version_archived    | CREATE INDEX idx_schedule_version_archived
+                                 | ON public.schedule_version USING btree
+                                 | (organization_id, created_at DESC)
+                                 | WHERE (is_archived = false)
+```
+
+### Очистка старых архивных версий
+
+Если архивных версий накопилось слишком много и они занимают место,
+можно удалить самые старые (старше 90 дней):
+
+```bash
+# ⚠️ Сначала сделайте бэкап
+docker exec aps_postgres pg_dump -U aps household > backup_before_cleanup.sql
+
+# Удалить архивные старше 90 дней
+docker exec -i aps_postgres psql -U aps -d household -c "
+DELETE FROM schedule_version
+WHERE organization_id = '00000000-0000-0000-0000-000000000001'
+  AND is_archived = TRUE
+  AND created_at < NOW() - INTERVAL '90 days';
+"
+```
+
+**CASCADE** удалит `scheduled_task`, `plan_settings`, снапшоты,
+`reschedule_log` записи с FK на эту версию.
+
+**Осторожно:** это необратимо.
+
+---
+
 ## Диагностика
 
 ### Проверить активную версию плана
 
 ```bash
 docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT id, name, is_active, created_at
+SELECT id, name, is_active, is_archived, created_at
 FROM schedule_version
 WHERE organization_id = '00000000-0000-0000-0000-000000000001'
 ORDER BY created_at DESC
@@ -689,7 +943,7 @@ WHERE schedule_version_id = (SELECT id FROM schedule_version WHERE is_active = t
 "
 ```
 
-### Проверить `plan_settings` для активного плана
+### Проверить plan_settings для активного плана
 
 ```bash
 docker exec -i aps_postgres psql -U aps -d household -c "
@@ -699,9 +953,9 @@ WHERE schedule_version_id = (SELECT id FROM schedule_version WHERE is_active = t
 "
 ```
 
-Должно быть `32` (или больше, если добавлены новые настройки).
+Должно быть больше нуля.
 
-### Сравнить `app_settings` и `plan_settings`
+### Сравнить app_settings и plan_settings
 
 ```bash
 docker exec -i aps_postgres psql -U aps -d household -c "
@@ -711,9 +965,7 @@ SELECT
 "
 ```
 
-Должны совпадать.
-
-### Проверить триггер `copy_app_settings_to_plan`
+### Проверить триггер copy_app_settings_to_plan
 
 ```bash
 docker exec -i aps_postgres psql -U aps -d household -c "
@@ -725,21 +977,9 @@ WHERE tgname = 'trg_copy_app_settings_to_plan';
 
 Ожидаемый вывод: `trg_copy_app_settings_to_plan | O` (`O` = enabled).
 
-### Проверить содержимое `plan_settings` по категориям
+### Проверить, что миграции применены
 
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT category, COUNT(*)
-FROM plan_settings
-WHERE schedule_version_id = (SELECT id FROM schedule_version WHERE is_active = true LIMIT 1)
-GROUP BY category
-ORDER BY category;
-"
-```
-
-Ожидаемые категории: `calendar`, `cooling`, `cz`, `features`, `lab`, `materials`, `optimization`, `planning`, `resources`, `shifts`.
-
-### Проверить, что миграция `add_21.sql` применена
+**add_21.sql (plan_settings):**
 
 ```bash
 docker exec -i aps_postgres psql -U aps -d household -c "
@@ -750,42 +990,70 @@ SELECT
 "
 ```
 
+**add_23.sql (архивация):**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT
+    EXISTS (SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'schedule_version' AND column_name = 'is_archived') AS has_column,
+    EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_schedule_version_archived') AS has_index,
+    EXISTS (SELECT 1 FROM app_settings WHERE setting_key = 'auto_archive_on_recalc') AS has_setting;
+"
+```
+
 Все три должны быть `t`.
 
-### Очистить старые планы (Итерация 13.15)
-
-Если накопилось много планов, можно удалить всё кроме последнего:
+### Полная диагностика системы
 
 ```bash
-docker exec aps_postgres pg_dump -U aps household > backup_before_cleanup.sql
+# 1. Статус PostgreSQL
+docker ps --filter "name=aps_postgres"
 
+# 2. Backend
+curl http://localhost:8000/docs
+
+# 3. Frontend
+curl http://localhost:5173
+
+# 4. Активная версия
 docker exec -i aps_postgres psql -U aps -d household -c "
-DELETE FROM schedule_version
+SELECT id, name, is_active, is_archived FROM schedule_version
 WHERE organization_id = '00000000-0000-0000-0000-000000000001'
-  AND id NOT IN (
-      SELECT id FROM schedule_version
-      WHERE organization_id = '00000000-0000-0000-0000-000000000001'
-      ORDER BY created_at DESC
-      LIMIT 1
-  );
+ORDER BY created_at DESC LIMIT 1;
+"
+
+# 5. Количество задач
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT COUNT(*) FROM scheduled_task st
+JOIN schedule_version sv ON sv.id = st.schedule_version_id
+WHERE sv.is_active = true;
+"
+
+# 6. plan_settings
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT COUNT(*) FROM plan_settings
+WHERE schedule_version_id = (SELECT id FROM schedule_version WHERE is_active = true LIMIT 1);
+"
+
+# 7. Снапшоты
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT
+    (SELECT COUNT(*) FROM product_snapshot WHERE version_id = sv.id) AS products,
+    (SELECT COUNT(*) FROM equipment_snapshot WHERE version_id = sv.id) AS equipment,
+    (SELECT COUNT(*) FROM operation_snapshot WHERE version_id = sv.id) AS ops,
+    (SELECT COUNT(*) FROM calendar_snapshot WHERE version_id = sv.id) AS cal
+FROM schedule_version sv
+WHERE sv.is_active = true LIMIT 1;
+"
+
+# 8. Архивные версии
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT COUNT(*) AS archived FROM schedule_version
+WHERE organization_id = '00000000-0000-0000-0000-000000000001'
+  AND is_archived = TRUE;
 "
 ```
-
-**⚠️ Осторожно:** это удалит все снапшоты и задачи связанных планов (CASCADE).
-
-### Удалить пустые планы (без снапшотов)
-
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-DELETE FROM schedule_version
-WHERE organization_id = '00000000-0000-0000-0000-000000000001'
-  AND NOT EXISTS (
-      SELECT 1 FROM equipment_snapshot WHERE version_id = schedule_version.id LIMIT 1
-  );
-"
-```
-
-Безопасно — удаляются только планы без снапшотов (они всё равно не открываются).
 
 ---
 

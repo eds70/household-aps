@@ -14,6 +14,11 @@
 Итерация 13.15: снапшоты справочников вынесены в отдельный модуль
                 snapshot.py (snapshot_all_catalogs). Здесь только
                 вызываем эту функцию.
+Итерация 13.21: параметр replace_version_id — архивация старой версии
+                при пересчёте. Если передана, старая версия помечается
+                is_archived = TRUE перед созданием новой.
+                Если версия используется в whatif_scenario — архивация
+                пропускается (флаг replace_blocked в результате).
 """
 import json
 import logging
@@ -110,6 +115,164 @@ class ScheduleSaver:
         return find_shift_id_for_time(shifts, dt)
 
     # ==========================================
+    # ИТЕРАЦИЯ 13.21: АРХИВАЦИЯ СТАРОЙ ВЕРСИИ
+    # ==========================================
+
+    async def _check_version_usage(
+            self,
+            session: AsyncSession,
+            version_id: UUID,
+    ) -> Dict[str, Any]:
+        """
+        Проверяет, используется ли версия в what-if сценариях.
+
+        reschedule_log НЕ проверяется: архивация не удаляет данные,
+        ссылки из журнала перепланирований остаются валидными.
+
+        Returns:
+            {
+                "used_in_whatif": bool,
+                "whatif_ids": [str, ...],
+                "reason": Optional[str],
+            }
+        """
+        result = await session.execute(
+            text("""
+                SELECT
+                    id::text AS scenario_id,
+                    name,
+                    status,
+                    base_version_id::text AS base_id,
+                    result_version_id::text AS result_id
+                FROM whatif_scenario
+                WHERE organization_id = :org_id
+                  AND (base_version_id = :vid OR result_version_id = :vid)
+                  AND status IN ('DRAFT', 'RUNNING')
+            """),
+            {"org_id": self.org_id, "vid": version_id},
+        )
+        rows = result.fetchall()
+
+        if not rows:
+            return {
+                "used_in_whatif": False,
+                "whatif_ids": [],
+                "reason": None,
+            }
+
+        names = [row.name for row in rows]
+        return {
+            "used_in_whatif": True,
+            "whatif_ids": [row.scenario_id for row in rows],
+            "reason": (
+                f"Используется в what-if сценариях: {', '.join(names)}"
+            ),
+        }
+
+    async def _archive_version(
+            self,
+            session: AsyncSession,
+            version_id: UUID,
+    ) -> Dict[str, Any]:
+        """
+        Архивирует версию (is_archived = TRUE, is_active = FALSE).
+
+        Перед архивацией проверяет whatif_scenario. Если версия
+        используется — возвращает replace_blocked=True и НЕ архивирует.
+
+        Returns:
+            {
+                "archived": bool,
+                "replace_blocked": bool,
+                "replace_blocked_reason": Optional[str],
+                "used_by_whatif": [str, ...],
+            }
+        """
+        # 1. Проверяем, существует ли колонка is_archived
+        has_archived = await self._has_column(
+            session, "schedule_version", "is_archived"
+        )
+        if not has_archived:
+            log_with_context(
+                logger, logging.WARNING,
+                "Колонка is_archived не найдена — архивация пропущена. "
+                "Примените миграцию add_23.sql",
+                stage="save", org_id=str(self.org_id),
+            )
+            return {
+                "archived": False,
+                "replace_blocked": False,
+                "replace_blocked_reason": "Колонка is_archived не найдена",
+                "used_by_whatif": [],
+            }
+
+        # 2. Проверяем, существует ли версия
+        check = await session.execute(
+            text("""
+                SELECT id, name, is_archived
+                FROM schedule_version
+                WHERE id = :vid AND organization_id = :org_id
+            """),
+            {"vid": version_id, "org_id": self.org_id},
+        )
+        row = check.fetchone()
+        if not row:
+            return {
+                "archived": False,
+                "replace_blocked": False,
+                "replace_blocked_reason": f"Версия {version_id} не найдена",
+                "used_by_whatif": [],
+            }
+
+        if row.is_archived:
+            return {
+                "archived": False,
+                "replace_blocked": False,
+                "replace_blocked_reason": "Версия уже архивирована",
+                "used_by_whatif": [],
+            }
+
+        # 3. Проверяем whatif_scenario
+        usage = await self._check_version_usage(session, version_id)
+        if usage["used_in_whatif"]:
+            log_with_context(
+                logger, logging.WARNING,
+                f"Версия {str(version_id)[:8]} '{row.name}' "
+                f"не архивирована: {usage['reason']}",
+                stage="save", org_id=str(self.org_id),
+            )
+            return {
+                "archived": False,
+                "replace_blocked": True,
+                "replace_blocked_reason": usage["reason"],
+                "used_by_whatif": usage["whatif_ids"],
+            }
+
+        # 4. Архивируем
+        await session.execute(
+            text("""
+                UPDATE schedule_version
+                SET is_archived = TRUE,
+                    is_active = FALSE
+                WHERE id = :vid AND organization_id = :org_id
+            """),
+            {"vid": version_id, "org_id": self.org_id},
+        )
+
+        log_with_context(
+            logger, logging.INFO,
+            f"Версия {str(version_id)[:8]} '{row.name}' перемещена в архив",
+            stage="save", org_id=str(self.org_id),
+        )
+
+        return {
+            "archived": True,
+            "replace_blocked": False,
+            "replace_blocked_reason": None,
+            "used_by_whatif": [],
+        }
+
+    # ==========================================
     # ПУБЛИЧНЫЙ МЕТОД
     # ==========================================
 
@@ -122,19 +285,37 @@ class ScheduleSaver:
         Итерация 12: если session передана в __init__ — используем её.
         Иначе — создаём свою сессию.
 
+        Итерация 13.21: schedule_data может содержать
+        replace_version_id — ID старой версии, которую нужно
+        архивировать перед созданием новой.
+
         Args:
             schedule_data: результат ProductionScheduler.build_schedule().
+                           Опционально: {"replace_version_id": UUID}.
 
         Returns:
-            Статистика сохранения.
+            Статистика сохранения. Содержит поля:
+              - version_id
+              - name
+              - tasks_saved
+              - deactivated_versions
+              - replace_archived: bool
+              - replace_blocked: bool
+              - replace_blocked_reason: Optional[str]
+              - used_by_whatif: [str, ...]
         """
         tasks = schedule_data["tasks"]
+        replace_version_id = schedule_data.get("replace_version_id")
 
         if self._owns_session:
             async with self._session_maker() as session:
-                return await self._do_save(session, tasks)
+                return await self._do_save(
+                    session, tasks, replace_version_id
+                )
         else:
-            return await self._do_save(self.async_session, tasks)
+            return await self._do_save(
+                self.async_session, tasks, replace_version_id
+            )
 
     # ==========================================
     # ОСНОВНАЯ ЛОГИКА
@@ -144,6 +325,7 @@ class ScheduleSaver:
             self,
             session: AsyncSession,
             tasks: List[Dict[str, Any]],
+            replace_version_id: Optional[UUID] = None,
     ) -> Dict[str, Any]:
         """
         Основная логика сохранения.
@@ -153,9 +335,26 @@ class ScheduleSaver:
           - 2-й проход: UPDATE depends_on_task_ids.
 
         Итерация 13.15: снапшоты вынесены в snapshot.snapshot_all_catalogs.
+
+        Итерация 13.21: архивация старой версии через replace_version_id.
         """
         version_id = uuid4()
         plan_name = f"План от {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+
+        # ==========================================
+        # 0. ИТЕРАЦИЯ 13.21: АРХИВАЦИЯ СТАРОЙ ВЕРСИИ
+        # ==========================================
+        archive_result = {
+            "archived": False,
+            "replace_blocked": False,
+            "replace_blocked_reason": None,
+            "used_by_whatif": [],
+        }
+
+        if replace_version_id is not None:
+            archive_result = await self._archive_version(
+                session, replace_version_id
+            )
 
         # ==========================================
         # 1. Деактивация старых версий (hotfix Итерации 5)
@@ -179,15 +378,35 @@ class ScheduleSaver:
         # ==========================================
         # 2. Создание новой версии плана
         # ==========================================
-        await session.execute(
-            text("""
-                INSERT INTO schedule_version
-                    (id, organization_id, name, version_type, is_active, created_at)
-                VALUES
-                    (:id, :org_id, :name, 'MONTHLY', TRUE, NOW())
-            """),
-            {"id": version_id, "org_id": self.org_id, "name": plan_name},
+        # Итерация 13.21: если колонка is_archived существует —
+        # явно указываем is_archived = FALSE для новой версии.
+        has_archived_col = await self._has_column(
+            session, "schedule_version", "is_archived"
         )
+
+        if has_archived_col:
+            await session.execute(
+                text("""
+                    INSERT INTO schedule_version
+                        (id, organization_id, name, version_type,
+                         is_active, is_archived, created_at)
+                    VALUES
+                        (:id, :org_id, :name, 'MONTHLY',
+                         TRUE, FALSE, NOW())
+                """),
+                {"id": version_id, "org_id": self.org_id, "name": plan_name},
+            )
+        else:
+            await session.execute(
+                text("""
+                    INSERT INTO schedule_version
+                        (id, organization_id, name, version_type,
+                         is_active, created_at)
+                    VALUES
+                        (:id, :org_id, :name, 'MONTHLY', TRUE, NOW())
+                """),
+                {"id": version_id, "org_id": self.org_id, "name": plan_name},
+            )
 
         # ==========================================
         # 3. Снапшоты справочников (Итерация 13.15)
@@ -468,6 +687,8 @@ class ScheduleSaver:
             f"Cooling: fast={cooling_fast_count}, slow={cooling_slow_count}. "
             f"LINE_FILL перепривязано к линии: {line_fill_fixed}. "
             f"Связей зависимостей: {deps_updated}. "
+            f"Архивация старой версии: archived={archive_result['archived']}, "
+            f"replace_blocked={archive_result['replace_blocked']}. "
             f"owns_session={self._owns_session}",
             stage="save", org_id=str(self.org_id),
         )
@@ -482,4 +703,9 @@ class ScheduleSaver:
             "line_fill_fixed": line_fill_fixed,
             "deps_updated": deps_updated,
             "snapshot_stats": snapshot_stats,
+            # Итерация 13.21: результаты архивации
+            "replace_archived": archive_result["archived"],
+            "replace_blocked": archive_result["replace_blocked"],
+            "replace_blocked_reason": archive_result["replace_blocked_reason"],
+            "used_by_whatif": archive_result["used_by_whatif"],
         }

@@ -1,4 +1,18 @@
 // frontend/src/pages/PlanSettingsWizard.tsx
+// Итерация 13.19: markPlanDirty() после сохранения настроек плана
+//   (только если реально изменились какие-то настройки).
+// Итерация 13.21: чекбокс auto_archive_on_recalc на шаге «Основные».
+//   Настройка управляет тем, будет ли старая версия архивироваться
+//   при пересчёте (см. useRecalculate.ts / saver.py).
+//
+// Итерация 13.22 (fix): исправлена невалидная вложенность HTML.
+//   <Box> (по умолчанию <div>) внутри <Typography variant="body2">
+//   (по умолчанию <p>) вызывал React-ошибку validateDOMNesting:
+//   "<div> cannot be a descendant of <p>".
+//   Решение: везде, где Box/Typography попадают в label у
+//   FormControlLabel или в InputLabel — использовать
+//   component="span" (или inline-flex) вместо дефолтных div/p.
+
 import React, {useCallback, useEffect, useMemo, useState} from 'react';
 import {
     Alert,
@@ -33,6 +47,7 @@ import {
 } from '@mui/icons-material';
 import DraggableDialog from '../components/common/DraggableDialog';
 import {planSettingsApi, scheduleApi, settingsApi} from '../services/api';
+import {usePlan} from '../context/PlainContext';
 import type {SettingSpec, SettingsSchema} from '../types';
 
 // ==========================================
@@ -140,6 +155,9 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
     const isCreateMode = mode === 'create';
     const isEditMode = !isCreateMode;
 
+    // Итерация 13.19: markPlanDirty для пометки плана «грязным»
+    const {markPlanDirty} = usePlan();
+
     // Метаданные плана
     const [planName, setPlanName] = useState('');
     const [planComment, setPlanComment] = useState('');
@@ -239,7 +257,6 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
         return (
             planName !== originalMeta.name ||
             planComment !== originalMeta.comment
-            // version_type в edit-режиме не меняется
         );
     }, [isCreateMode, planName, planComment, originalMeta]);
 
@@ -321,6 +338,7 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                 }
                 await handleSaveSettings(targetVersionId);
                 setSuccess(`План "${planName}" создан`);
+                // Новый план создаётся со снапшотами — planDirty не нужен.
             } else {
                 if (!versionId) {
                     setError('versionId не передан');
@@ -330,6 +348,14 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                 targetVersionId = versionId;
                 const settingsCount = await handleSaveSettings(versionId);
                 const metaSaved = await handleSaveMetadata(versionId);
+
+                // Итерация 13.19: пометить план «грязным»,
+                // только если реально изменились настройки.
+                // Метаданные (name/comment) на расчёт не влияют.
+                if (settingsCount > 0) {
+                    markPlanDirty();
+                }
+
                 if (settingsCount === 0 && !metaSaved) {
                     setSuccess('Нет изменений для сохранения');
                 } else {
@@ -367,6 +393,8 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
         setSaving(true);
         try {
             await planSettingsApi.resetForVersion(versionId);
+            // Итерация 13.19: пометить план «грязным»
+            markPlanDirty();
             await loadData();
             setSuccess('Настройки сброшены к глобальным');
         } catch (err: any) {
@@ -391,12 +419,26 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
         const isChanged = changedKeys.includes(spec.key);
         const isDisabled = spec.is_system;
 
+        // ⚠️ ВАЖНО: labelNode вкладывается в <label> (FormControlLabel)
+        // или в <label> (InputLabel/TextField). Поэтому внутри не должно
+        // быть <div>/<p> — только <span>.
         const labelNode = (
-            <Box sx={{display: 'flex', alignItems: 'center', gap: 0.5}}>
+            <Box
+                component="span"
+                sx={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 0.5,
+                }}
+            >
                 {spec.label}
                 {isChanged && (
-                    <Chip label="изменено" size="small" color="warning"
-                          sx={{height: 18, fontSize: '0.65rem'}}/>
+                    <Chip
+                        label="изменено"
+                        size="small"
+                        color="warning"
+                        sx={{height: 18, fontSize: '0.65rem'}}
+                    />
                 )}
                 {isDisabled && (
                     <Tooltip title="Системная настройка — управляется режимом смен">
@@ -406,6 +448,7 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
             </Box>
         );
 
+        // Итерация 13.21: auto_archive_on_recalc — bool с расширенной подсказкой
         if (spec.value_type === 'bool') {
             return (
                 <FormControlLabel
@@ -418,10 +461,24 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                         />
                     }
                     label={
-                        <Box>
-                            <Typography variant="body2">{labelNode}</Typography>
+                        <Box
+                            component="span"
+                            sx={{display: 'block'}}
+                        >
+                            <Typography
+                                variant="body2"
+                                component="span"
+                                sx={{display: 'block'}}
+                            >
+                                {labelNode}
+                            </Typography>
                             {spec.description && (
-                                <Typography variant="caption" color="text.secondary" sx={{display: 'block'}}>
+                                <Typography
+                                    variant="caption"
+                                    component="span"
+                                    color="text.secondary"
+                                    sx={{display: 'block'}}
+                                >
                                     {spec.description}
                                 </Typography>
                             )}
@@ -433,8 +490,16 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
 
         if (spec.value_type === 'select' && spec.options) {
             return (
-                <FormControl key={spec.key} fullWidth size="small" disabled={isDisabled} variant="outlined">
-                    <InputLabel>{spec.label}</InputLabel>
+                <FormControl
+                    key={spec.key}
+                    fullWidth
+                    size="small"
+                    disabled={isDisabled}
+                    variant="outlined"
+                >
+                    <InputLabel>
+                        {labelNode}
+                    </InputLabel>
                     <Select
                         value={value ?? ''}
                         label={spec.label}
@@ -442,11 +507,17 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                         onChange={(e) => handleChange(spec.key, e.target.value)}
                     >
                         {spec.options.map((opt) => (
-                            <MenuItem key={opt.value} value={opt.value}>{opt.label}</MenuItem>
+                            <MenuItem key={opt.value} value={opt.value}>
+                                {opt.label}
+                            </MenuItem>
                         ))}
                     </Select>
                     {spec.description && (
-                        <Typography variant="caption" color="text.secondary" sx={{mt: 0.5, ml: 1.5}}>
+                        <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            sx={{mt: 0.5, ml: 1.5}}
+                        >
                             {spec.description}
                         </Typography>
                     )}
@@ -471,8 +542,15 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                     <Slider
                         value={typeof value === 'number' ? value : 0}
                         onChange={(_, v) => handleChange(spec.key, v as number)}
-                        min={0} max={1} step={0.05} disabled={isDisabled}
-                        marks={[{value: 0, label: '0'}, {value: 0.5, label: '0.5'}, {value: 1, label: '1'}]}
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        disabled={isDisabled}
+                        marks={[
+                            {value: 0, label: '0'},
+                            {value: 0.5, label: '0.5'},
+                            {value: 1, label: '1'},
+                        ]}
                     />
                     {spec.description && (
                         <Typography variant="caption" color="text.secondary">
@@ -487,15 +565,20 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
             return (
                 <TextField
                     key={spec.key}
-                    fullWidth size="small" type="number"
+                    fullWidth
+                    size="small"
+                    type="number"
                     label={labelNode}
                     value={value ?? ''}
                     onChange={(e) => {
                         const raw = e.target.value;
                         if (raw === '') handleChange(spec.key, null);
-                        else handleChange(spec.key, spec.value_type === 'int'
-                            ? parseInt(raw, 10)
-                            : parseFloat(raw));
+                        else handleChange(
+                            spec.key,
+                            spec.value_type === 'int'
+                                ? parseInt(raw, 10)
+                                : parseFloat(raw),
+                        );
                     }}
                     disabled={isDisabled}
                     slotProps={{
@@ -508,7 +591,8 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                     helperText={
                         spec.description
                         + (spec.min_value != null || spec.max_value != null
-                            ? ` (${spec.min_value ?? '−∞'}…${spec.max_value ?? '∞'})` : '')
+                            ? ` (${spec.min_value ?? '−∞'}…${spec.max_value ?? '∞'})`
+                            : '')
                     }
                 />
             );
@@ -518,11 +602,18 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
             return (
                 <TextField
                     key={spec.key}
-                    fullWidth size="small"
+                    fullWidth
+                    size="small"
                     label={labelNode}
                     value={typeof value === 'string' ? value : JSON.stringify(value, null, 2)}
-                    multiline rows={3} disabled
-                    slotProps={{input: {style: {fontFamily: 'monospace', fontSize: '0.85rem'}}}}
+                    multiline
+                    rows={3}
+                    disabled
+                    slotProps={{
+                        input: {
+                            style: {fontFamily: 'monospace', fontSize: '0.85rem'},
+                        },
+                    }}
                     helperText={spec.description || 'Управляется режимом смен'}
                 />
             );
@@ -531,7 +622,8 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
         return (
             <TextField
                 key={spec.key}
-                fullWidth size="small"
+                fullWidth
+                size="small"
                 label={labelNode}
                 value={value ?? ''}
                 onChange={(e) => handleChange(spec.key, e.target.value)}
@@ -548,7 +640,9 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
         <Box sx={{display: 'flex', flexDirection: 'column', gap: 2.5}}>
             <TextField
                 label="Наименование плана"
-                fullWidth required size="small"
+                fullWidth
+                required
+                size="small"
                 value={planName}
                 onChange={(e) => setPlanName(e.target.value)}
                 placeholder="Например: План на октябрь 2026"
@@ -569,7 +663,11 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                     <MenuItem value="WHAT_IF">Сценарий "что если"</MenuItem>
                 </Select>
                 {isEditMode && (
-                    <Typography variant="caption" color="text.secondary" sx={{mt: 0.5, ml: 1.5}}>
+                    <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{mt: 0.5, ml: 1.5}}
+                    >
                         Тип существующего плана изменить нельзя.
                     </Typography>
                 )}
@@ -577,7 +675,10 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
 
             <TextField
                 label="Комментарий"
-                fullWidth multiline rows={3} size="small"
+                fullWidth
+                multiline
+                rows={3}
+                size="small"
                 value={planComment}
                 onChange={(e) => setPlanComment(e.target.value)}
                 placeholder="Произвольные заметки к плану"
@@ -599,7 +700,14 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
     const totalChanges = changedKeys.length + (metadataChanged ? 1 : 0);
 
     const renderActions = () => (
-        <Box sx={{display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center'}}>
+        <Box
+            sx={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                width: '100%',
+                alignItems: 'center',
+            }}
+        >
             <Box>
                 {isEditMode && versionId && (
                     <Button
@@ -614,12 +722,20 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                 )}
             </Box>
             <Box sx={{display: 'flex', gap: 1, alignItems: 'center'}}>
-                <Button onClick={handleBack} disabled={activeStep === 0 || saving}
-                        startIcon={<ArrowBackIcon/>} sx={{textTransform: 'none'}}>
+                <Button
+                    onClick={handleBack}
+                    disabled={activeStep === 0 || saving}
+                    startIcon={<ArrowBackIcon/>}
+                    sx={{textTransform: 'none'}}
+                >
                     Назад
                 </Button>
-                <Button onClick={handleNext} disabled={activeStep === WIZARD_STEPS.length - 1 || saving}
-                        endIcon={<ArrowForwardIcon/>} sx={{textTransform: 'none'}}>
+                <Button
+                    onClick={handleNext}
+                    disabled={activeStep === WIZARD_STEPS.length - 1 || saving}
+                    endIcon={<ArrowForwardIcon/>}
+                    sx={{textTransform: 'none'}}
+                >
                     Далее
                 </Button>
                 <Divider orientation="vertical" flexItem sx={{mx: 1}}/>
@@ -639,7 +755,9 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                     disabled={saving || !canSave}
                     sx={{textTransform: 'none'}}
                 >
-                    {isCreateMode ? 'Создать и построить план' : 'Сохранить и построить план'}
+                    {isCreateMode
+                        ? 'Создать и построить план'
+                        : 'Сохранить и построить план'}
                 </Button>
             </Box>
         </Box>
@@ -652,7 +770,8 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
         <DraggableDialog
             open={open}
             onClose={onClose}
-            draggable resizable
+            draggable
+            resizable
             closeOnBackdropClick={false}
             showCloseButton
             initialWidth={900}
@@ -693,11 +812,16 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                 </Box>
             ) : (
                 <Box sx={{display: 'flex', minHeight: 0}}>
-                    <Box sx={{
-                        width: 260, flexShrink: 0,
-                        borderRight: '1px solid #e0e0e0',
-                        bgcolor: '#f8f9fa', p: 1.5, overflowY: 'auto',
-                    }}>
+                    <Box
+                        sx={{
+                            width: 260,
+                            flexShrink: 0,
+                            borderRight: '1px solid #e0e0e0',
+                            bgcolor: '#f8f9fa',
+                            p: 1.5,
+                            overflowY: 'auto',
+                        }}
+                    >
                         <Stepper activeStep={activeStep} orientation="vertical" nonLinear>
                             {WIZARD_STEPS.map((step, idx) => (
                                 <Step key={step.key} completed={idx < activeStep}>
@@ -720,8 +844,11 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                         <Typography variant="h6" sx={{fontWeight: 600, mb: 0.5}}>
                             {currentStep?.label}
                         </Typography>
-                        <Typography variant="caption" color="text.secondary"
-                                    sx={{display: 'block', mb: 2}}>
+                        <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            sx={{display: 'block', mb: 2}}
+                        >
                             {currentStep?.description}
                         </Typography>
                         <Divider sx={{mb: 2}}/>
@@ -737,12 +864,16 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
 
             {error && (
                 <Box sx={{mt: 2}}>
-                    <Alert severity="error" onClose={() => setError(null)}>{error}</Alert>
+                    <Alert severity="error" onClose={() => setError(null)}>
+                        {error}
+                    </Alert>
                 </Box>
             )}
             {success && (
                 <Box sx={{mt: 2}}>
-                    <Alert severity="success" onClose={() => setSuccess(null)}>{success}</Alert>
+                    <Alert severity="success" onClose={() => setSuccess(null)}>
+                        {success}
+                    </Alert>
                 </Box>
             )}
         </DraggableDialog>

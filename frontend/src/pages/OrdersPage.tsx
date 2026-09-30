@@ -1,4 +1,6 @@
 // frontend/src/pages/OrdersPage.tsx
+// Итерация 13.19: markPlanDirty() при изменениях.
+
 import React, {useEffect, useState} from 'react';
 import {
     Alert,
@@ -31,32 +33,29 @@ import {
     ExpandMore as ExpandMoreIcon,
     ShoppingCart as CartIcon,
 } from '@mui/icons-material';
-import {AgGridReact} from 'ag-grid-react';
 import type {ColDef, GridReadyEvent} from 'ag-grid-community';
 import {AllCommunityModule, ModuleRegistry} from 'ag-grid-community';
-import 'ag-grid-community/styles/ag-grid.css';
-import 'ag-grid-community/styles/ag-theme-alpine.css';
 import type {Batch, OrderStatus, ProductionOrder} from '../types';
 import {equipmentApi, ordersApi, productsApi} from '../services/api';
+import {usePlan} from '../context/PlainContext';
 import DraggableDialog from '../components/common/DraggableDialog';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
+import AppAgGrid from '../components/common/AppAgGrid';
+
 const STATUS_LABELS: Record<OrderStatus, string> = {
-    PLANNED: 'Запланирован',
-    IN_PROGRESS: 'В производстве',
-    DONE: 'Выполнен',
-    CANCELLED: 'Отменён',
+    PLANNED: 'Запланирован', IN_PROGRESS: 'В производстве',
+    DONE: 'Выполнен', CANCELLED: 'Отменён',
 };
 
 const STATUS_COLORS: Record<OrderStatus, 'default' | 'primary' | 'success' | 'error'> = {
-    PLANNED: 'primary',
-    IN_PROGRESS: 'default',
-    DONE: 'success',
-    CANCELLED: 'error',
+    PLANNED: 'primary', IN_PROGRESS: 'default', DONE: 'success', CANCELLED: 'error',
 };
 
 const OrdersPage: React.FC = () => {
+    const {markPlanDirty} = usePlan();
+
     const [orders, setOrders] = useState<ProductionOrder[]>([]);
     const [products, setProducts] = useState<any[]>([]);
     const [equipment, setEquipment] = useState<any[]>([]);
@@ -67,11 +66,7 @@ const OrdersPage: React.FC = () => {
     const [orderBatches, setOrderBatches] = useState<Record<string, Batch[]>>({});
 
     const [formData, setFormData] = useState({
-        product_id: '',
-        target_qty: 0,
-        due_date: '',
-        priority: 5,
-        comment: '',
+        product_id: '', target_qty: 0, due_date: '', priority: 5, comment: '',
     });
 
     const [splitDialogOpen, setSplitDialogOpen] = useState(false);
@@ -79,18 +74,14 @@ const OrdersPage: React.FC = () => {
     const [splitEquipmentId, setSplitEquipmentId] = useState('');
     const [splitMaxFill, setSplitMaxFill] = useState(0.70);
 
-    useEffect(() => {
-        loadData();
-    }, []);
+    useEffect(() => { loadData(); }, []);
 
     const loadData = async () => {
         setLoading(true);
         setError(null);
         try {
             const [ordersData, productsData, equipmentData] = await Promise.all([
-                ordersApi.getAll(),
-                productsApi.getAll(),
-                equipmentApi.getAll(),
+                ordersApi.getAll(), productsApi.getAll(), equipmentApi.getAll(),
             ]);
             setOrders(ordersData);
             setProducts(productsData);
@@ -103,71 +94,28 @@ const OrdersPage: React.FC = () => {
     };
 
     const columnDefs: ColDef<ProductionOrder>[] = [
+        { headerName: 'Код продукта', field: 'product_code', width: 130 },
+        { headerName: 'Продукт', field: 'product_name', flex: 2, minWidth: 200 },
+        { headerName: 'Целевое кол-во', field: 'target_qty', width: 130, type: 'numericColumn' },
         {
-            headerName: 'Код продукта',
-            field: 'product_code',
-            width: 130,
+            headerName: 'Дедлайн', field: 'due_date', width: 170,
+            valueFormatter: (params) => params.value ? new Date(params.value).toLocaleString('ru-RU') : '—',
         },
+        { headerName: 'Приоритет', field: 'priority', width: 100, type: 'numericColumn' },
         {
-            headerName: 'Продукт',
-            field: 'product_name',
-            flex: 2,
-            minWidth: 200,
-        },
-        {
-            headerName: 'Целевое кол-во',
-            field: 'target_qty',
-            width: 130,
-            type: 'numericColumn',
-        },
-        {
-            headerName: 'Дедлайн',
-            field: 'due_date',
-            width: 170,
-            valueFormatter: (params) =>
-                params.value ? new Date(params.value).toLocaleString('ru-RU') : '—',
-        },
-        {
-            headerName: 'Приоритет',
-            field: 'priority',
-            width: 100,
-            type: 'numericColumn',
-        },
-        {
-            headerName: 'Статус',
-            field: 'status',
-            width: 150,
+            headerName: 'Статус', field: 'status', width: 150,
             cellRenderer: (params: any) => {
                 const status = params.value as OrderStatus;
-                return (
-                    <Chip
-                        label={STATUS_LABELS[status] || status}
-                        color={STATUS_COLORS[status] || 'default'}
-                        size="small"
-                    />
-                );
+                return <Chip label={STATUS_LABELS[status] || status} color={STATUS_COLORS[status] || 'default'} size="small" />;
             },
         },
+        { headerName: 'Партий', field: 'batches_count', width: 90, type: 'numericColumn' },
         {
-            headerName: 'Партий',
-            field: 'batches_count',
-            width: 90,
-            type: 'numericColumn',
-        },
-        {
-            headerName: 'Действия',
-            width: 220,
+            headerName: 'Действия', width: 220,
             cellRenderer: (params: any) => (
                 <Box sx={{ display: 'flex', gap: 0.5 }}>
-                    <IconButton
-                        size="small"
-                        onClick={() => handleToggleExpand(params.data.id)}
-                    >
-                        {expandedOrderId === params.data.id ? (
-                            <ExpandLessIcon />
-                        ) : (
-                            <ExpandMoreIcon />
-                        )}
+                    <IconButton size="small" onClick={() => handleToggleExpand(params.data.id)}>
+                        {expandedOrderId === params.data.id ? <ExpandLessIcon /> : <ExpandMoreIcon />}
                     </IconButton>
                     <Button
                         size="small"
@@ -177,11 +125,7 @@ const OrdersPage: React.FC = () => {
                     >
                         Разбить
                     </Button>
-                    <IconButton
-                        color="error"
-                        size="small"
-                        onClick={() => handleDelete(params.data.id)}
-                    >
+                    <IconButton color="error" size="small" onClick={() => handleDelete(params.data.id)}>
                         <DeleteIcon fontSize="small" />
                     </IconButton>
                 </Box>
@@ -189,19 +133,11 @@ const OrdersPage: React.FC = () => {
         },
     ];
 
-    const defaultColDef: ColDef = {
-        sortable: true,
-        filter: true,
-        resizable: true,
-    };
-
+    const defaultColDef: ColDef = { sortable: true, filter: true, resizable: true };
     const getRowId = (params: any) => params.data.id;
 
     const handleToggleExpand = async (orderId: string) => {
-        if (expandedOrderId === orderId) {
-            setExpandedOrderId(null);
-            return;
-        }
+        if (expandedOrderId === orderId) { setExpandedOrderId(null); return; }
         setExpandedOrderId(orderId);
         if (!orderBatches[orderId]) {
             try {
@@ -226,13 +162,11 @@ const OrdersPage: React.FC = () => {
             return;
         }
         try {
-            const result = await ordersApi.autoSplit(
-                splitOrderId,
-                splitEquipmentId,
-                splitMaxFill
-            );
+            const result = await ordersApi.autoSplit(splitOrderId, splitEquipmentId, splitMaxFill);
             await loadData();
             setSplitDialogOpen(false);
+            // Итерация 13.19
+            markPlanDirty();
             alert(`Создано партий: ${result.batches_created}`);
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Ошибка разбиения');
@@ -244,19 +178,15 @@ const OrdersPage: React.FC = () => {
         try {
             await ordersApi.delete(id);
             setOrders((prev) => prev.filter((o) => o.id !== id));
+            // Итерация 13.19
+            markPlanDirty();
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Ошибка удаления');
         }
     };
 
     const handleAdd = () => {
-        setFormData({
-            product_id: '',
-            target_qty: 0,
-            due_date: '',
-            priority: 5,
-            comment: '',
-        });
+        setFormData({ product_id: '', target_qty: 0, due_date: '', priority: 5, comment: '' });
         setDialogOpen(true);
     };
 
@@ -269,81 +199,39 @@ const OrdersPage: React.FC = () => {
             });
             setOrders((prev) => [...prev, response]);
             setDialogOpen(false);
+            // Итерация 13.19
+            markPlanDirty();
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Ошибка создания');
         }
     };
 
     if (loading) {
-        return (
-            <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>
-                <CircularProgress />
-            </Box>
-        );
+        return <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}><CircularProgress /></Box>;
     }
 
     return (
         <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-            <Box
-                sx={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    mb: 3,
-                }}
-            >
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
                 <Typography variant="h4" component="h1" sx={{ fontWeight: 600, color: '#2c3e50' }}>
                     Производственные заказы
                 </Typography>
-                <Button
-                    variant="contained"
-                    startIcon={<AddIcon />}
-                    onClick={handleAdd}
-                    sx={{ textTransform: 'none', fontWeight: 600 }}
-                >
+                <Button variant="contained" startIcon={<AddIcon />} onClick={handleAdd} sx={{ textTransform: 'none', fontWeight: 600 }}>
                     Новый заказ
                 </Button>
             </Box>
 
-            {error && (
-                <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
-                    {error}
-                </Alert>
-            )}
+            {error && <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>{error}</Alert>}
 
             <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
-                <Chip
-                    label={`Всего заказов: ${orders.length}`}
-                    color="primary"
-                    variant="outlined"
-                    icon={<CartIcon />}
-                />
-                <Chip
-                    label={`Партий: ${orders.reduce((sum, o) => sum + o.batches_count, 0)}`}
-                    variant="outlined"
-                />
+                <Chip label={`Всего заказов: ${orders.length}`} color="primary" variant="outlined" icon={<CartIcon />} />
+                <Chip label={`Партий: ${orders.reduce((sum, o) => sum + o.batches_count, 0)}`} variant="outlined" />
             </Box>
 
-            <Card
-                sx={{
-                    flexGrow: 1,
-                    boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    minHeight: 0,
-                }}
-            >
-                <CardContent
-                    sx={{
-                        p: 2,
-                        flexGrow: 1,
-                        display: 'flex',
-                        flexDirection: 'column',
-                        minHeight: 0,
-                    }}
-                >
-                    <Box className="ag-theme-alpine" sx={{ flexGrow: 1, width: '100%', minHeight: 0 }}>
-                        <AgGridReact
+            <Card sx={{ flexGrow: 1, boxShadow: '0 2px 8px rgba(0,0,0,0.1)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                <CardContent sx={{ p: 2, flexGrow: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                    <Box sx={{ flexGrow: 1, width: '100%', minHeight: 0 }}>
+                        <AppAgGrid
                             rowData={orders}
                             columnDefs={columnDefs}
                             defaultColDef={defaultColDef}
@@ -351,17 +239,13 @@ const OrdersPage: React.FC = () => {
                             pagination={true}
                             paginationPageSize={20}
                             paginationPageSizeSelector={[20, 50, 100]}
-                            suppressPropertyNamesCheck={true}
                             onGridReady={(params: GridReadyEvent) => params.api.sizeColumnsToFit()}
                         />
                     </Box>
 
-                    {/* Раскрывающаяся панель с партиями */}
                     {expandedOrderId && orderBatches[expandedOrderId] && (
                         <Box sx={{ mt: 2, borderTop: '2px solid #e0e0e0', pt: 2 }}>
-                            <Typography variant="h6" gutterBottom>
-                                Партии заказа
-                            </Typography>
+                            <Typography variant="h6" gutterBottom>Партии заказа</Typography>
                             <TableContainer component={Paper} variant="outlined">
                                 <Table size="small">
                                     <TableHead>
@@ -380,16 +264,8 @@ const OrdersPage: React.FC = () => {
                                                 <TableCell>{batch.volume_kg}</TableCell>
                                                 <TableCell>{batch.equipment_name || '—'}</TableCell>
                                                 <TableCell>{batch.status}</TableCell>
-                                                <TableCell>
-                                                    {batch.planned_start
-                                                        ? new Date(batch.planned_start).toLocaleString('ru-RU')
-                                                        : '—'}
-                                                </TableCell>
-                                                <TableCell>
-                                                    {batch.planned_end
-                                                        ? new Date(batch.planned_end).toLocaleString('ru-RU')
-                                                        : '—'}
-                                                </TableCell>
+                                                <TableCell>{batch.planned_start ? new Date(batch.planned_start).toLocaleString('ru-RU') : '—'}</TableCell>
+                                                <TableCell>{batch.planned_end ? new Date(batch.planned_end).toLocaleString('ru-RU') : '—'}</TableCell>
                                                 <TableCell>{batch.comment || '—'}</TableCell>
                                             </TableRow>
                                         ))}
@@ -401,7 +277,6 @@ const OrdersPage: React.FC = () => {
                 </CardContent>
             </Card>
 
-            {/* Диалог создания заказа (DraggableDialog) */}
             <DraggableDialog
                 open={dialogOpen}
                 onClose={() => setDialogOpen(false)}
@@ -413,75 +288,37 @@ const OrdersPage: React.FC = () => {
                 actions={
                     <>
                         <Button onClick={() => setDialogOpen(false)}>Отмена</Button>
-                        <Button onClick={handleSave} variant="contained">
-                            Создать
-                        </Button>
+                        <Button onClick={handleSave} variant="contained">Создать</Button>
                     </>
                 }
             >
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                     <FormControl fullWidth>
                         <InputLabel>Продукт (ГП)</InputLabel>
-                        <Select
-                            value={formData.product_id}
-                            label="Продукт (ГП)"
-                            onChange={(e) => setFormData({ ...formData, product_id: e.target.value })}
-                        >
+                        <Select value={formData.product_id} label="Продукт (ГП)" onChange={(e) => setFormData({ ...formData, product_id: e.target.value })}>
                             <MenuItem value="">— Выберите продукт —</MenuItem>
-                            {products
-                                .filter((p: any) => p.type === 'GP')
-                                .map((p: any) => (
-                                    <MenuItem key={p.id} value={p.id}>
-                                        {p.code} - {p.name}
-                                    </MenuItem>
-                                ))}
+                            {products.filter((p: any) => p.type === 'GP').map((p: any) => (
+                                <MenuItem key={p.id} value={p.id}>{p.code} - {p.name}</MenuItem>
+                            ))}
                         </Select>
                     </FormControl>
+                    <TextField label="Целевое количество" type="number" fullWidth value={formData.target_qty} onChange={(e) => setFormData({ ...formData, target_qty: Number(e.target.value) })} />
                     <TextField
-                        label="Целевое количество"
-                        type="number"
-                        fullWidth
-                        value={formData.target_qty}
-                        onChange={(e) =>
-                            setFormData({ ...formData, target_qty: Number(e.target.value) })
-                        }
-                    />
-                    <TextField
-                        label="Дедлайн"
-                        type="datetime-local"
-                        fullWidth
+                        label="Дедлайн" type="datetime-local" fullWidth
                         value={formData.due_date}
                         onChange={(e) => setFormData({ ...formData, due_date: e.target.value })}
                         slotProps={{ inputLabel: { shrink: true } }}
                     />
                     <TextField
                         label="Приоритет (1 - высший, 10 - низший)"
-                        type="number"
-                        fullWidth
-                        value={formData.priority}
-                        onChange={(e) =>
-                            setFormData({ ...formData, priority: Number(e.target.value) })
-                        }
-                        slotProps={{
-                            htmlInput: {
-                                min: 1,
-                                max: 10,
-                                step: 1,
-                            },
-                        }}
+                        type="number" fullWidth value={formData.priority}
+                        onChange={(e) => setFormData({ ...formData, priority: Number(e.target.value) })}
+                        slotProps={{ htmlInput: { min: 1, max: 10, step: 1 } }}
                     />
-                    <TextField
-                        label="Комментарий"
-                        fullWidth
-                        multiline
-                        rows={2}
-                        value={formData.comment}
-                        onChange={(e) => setFormData({ ...formData, comment: e.target.value })}
-                    />
+                    <TextField label="Комментарий" fullWidth multiline rows={2} value={formData.comment} onChange={(e) => setFormData({ ...formData, comment: e.target.value })} />
                 </Box>
             </DraggableDialog>
 
-            {/* Диалог автоматического разбиения (DraggableDialog) */}
             <DraggableDialog
                 open={splitDialogOpen}
                 onClose={() => setSplitDialogOpen(false)}
@@ -493,43 +330,25 @@ const OrdersPage: React.FC = () => {
                 actions={
                     <>
                         <Button onClick={() => setSplitDialogOpen(false)}>Отмена</Button>
-                        <Button onClick={handleAutoSplit} variant="contained">
-                            Разбить
-                        </Button>
+                        <Button onClick={handleAutoSplit} variant="contained">Разбить</Button>
                     </>
                 }
             >
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                     <FormControl fullWidth>
                         <InputLabel>Оборудование (реактор)</InputLabel>
-                        <Select
-                            value={splitEquipmentId}
-                            label="Оборудование (реактор)"
-                            onChange={(e) => setSplitEquipmentId(e.target.value)}
-                        >
+                        <Select value={splitEquipmentId} label="Оборудование (реактор)" onChange={(e) => setSplitEquipmentId(e.target.value)}>
                             <MenuItem value="">— Выберите оборудование —</MenuItem>
-                            {equipment
-                                .filter((e: any) => e.type === 'REACTOR')
-                                .map((e: any) => (
-                                    <MenuItem key={e.id} value={e.id}>
-                                        {e.name} ({e.volume_kg} кг)
-                                    </MenuItem>
-                                ))}
+                            {equipment.filter((e: any) => e.type === 'REACTOR').map((e: any) => (
+                                <MenuItem key={e.id} value={e.id}>{e.name} ({e.volume_kg} кг)</MenuItem>
+                            ))}
                         </Select>
                     </FormControl>
                     <TextField
-                        label="Максимальный % загрузки"
-                        type="number"
-                        fullWidth
+                        label="Максимальный % загрузки" type="number" fullWidth
                         value={splitMaxFill}
                         onChange={(e) => setSplitMaxFill(Number(e.target.value))}
-                        slotProps={{
-                            htmlInput: {
-                                min: 0.1,
-                                max: 1.0,
-                                step: 0.05,
-                            },
-                        }}
+                        slotProps={{ htmlInput: { min: 0.1, max: 1.0, step: 0.05 } }}
                         helperText="Обычно 0.70 (70%)"
                     />
                 </Box>

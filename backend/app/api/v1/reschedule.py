@@ -7,10 +7,15 @@ API перепланирования (Итерация 4).
   GET  /api/v1/schedule/compare           — сравнить две версии
   PUT  /api/v1/schedule/task/{id}/pin     — закрепить/открепить задачу
   PUT  /api/v1/schedule/task/{id}/move    — переместить задачу (C2)
+  PUT  /api/v1/schedule/task/{id}/resize  — изменить длительность (13.17)
+  PUT  /api/v1/schedule/task/{id}/move-cascade — каскадный сдвиг (13.17)
 
 Итерация 11 (Шаг 5): чтение флага enable_rescheduling через settings_reader.
 Итерация 13.14: опциональный version_id — флаг читается из plan_settings
                 плана (fallback на app_settings).
+Итерация 13.21: replace_version_id в RescheduleRequest.
+                Если передан, старая версия архивируется после пересчёта
+                (если не используется в what-if).
 """
 
 import logging
@@ -71,16 +76,21 @@ async def reschedule(
 
     Типы изменений (reason):
       - DELAY: задержка операции.
-        changes = {delayed_task_id: UUID}
+        changes = {delayed_task_id: UUID, delay_minutes: int}
       - BREAKDOWN: поломка оборудования.
         changes = {broken_equipment_id: UUID, breakdown_start: ISO, breakdown_end: ISO}
       - QTY_CHANGE: изменение объёма заказа.
-        changes = {affected_batch_ids: [UUID, ...]}
+        changes = {affected_batch_ids: [UUID, ...], new_qty: float}
       - MANUAL: ручное изменение.
-        changes = {affected_batch_ids: [UUID, ...]}
+        changes = {}
 
     Итерация 13.14: флаг enable_rescheduling читается из plan_settings
     плана from_version_id (то есть того плана, который перепланируем).
+
+    Итерация 13.21: если передан replace_version_id, после пересчёта
+    старая версия архивируется (при условии, что она не используется
+    в what-if сценариях). Поля replace_archived / replace_blocked
+    в ответе показывают результат.
     """
     # Итерация 13.14: version_id = from_version_id из запроса
     await _check_rescheduling_enabled(
@@ -96,6 +106,8 @@ async def reschedule(
             changes=request.changes,
             frozen_before=request.frozen_before,
             comment=request.comment,
+            # Итерация 13.21
+            replace_version_id=request.replace_version_id,
         )
     except Exception as e:
         log_with_context(
@@ -117,6 +129,11 @@ async def reschedule(
         frozen_tasks=result.frozen_tasks,
         message=result.message,
         diff=result.diff,
+        # Итерация 13.21: результаты архивации
+        replace_archived=result.replace_archived,
+        replace_blocked=result.replace_blocked,
+        replace_blocked_reason=result.replace_blocked_reason,
+        used_by_whatif=result.used_by_whatif,
     )
 
 
@@ -302,18 +319,9 @@ async def move_task(
         message="Задача перемещена и закреплена (is_pinned=TRUE)",
     )
 
-# backend/app/api/v1/reschedule.py
-# ДОБАВИТЬ В КОНЕЦ ФАЙЛА (перед последней строкой)
-
-from app.scheduler.reschedule_cascade import (
-    apply_cascade,
-    validate_move,
-    CascadeBlockedError,
-)
-
 
 # ==========================================
-# ИЗМЕНЕНИЕ ДЛИТЕЛЬНОСТИ ЗАДАЧИ (resize)
+# ИЗМЕНЕНИЕ ДЛИТЕЛЬНОСТИ ЗАДАЧИ (resize, Итерация 13.17)
 # ==========================================
 
 @router.put("/task/{task_id}/resize", response_model=MoveTaskResponse)
@@ -338,6 +346,12 @@ async def resize_task(
 
     Каскад детерминированный, не использует solver.
     """
+    from app.scheduler.reschedule_cascade import (
+        apply_cascade,
+        validate_move,
+        CascadeBlockedError,
+    )
+
     await _check_rescheduling_enabled(db, org_id, version_id=version_id)
 
     # Определяем версию
@@ -448,7 +462,7 @@ async def resize_task(
 
 
 # ==========================================
-# ОБНОВЛЁННЫЙ MOVE (с каскадом)
+# ОБНОВЛЁННЫЙ MOVE (с каскадом, Итерация 13.17)
 # ==========================================
 
 @router.put("/task/{task_id}/move-cascade", response_model=MoveTaskResponse)
@@ -467,6 +481,11 @@ async def move_task_cascade(
       - Запускает каскад.
       - Возвращает список сдвинутых задач.
     """
+    from app.scheduler.reschedule_cascade import (
+        apply_cascade,
+        CascadeBlockedError,
+    )
+
     await _check_rescheduling_enabled(db, org_id, version_id=version_id)
 
     if version_id is None:

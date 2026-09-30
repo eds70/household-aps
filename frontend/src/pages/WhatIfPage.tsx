@@ -37,11 +37,8 @@ import {
     Science as ScienceIcon,
     Visibility as VisibilityIcon,
 } from '@mui/icons-material';
-import {AgGridReact} from 'ag-grid-react';
 import type {ColDef, GridReadyEvent} from 'ag-grid-community';
 import {AllCommunityModule, ModuleRegistry} from 'ag-grid-community';
-import 'ag-grid-community/styles/ag-grid.css';
-import 'ag-grid-community/styles/ag-theme-alpine.css';
 import {usePlan} from '../context/PlainContext';
 import {whatifApi} from '../services/api';
 import type {
@@ -54,6 +51,8 @@ import type {
 import DraggableDialog from '../components/common/DraggableDialog';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
+
+import AppAgGrid from '../components/common/AppAgGrid';
 
 // ==========================================
 // КОНСТАНТЫ
@@ -588,8 +587,8 @@ const WhatIfPage: React.FC = () => {
                         minHeight: 0,
                     }}
                 >
-                    <Box className="ag-theme-alpine" sx={{flexGrow: 1, width: '100%', minHeight: 0}}>
-                        <AgGridReact
+                    <Box sx={{flexGrow: 1, width: '100%', minHeight: 0}}>
+                        <AppAgGrid
                             rowData={scenarios}
                             columnDefs={columnDefs}
                             defaultColDef={defaultColDef}
@@ -597,7 +596,6 @@ const WhatIfPage: React.FC = () => {
                             pagination
                             paginationPageSize={20}
                             paginationPageSizeSelector={[20, 50, 100]}
-                            suppressPropertyNamesCheck
                             onGridReady={(params: GridReadyEvent) => params.api.sizeColumnsToFit()}
                         />
                     </Box>

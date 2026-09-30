@@ -4,20 +4,31 @@
 //   показываем предупреждение вместо диаграммы.
 // Итерация 13.16: расширенный диалог задачи переведён на DraggableDialog.
 // Итерация 13.17: полный рефакторинг — вынесены модули.
-// Итерация 13.18 (fix #5): tooltip теперь отображается и при resize
-//   (изменении длительности за края), и при move. Прокинут onItemChange
-//   в useGanttTimeline.
+// Итерация 13.18 (fix #5): tooltip теперь отображается и при resize,
+//   и при move. Прокинут onItemChange в useGanttTimeline.
+// Итерация 13.19: readonly-режим через usePlan().currentVersionId;
+//   кнопка «Пересчитать» активна только при planDirty === true.
+//   onForceRecalc в RecalcSettingsDialog вызывает форс-режим
+//   (skipSettingsCheck=true), чтобы не зацикливаться на пустых
+//   plan_settings.
+// Итерация 13.20: RecalcProgressDialog — модальное окно прогресса
+//   пересчёта. Показывается, пока solver работает. Таймер и спиннер,
+//   блокировка Esc/backdrop/UI.
+// Итерация 13.21: после успешного пересчёта показываем Alert,
+//   если старая версия не была архивирована (replace_blocked=true).
+//   Также сбрасываем planDirty, даже если архивация не удалась —
+//   пользователь уже увидел актуальный результат.
 
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useNavigate, useSearchParams} from 'react-router-dom';
-import {Alert, Box, Button, CircularProgress, Paper, Typography,} from '@mui/material';
-import {WarningAmber as WarningIcon,} from '@mui/icons-material';
+import {Alert, Box, Button, Chip, CircularProgress, Paper, Snackbar, Typography,} from '@mui/material';
+import {Archive as ArchiveIcon, WarningAmber as WarningIcon,} from '@mui/icons-material';
 
 import type {Timeline} from 'vis-timeline/standalone';
 import 'vis-timeline/styles/vis-timeline-graph2d.min.css';
 import {API_BASE_URL} from '../config';
 import {usePlan} from '../context/PlainContext';
-import type {TaskData, ValidationErrorState} from '../types';
+import type {RescheduleResponse, TaskData, ValidationErrorState,} from '../types';
 import GanttToolbar from '../components/gantt/GanttToolbar';
 import GanttFiltersBar from '../components/gantt/GanttFiltersBar';
 import GanttFiltersPopover from '../components/gantt/GanttFiltersPopover';
@@ -26,9 +37,10 @@ import TaskContextMenu from '../components/gantt/TaskContextMenu';
 import MoveValidationDialog from '../components/gantt/MoveValidationDialog';
 import DragTooltip from '../components/gantt/DragTooltip';
 import RecalcSettingsDialog from '../components/gantt/RecalcSettingsDialog';
+import RecalcProgressDialog from '../components/gantt/RecalcProgressDialog';
 import PlanSettingsWizard, {type WizardMode} from './PlanSettingsWizard';
 
-import {NON_BATCH_VALUES, STORAGE_KEYS,} from '../components/gantt/constants';
+import {NON_BATCH_VALUES, STORAGE_KEYS} from '../components/gantt/constants';
 import {useGanttData} from '../hooks/useGanttData';
 import {useGanttDependencies} from '../hooks/useGanttDependencies';
 import {useGanttFilters} from '../hooks/useGanttFilters';
@@ -36,6 +48,21 @@ import {useGanttTimeline} from '../hooks/useGanttTimeline';
 import {useGanttViewport} from '../hooks/useGanttViewport';
 import {useExpandedGroups} from '../hooks/useExpandedGroups';
 import {useGanttActions} from '../hooks/useGanttActions';
+
+// ==========================================
+// Итерация 13.20: тип операции пересчёта
+// ==========================================
+type RecalcOperation = 'recalc' | 'force-recalc';
+
+const RECALC_OPERATION_LABELS: Record<RecalcOperation, string> = {
+    'recalc': 'Пересчёт плана',
+    'force-recalc': 'Пересчёт плана (принудительный)',
+};
+
+const RECALC_OPERATION_HINTS: Record<RecalcOperation, string> = {
+    'recalc': 'Solver пересчитывает план с учётом внесённых изменений.',
+    'force-recalc': 'Solver пересчитывает план с текущими глобальными настройками.',
+};
 
 const GanttPage: React.FC = () => {
     const navigate = useNavigate();
@@ -58,6 +85,8 @@ const GanttPage: React.FC = () => {
         currentVersionId: contextVersionId,
         currentPlanName: contextPlanName,
         currentPlanHasSnapshot: contextHasSnapshot,
+        planDirty,
+        clearPlanDirty,
         clearPlan,
         setPlan,
     } = usePlan();
@@ -71,16 +100,15 @@ const GanttPage: React.FC = () => {
         : contextHasSnapshot;
 
     // ==========================================
-    // Readonly включается, если:
-    //   - плана нет вообще (режим редактирования) → false;
-    //   - план открыт через URL (version_id) → true;
-    //   - план установлен как текущий в контексте → true.
+    // Итерация 13.19: readonly включается, если план открыт
+    // (через URL или через контекст).
     // ==========================================
     const isReadOnly =
         urlVersionId !== null ||
         contextVersionId !== null;
 
-    const isEmptyPlan = currentVersionId !== null && !currentPlanHasSnapshot;
+    const isEmptyPlan =
+        currentVersionId !== null && !currentPlanHasSnapshot;
 
     // ==========================================
     // Данные Ганта
@@ -140,6 +168,27 @@ const GanttPage: React.FC = () => {
     const [wizardMode, setWizardMode] = useState<WizardMode>('edit');
     const [wizardVersionId, setWizardVersionId] = useState<string | null>(null);
 
+    // ==========================================
+    // Итерация 13.20: операция пересчёта (для прогресс-диалога)
+    // null — прогресс не показывается.
+    // ==========================================
+    const [recalcOperation, setRecalcOperation] = useState<RecalcOperation | null>(null);
+
+    // ==========================================
+    // Итерация 13.21: снекбар для уведомления об архивации
+    // ==========================================
+    const [archiveSnackbar, setArchiveSnackbar] = useState<{
+        open: boolean;
+        message: string;
+        severity: 'info' | 'warning';
+        whatifIds: string[];
+    }>({
+        open: false,
+        message: '',
+        severity: 'info',
+        whatifIds: [],
+    });
+
     const expandedGroups = useExpandedGroups(currentVersionId);
 
     // ==========================================
@@ -184,12 +233,37 @@ const GanttPage: React.FC = () => {
             setEditFormData({start: task.start, end: task.end});
             setEditDialogOpen(true);
         },
-        onRecalcSuccess: (newVersionId) => {
+        // Итерация 13.21: onRecalcSuccess получает полный Response
+        onRecalcSuccess: (newVersionId, response: RescheduleResponse) => {
+            // Итерация 13.19: сбрасываем флаг «грязный»
+            clearPlanDirty();
             setPlan(
                 newVersionId,
                 `Пересчитано ${new Date().toLocaleString('ru-RU')}`,
                 true,
             );
+
+            // Итерация 13.21: показываем снекбар о результате архивации
+            if (response.replace_archived) {
+                setArchiveSnackbar({
+                    open: true,
+                    message: 'Старая версия перемещена в архив',
+                    severity: 'info',
+                    whatifIds: [],
+                });
+            } else if (response.replace_blocked) {
+                setArchiveSnackbar({
+                    open: true,
+                    message: response.replace_blocked_reason
+                        || 'Старая версия не архивирована (используется в what-if)',
+                    severity: 'warning',
+                    whatifIds: response.used_by_whatif || [],
+                });
+            }
+
+            // Итерация 13.20: закрываем прогресс-диалог
+            setRecalcOperation(null);
+
             if (urlVersionId) {
                 navigate(`/gantt?version_id=${newVersionId}`, {replace: true});
             } else {
@@ -203,6 +277,29 @@ const GanttPage: React.FC = () => {
         showOnlyPinned,
         onFilteredCountChange: setFilteredCount,
     });
+
+    // ==========================================
+    // Итерация 13.20: обёртки над actions, чтобы показать прогресс
+    // ==========================================
+    const handleRecalculate = useCallback(async () => {
+        setRecalcOperation('recalc');
+        try {
+            await actions.recalculate();
+        } finally {
+            // Если onRecalcSuccess не сработал (ошибка или отмена) —
+            // всё равно закрыть прогресс-диалог
+            setRecalcOperation(null);
+        }
+    }, [actions]);
+
+    const handleForceRecalculate = useCallback(async () => {
+        setRecalcOperation('force-recalc');
+        try {
+            await actions.handleForceRecalculate();
+        } finally {
+            setRecalcOperation(null);
+        }
+    }, [actions]);
 
     // ==========================================
     // Список партий
@@ -417,11 +514,12 @@ const GanttPage: React.FC = () => {
     // Мастер настроек
     // ==========================================
     const handleOpenWizardEdit = useCallback(() => {
+        if (isReadOnly) return;
         if (!currentVersionId) return;
         setWizardMode('edit');
         setWizardVersionId(currentVersionId);
         setWizardOpen(true);
-    }, [currentVersionId]);
+    }, [currentVersionId, isReadOnly]);
 
     const handleToggleGroup = useCallback(
         (groupKey: string) => {
@@ -481,7 +579,6 @@ const GanttPage: React.FC = () => {
         onMoveTask: actions.handleMove,
         onError: setError,
         setFilteredCount,
-        // Итерация 13.18 (fix #5): tooltip при move/resize
         onItemChange: actions.handleItemChange,
     });
 
@@ -508,7 +605,6 @@ const GanttPage: React.FC = () => {
             equipmentList.length,
             firstTask?.id || '',
             lastTask?.id || '',
-            // --- фильтры ---
             searchQuery,
             equipmentFilter.join(','),
             productFilter.join(','),
@@ -517,7 +613,6 @@ const GanttPage: React.FC = () => {
             showOnlySlowCooling ? '1' : '0',
             showOnlyCzIncomplete ? '1' : '0',
             showOnlyPinned ? '1' : '0',
-            // --- отображение ---
             showSetups ? '1' : '0',
             showDowntimes ? '1' : '0',
             showAllDependencies ? '1' : '0',
@@ -651,12 +746,17 @@ const GanttPage: React.FC = () => {
                 onOpenAudit={handleOpenAudit}
                 onRefresh={() => void loadGanttData()}
                 onExport={handleExport}
-                onRecalculate={isReadOnly ? () => void actions.recalculate() : undefined}
+                onRecalculate={
+                    isReadOnly
+                        ? () => void handleRecalculate()
+                        : undefined
+                }
                 recalculating={actions.recalculating}
+                planDirty={planDirty}
             />
 
             {error && (
-                <Alert severity="warning" sx={{mb: 1, flexShrink: 0}}>
+                <Alert severity="warning" sx={{mb: 1, flexShrink: 0}} onClose={() => setError(null)}>
                     {error}
                 </Alert>
             )}
@@ -841,11 +941,77 @@ const GanttPage: React.FC = () => {
                 onOpenWizard={handleOpenWizardEdit}
                 onForceRecalc={() => {
                     setRecalcSettingsDialogOpen(false);
-                    void actions.recalculate();
+                    void handleForceRecalculate();
                 }}
                 planName={currentPlanName}
                 recalculating={actions.recalculating}
             />
+
+            {/* ==========================================
+                Итерация 13.20: прогресс-диалог пересчёта.
+                Показывается, пока recalcOperation !== null.
+                Автоматически закрывается:
+                  - при успехе (onRecalcSuccess → setRecalcOperation(null));
+                  - при ошибке (finally в handleRecalculate).
+            ========================================== */}
+            <RecalcProgressDialog
+                open={recalcOperation !== null}
+                operationLabel={
+                    recalcOperation
+                        ? RECALC_OPERATION_LABELS[recalcOperation]
+                        : 'Пересчёт плана'
+                }
+                operationHint={
+                    recalcOperation
+                        ? RECALC_OPERATION_HINTS[recalcOperation]
+                        : undefined
+                }
+                timeoutSeconds={600}
+            />
+
+            {/* ==========================================
+                Итерация 13.21: снекбар о результате архивации.
+                - info: старая версия успешно архивирована;
+                - warning: старая версия не архивирована, потому что
+                  используется в what-if сценарии.
+            ========================================== */}
+            <Snackbar
+                open={archiveSnackbar.open}
+                autoHideDuration={8000}
+                onClose={() => setArchiveSnackbar((prev) => ({...prev, open: false}))}
+                anchorOrigin={{vertical: 'bottom', horizontal: 'right'}}
+            >
+                <Alert
+                    severity={archiveSnackbar.severity}
+                    icon={archiveSnackbar.severity === 'info'
+                        ? <ArchiveIcon />
+                        : <WarningIcon />
+                    }
+                    onClose={() => setArchiveSnackbar((prev) => ({...prev, open: false}))}
+                    sx={{maxWidth: 480}}
+                >
+                    <Typography variant="body2" sx={{fontWeight: 600}}>
+                        {archiveSnackbar.severity === 'info'
+                            ? 'Архивация'
+                            : 'Старая версия не архивирована'}
+                    </Typography>
+                    <Typography variant="caption" sx={{display: 'block'}}>
+                        {archiveSnackbar.message}
+                    </Typography>
+                    {archiveSnackbar.whatifIds.length > 0 && (
+                        <Box sx={{mt: 0.5, display: 'flex', gap: 0.5, flexWrap: 'wrap'}}>
+                            {archiveSnackbar.whatifIds.map((id) => (
+                                <Chip
+                                    key={id}
+                                    label={id.substring(0, 8)}
+                                    size="small"
+                                    variant="outlined"
+                                />
+                            ))}
+                        </Box>
+                    )}
+                </Alert>
+            </Snackbar>
 
             <PlanSettingsWizard
                 open={wizardOpen}
@@ -854,7 +1020,7 @@ const GanttPage: React.FC = () => {
                 versionId={wizardVersionId}
                 onSaved={(_versionId, action) => {
                     if (action === 'save' || action === 'save-and-build') {
-                        void actions.recalculate();
+                        void handleRecalculate();
                     }
                 }}
             />

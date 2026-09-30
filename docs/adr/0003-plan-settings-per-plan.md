@@ -45,24 +45,24 @@
 
 ```sql
 CREATE TABLE plan_settings (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    organization_id UUID NOT NULL,
-    schedule_version_id UUID NOT NULL
-        REFERENCES schedule_version(id) ON DELETE CASCADE,
-    setting_key TEXT NOT NULL,
-    setting_value JSONB,
-    value_type TEXT NOT NULL DEFAULT 'str',
-    category TEXT NOT NULL DEFAULT 'general',
-    label TEXT,
-    description TEXT,
-    min_value NUMERIC,
-    max_value NUMERIC,
-    options JSONB,
-    display_order INT NOT NULL DEFAULT 0,
-    is_system BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (schedule_version_id, setting_key)
+                               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                               organization_id UUID NOT NULL,
+                               schedule_version_id UUID NOT NULL
+                                   REFERENCES schedule_version(id) ON DELETE CASCADE,
+                               setting_key TEXT NOT NULL,
+                               setting_value JSONB,
+                               value_type TEXT NOT NULL DEFAULT 'str',
+                               category TEXT NOT NULL DEFAULT 'general',
+                               label TEXT,
+                               description TEXT,
+                               min_value NUMERIC,
+                               max_value NUMERIC,
+                               options JSONB,
+                               display_order INT NOT NULL DEFAULT 0,
+                               is_system BOOLEAN NOT NULL DEFAULT FALSE,
+                               created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                               updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                               UNIQUE (schedule_version_id, setting_key)
 );
 ```
 
@@ -72,21 +72,21 @@ CREATE TABLE plan_settings (
 CREATE OR REPLACE FUNCTION copy_app_settings_to_plan()
 RETURNS TRIGGER AS $$
 BEGIN
-    INSERT INTO plan_settings (
-        organization_id, schedule_version_id,
-        setting_key, setting_value,
-        value_type, category, label, description,
-        min_value, max_value, options, display_order, is_system
-    )
-    SELECT
-        NEW.organization_id, NEW.id,
-        setting_key, setting_value,
-        value_type, category, label, description,
-        min_value, max_value, options, display_order, is_system
-    FROM app_settings
-    WHERE organization_id = NEW.organization_id
+INSERT INTO plan_settings (
+    organization_id, schedule_version_id,
+    setting_key, setting_value,
+    value_type, category, label, description,
+    min_value, max_value, options, display_order, is_system
+)
+SELECT
+    NEW.organization_id, NEW.id,
+    setting_key, setting_value,
+    value_type, category, label, description,
+    min_value, max_value, options, display_order, is_system
+FROM app_settings
+WHERE organization_id = NEW.organization_id
     ON CONFLICT (schedule_version_id, setting_key) DO NOTHING;
-    RETURN NEW;
+RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -106,11 +106,11 @@ CREATE TRIGGER trg_copy_app_settings_to_plan
 
 ```python
 async def read_setting(
-    db: AsyncSession,
-    org_id: UUID,
-    key: str,
-    default: Optional[str] = None,
-    version_id: Optional[UUID] = None,
+        db: AsyncSession,
+        org_id: UUID,
+        key: str,
+        default: Optional[str] = None,
+        version_id: Optional[UUID] = None,
 ) -> Optional[str]:
     # 1. Если version_id задан — читаем из plan_settings
     if version_id is not None:

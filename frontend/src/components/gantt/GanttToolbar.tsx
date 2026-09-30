@@ -1,17 +1,10 @@
 // frontend/src/components/gantt/GanttToolbar.tsx
 /**
- * Верхняя панель (тулбар) диаграммы Ганта (Итерация 13.17).
+ * Верхняя панель (тулбар) диаграммы Ганта (Итерация 13.17 + 13.19).
  *
- * Содержит:
- *  - Заголовок «📊 Диаграмма Ганта».
- *  - Чипы статистики (всего/показано, makespan, оборудование).
- *  - Chip режима просмотра (readonly).
- *  - Поле поиска.
- *  - Кнопку «Фильтры».
- *  - Кнопку «🔄 Пересчитать» (только в readonly).      ← НОВОЕ (9e)
- *  - Панель навигации (pan, zoom, fit, today).
- *  - Кнопки миникарты и связей.
- *  - Кнопки «История», «Обновить», «Экспорт».
+ * Итерация 13.19: кнопка «Пересчитать» становится активной ТОЛЬКО
+ * если planDirty === true (есть несохранённые изменения,
+ * влияющие на расчёт).
  */
 import React from 'react';
 import {Chip, Divider, IconButton, InputAdornment, Paper, TextField, Tooltip, Typography,} from '@mui/material';
@@ -76,10 +69,14 @@ export interface GanttToolbarProps {
     onExport: () => void;
 
     // Итерация 13.17 (9e): пересчёт плана
-    /** Обработчик кнопки «Пересчитать». Показывается только в readonly. */
     onRecalculate?: () => void;
-    /** Идёт ли пересчёт (для блокировки кнопки). */
     recalculating?: boolean;
+
+    /**
+     * Итерация 13.19: есть ли несохранённые изменения, влияющие
+     * на расчёт. Кнопка «Пересчитать» активна только при true.
+     */
+    planDirty: boolean;
 }
 
 const GanttToolbar: React.FC<GanttToolbarProps> = ({
@@ -110,9 +107,8 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
                                                        onExport,
                                                        onRecalculate,
                                                        recalculating = false,
+                                                       planDirty,
                                                    }) => {
-    console.log('[GanttToolbar] isReadOnly:', isReadOnly,
-        'onRecalculate:', typeof onRecalculate);
     return (
         <Paper
             elevation={1}
@@ -215,15 +211,22 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
                 </IconButton>
             </Tooltip>
 
-            {/* Итерация 13.17 (9e): кнопка «Пересчитать» (только readonly) */}
+            {/* Итерация 13.17 (9e): кнопка «Пересчитать» */}
+            {/* Итерация 13.19: активна только при planDirty */}
             {isReadOnly && onRecalculate && (
-                <Tooltip title="Пересчитать план с текущими настройками">
+                <Tooltip
+                    title={
+                        planDirty
+                            ? 'Пересчитать план с учётом изменений'
+                            : 'Нет изменений для пересчёта. Измените справочники, заказы, настройки или передвиньте задачу.'
+                    }
+                >
                     <span>
                         <IconButton
                             size="small"
                             onClick={onRecalculate}
-                            color="primary"
-                            disabled={recalculating}
+                            color={planDirty ? 'primary' : 'default'}
+                            disabled={recalculating || !planDirty}
                         >
                             <RecalcIcon />
                         </IconButton>

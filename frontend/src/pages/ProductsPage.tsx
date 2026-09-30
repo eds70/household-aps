@@ -1,4 +1,6 @@
-// src/pages/ProductsPage.tsx
+// frontend/src/pages/ProductsPage.tsx
+// Итерация 13.19: markPlanDirty() при изменениях, влияющих на расчёт.
+
 import React, {useEffect, useState} from 'react';
 import {
     Alert,
@@ -18,11 +20,8 @@ import {
     Typography,
 } from '@mui/material';
 import {Add as AddIcon, Delete as DeleteIcon, Lock as LockIcon} from '@mui/icons-material';
-import {AgGridReact} from 'ag-grid-react';
 import type {ColDef, GridReadyEvent} from 'ag-grid-community';
 import {AllCommunityModule, ModuleRegistry} from 'ag-grid-community';
-import 'ag-grid-community/styles/ag-grid.css';
-import 'ag-grid-community/styles/ag-theme-alpine.css';
 import type {Product} from '../types';
 import axios from 'axios';
 import {API_BASE_URL} from '../config';
@@ -31,14 +30,15 @@ import DraggableDialog from '../components/common/DraggableDialog';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
+import AppAgGrid from '../components/common/AppAgGrid';
+
 const PRODUCT_TYPE_TRANSLATIONS: Record<string, string> = {
     'PF': 'Полуфабрикат',
     'GP': 'Готовая продукция',
 };
 
 const ProductsPage: React.FC = () => {
-    // ✅ Получаем версию плана из контекста
-    const { currentVersionId, currentPlanName } = usePlan();
+    const {currentVersionId, currentPlanName, markPlanDirty} = usePlan();
     const isReadOnly = currentVersionId !== null;
 
     const [products, setProducts] = useState<Product[]>([]);
@@ -54,7 +54,7 @@ const ProductsPage: React.FC = () => {
 
     useEffect(() => {
         loadProducts();
-    }, [currentVersionId]); // ✅ Перезагружаем при смене версии
+    }, [currentVersionId]);
 
     const loadProducts = async () => {
         setLoading(true);
@@ -144,6 +144,8 @@ const ProductsPage: React.FC = () => {
         try {
             await axios.put(`${API_BASE_URL}/api/v1/products/${data.id}`, { [field]: newValue });
             setProducts((prev) => prev.map((p) => p.id === data.id ? { ...p, [field]: newValue } : p));
+            // Итерация 13.19: пометить план «грязным»
+            markPlanDirty();
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Ошибка сохранения');
             setProducts((prev) => prev.map((p) => p.id === data.id ? { ...p, [field]: oldValue } : p));
@@ -156,6 +158,8 @@ const ProductsPage: React.FC = () => {
         try {
             await axios.delete(`${API_BASE_URL}/api/v1/products/${id}`);
             setProducts((prev) => prev.filter((p) => p.id !== id));
+            // Итерация 13.19: пометить план «грязным»
+            markPlanDirty();
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Ошибка удаления');
         }
@@ -179,6 +183,8 @@ const ProductsPage: React.FC = () => {
             });
             setProducts((prev) => [...prev, response.data]);
             setDialogOpen(false);
+            // Итерация 13.19: пометить план «грязным»
+            markPlanDirty();
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Ошибка создания');
         }
@@ -211,7 +217,6 @@ const ProductsPage: React.FC = () => {
                 </Box>
             </Box>
 
-            {/* ✅ Индикатор режима просмотра */}
             {isReadOnly && (
                 <Alert severity="info" sx={{ mb: 2 }} icon={<LockIcon fontSize="inherit" />}>
                     Режим просмотра: <b>{currentPlanName}</b>. Редактирование недоступно.
@@ -228,8 +233,8 @@ const ProductsPage: React.FC = () => {
 
             <Card sx={{ flexGrow: 1, boxShadow: '0 2px 8px rgba(0,0,0,0.1)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
                 <CardContent sx={{ p: 2, flexGrow: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                    <Box className="ag-theme-alpine" sx={{ flexGrow: 1, width: '100%', minHeight: 0 }}>
-                        <AgGridReact
+                    <Box sx={{ flexGrow: 1, width: '100%', minHeight: 0 }}>
+                        <AppAgGrid
                             rowData={filteredProducts}
                             columnDefs={columnDefs}
                             defaultColDef={defaultColDef}
@@ -238,14 +243,12 @@ const ProductsPage: React.FC = () => {
                             paginationPageSize={20}
                             paginationPageSizeSelector={[20, 50, 100]}
                             onCellValueChanged={handleCellValueChanged}
-                            suppressPropertyNamesCheck={true}
                             onGridReady={(params: GridReadyEvent) => params.api.sizeColumnsToFit()}
                         />
                     </Box>
                 </CardContent>
             </Card>
 
-            {/* Диалог добавления (только для режима редактирования) */}
             {!isReadOnly && (
                 <DraggableDialog
                     open={dialogOpen}

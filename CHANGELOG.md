@@ -10,54 +10,173 @@
 ### Added
 - Заготовка для Итерации 14: встроенная справка пользователя.
 
+---
+
+## [4.2.0] — 2026-09-29
+
+Итерация 13.21 — архивация версий планов.
+
+### Added
+
+#### Итерация 13.21 — Архивирование версий планов
+
+**Проблема:**
+В «Истории планов» накапливалось много неактивных версий (55 за ~10 дней работы).
+При пересчёте плана создавалась новая версия, а старая оставалась в списке
+как обычная. Пользователь видел длинный список и не понимал, какая версия
+актуальна.
+
+**Решение:**
+- Добавлено поле `schedule_version.is_archived BOOLEAN DEFAULT FALSE`.
+- При пересчёте с заменой старая версия автоматически архивируется
+  (скрывается из списка).
+- Архивные версии можно показать чекбоксом «Показать архивные».
+- Архивные версии можно разархивировать обратно одной кнопкой.
+- Иерархия планов в «Истории планов»: дочерние версии отображаются
+  под родительскими по `parent_version_id`.
+
+**1. База данных (миграция `add_23.sql`):**
+- ✅ Колонка `schedule_version.is_archived BOOLEAN NOT NULL DEFAULT FALSE`.
+- ✅ Partial-индекс `idx_schedule_version_archived`
+  по `(organization_id, created_at DESC) WHERE is_archived = FALSE`.
+- ✅ Настройка `app_settings.auto_archive_on_recalc` (bool, category=planning,
+  default=true) — управляет поведением по умолчанию.
+- ✅ Одноразовая миграция: все НЕактивные версии (54 из 55) помечены
+  архивными. В списке остаётся только активная.
+
+**2. Backend:**
+- ✅ `ScheduleSaver._archive_version(session, version_id)` — архивирует
+  версию, если она не используется в what-if.
+- ✅ `ScheduleSaver._check_version_usage(session, version_id)` — проверяет
+  использование в `whatif_scenario` (статусы `DRAFT`, `RUNNING`).
+- ✅ `ScheduleSaver.save_schedule()` принимает `replace_version_id` в
+  `schedule_data` и вызывает `_archive_version`.
+- ✅ `ScheduleSaver._do_save()` возвращает поля:
+  `replace_archived`, `replace_blocked`, `replace_blocked_reason`,
+  `used_by_whatif`.
+- ✅ `RescheduleRequest.replace_version_id` (опциональное поле).
+- ✅ `RescheduleResponse` дополнен полями `replace_archived`,
+  `replace_blocked`, `replace_blocked_reason`, `used_by_whatif`.
+- ✅ `Rescheduler.reschedule()` принимает `replace_version_id`,
+  пробрасывает в `ScheduleSaver`.
+- ✅ `Rescheduler.RescheduleResult` дополнен теми же полями.
+- ✅ `GET /api/v1/schedule/versions?include_archived=true` — фильтр по
+  архивным. По умолчанию архивные скрыты.
+- ✅ Поле `is_archived` и `parent_version_id` в ответе `GET /versions`.
+- ✅ Новый эндпоинт `PUT /api/v1/schedule/versions/{id}/unarchive`.
+- ✅ `POST /api/v1/schedule/versions` создаёт версии с `is_archived = FALSE`.
+
+**3. Frontend:**
+- ✅ `PlanVersion.is_archived` и `PlanVersion.parent_version_id` в типах.
+- ✅ `UnarchiveVersionResponse` в типах.
+- ✅ `scheduleApi.unarchiveVersion(versionId)` в `api.ts`.
+- ✅ `scheduleApi.getVersions(includeArchived)` принимает параметр.
+- ✅ `scheduleApi.reschedule()` отправляет `replace_version_id`.
+- ✅ `PlainContext`:
+    - `includeArchived: boolean` (сохраняется в localStorage).
+    - `setIncludeArchived(value)`.
+    - `unarchiveVersion(versionId)`.
+    - `loadVersions()` учитывает `includeArchived`.
+- ✅ `useRecalculate.ts`:
+    - Читает `auto_archive_on_recalc` из `app_settings`.
+    - Передаёт `replace_version_id` при пересчёте.
+    - `onSuccess(newVersionId, response)` — второй аргумент для UI.
+- ✅ `SchedulePage.tsx`:
+    - Tree Data для «Истории планов» (по `parent_version_id`).
+    - Чекбокс «Показать архивные».
+    - Кнопка «↩ Разархивировать» для архивных версий.
+    - Иконка 📦 для архивных, «активный» чип для активного.
+    - Alert с предупреждением, если архивация не удалась.
+- ✅ `GanttPage.tsx`:
+    - Снекбар после успешного пересчёта:
+        - info — старая версия архивирована;
+        - warning — не архивирована (используется в what-if).
+    - `onRecalcSuccess` принимает `RescheduleResponse` (второй аргумент).
+- ✅ `PlanSettingsWizard.tsx`:
+    - Чекбокс `auto_archive_on_recalc` на шаге «Основные».
+
+**4. Тесты (+28, всего 563):**
+- ✅ `test_schedule_versions_archive.py` (28):
+    - Pydantic-модели (4).
+    - Настройка `auto_archive_on_recalc` (3).
+    - Структурные тесты `saver.py` (7).
+    - Структурные тесты API (7).
+    - Миграция `add_23.sql` (7).
+    - Интеграционные тесты (с БД): архивация, разархивация, блокировка.
+
+**5. Документация:**
+- ✅ `README.md` — версия 4.2.0, обновлена секция «История планов».
+- ✅ `docs/API.md` — эндпоинт `unarchive`, параметр `include_archived`.
+- ✅ `docs/CONFIGURATION.md` — настройка `auto_archive_on_recalc`.
+- ✅ `docs/OPERATIONS.md` — проверка архивных версий через docker psql.
+- ✅ `docs/ARCHITECTURE.md` — раздел «Архивация версий».
+- ✅ `docs/ROADMAP.md` — строка 13.21.
+- ✅ `docs/TROUBLESHOOTING.md` — типовые проблемы.
+
+**6. Ключевые гарантии:**
+- ✅ **Архивация безопасна** — данные не удаляются, только скрываются.
+- ✅ **What-if защищён** — версия не архивируется, если она используется
+  в сценариях `DRAFT` или `RUNNING`.
+- ✅ **Reschedule_log не блокирует** — журнал перепланирований ссылается
+  на архивные версии без проблем.
+- ✅ **Разархивация возможна** — через UI-кнопку или напрямую через API.
+- ✅ **Обратная совместимость** — все старые версии работают, поле
+  `is_archived` опционально.
+
 ### Changed
 
-#### Frontend — Унификация диалогов через `DraggableDialog`
+- Версия проекта: `4.1.1` → `4.2.0`.
+- `POST /api/v1/schedule/reschedule` принимает `replace_version_id`.
+- `GET /api/v1/schedule/versions` фильтрует архивные по умолчанию.
+- `GET /api/v1/schedule/versions` возвращает `is_archived` и
+  `parent_version_id`.
+- `ScheduleSaver._do_save` возвращает поля архивации.
+- `Rescheduler.reschedule` возвращает поля архивации.
+- `useRecalculate` читает `auto_archive_on_recalc`.
+- `SchedulePage` — Tree Data для планов.
+- `GanttPage` — снекбар после пересчёта.
+- `PlanSettingsWizard` — чекбокс `auto_archive_on_recalc`.
 
-- **Все 20 диалогов в 12 страницах** переведены на единый компонент
-  `frontend/src/components/common/DraggableDialog.tsx`.
-- Убраны явные `<Dialog>` / `<DialogTitle>` / `<DialogContent>` /
-  `<DialogActions>` — `DraggableDialog` сам оборачивает содержимое.
-- Добавлен проп `centerOnOpen?: boolean` (по умолчанию `true`) — диалог
-  открывается по центру экрана, а не по верхнему левому углу.
-- Убран ~150 строк дублированного drag/resize-кода из `GanttPage.tsx`.
+### Fixed
 
-**Затронутые страницы:**
+- **Проблема:** список планов засоряется неактивными версиями.
+- **Решение:** архивация + Tree Data + чекбокс «Показать архивные».
 
-| Страница | Диалогов | Что унифицировано |
-|----------|----------|-------------------|
-| `EquipmentPage.tsx` | 2 | Добавить оборудование, Ремонт/простой |
-| `ProductsPage.tsx` | 1 | Добавить продукт |
-| `MaterialsPage.tsx` | 3 | Добавить материал, Импорт, Очистка журнала |
-| `RecipesPage.tsx` | 2 | Добавить рецепт, Состав рецепта |
-| `OperationsPage.tsx` | 1 | Добавить операцию |
-| `OrdersPage.tsx` | 2 | Новый заказ, Авто-разбиение |
-| `SchedulePage.tsx` | 1 | Перепланирование |
-| `ShiftPage.tsx` | 3 | Внести факт, Заблокировать, Разблокировать |
-| `CzPage.tsx` | 1 | Сопоставить скан |
-| `WhatIfPage.tsx` | 2 | Создать сценарий, Результат |
-| `SettingsPage.tsx` | 1 | Смена режима смен |
-| `GanttPage.tsx` | 1 | Расширенный диалог задачи |
+---
 
-**Итого: 20 диалогов в 12 страницах.**
+## [4.1.2] — 2026-09-29
 
-#### Frontend — Временное скрытие раздела «Аудит»
+Итерация 13.20 — модальное окно прогресса пересчёта.
 
-- Пункт «Аудит» убран из `MENU_ITEMS` в `MainLayout.tsx` — страница
-  находится в разработке.
-- Роут `/audit` **оставлен** — можно открыть по прямой ссылке для отладки.
-- Файл `AuditPage.tsx` и API `/api/v1/audit/*` **не удалены** — вернутся,
-  когда раздел будет готов.
+### Added
 
-#### Frontend — Исправление layout `CzPage.tsx`
+#### Итерация 13.20 — `RecalcProgressDialog`
 
-- Заголовок страницы: `h4` → `h5` (в стиле остальных страниц).
-- Иконка: 32px → 28px.
-- Корневой `Box`: добавлен `gap: 2`.
-- Сводка обёрнута в `Card` с тенью (как `MaterialsPage`, `ShiftPage`).
-- Обе колонки (партии + журнал) — в отдельных `Card` с тенью.
-- Подпись внизу — в `Card` с серым фоном, а не «висящий» текст.
-- Устранено дублирование `key` в списке партий.
+**Проблема:**
+Solver работает 30–120 секунд. Пользователь не понимал, что происходит,
+и мог закрыть страницу. Кроме того, кнопка «Пересчитать» в тулбаре
+не показывала прогресс.
+
+**Решение:**
+- Новый компонент `RecalcProgressDialog.tsx`:
+    - Спиннер + иконка песочных часов.
+    - Таймер «MM:SS» (тик каждую секунду).
+    - Прогресс-бар до timeout.
+    - Предупреждение «Не закрывайте страницу».
+    - Блокировка Esc/backdrop.
+- `GanttPage`:
+    - `RecalcOperation` type ('recalc' | 'force-recalc').
+    - Открытие диалога при старте пересчёта.
+    - Закрытие — при успехе / ошибке.
+- `handleRecalculate` и `handleForceRecalculate` — обёртки над
+  `actions.recalculate`, которые управляют `RecalcOperation`.
+
+### Changed
+
+- `GanttPage.tsx`: два обработчика с прогрессом.
+- Версия проекта: `4.1.1` → `4.1.2`.
+
+---
 
 ## [4.1.1] — 2026-09-25
 

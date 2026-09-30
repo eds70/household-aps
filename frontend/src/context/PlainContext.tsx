@@ -16,12 +16,18 @@ export interface PlanVersion {
      *
      * true  — план рассчитан или создан через snapshot_all_catalogs.
      * false — «пустой» план (создан до Итерации 13.15, снапшотов нет).
-     *
-     * UI использует это, чтобы понять, можно ли открывать план
-     * в readonly-режиме. Если false — вместо readonly показываем
-     * предупреждение «план пуст, требуется пересчёт».
      */
     has_snapshot?: boolean;
+    /**
+     * Итерация 13.21: архивная версия.
+     * Архивные версии скрыты из списка по умолчанию.
+     */
+    is_archived?: boolean;
+    /**
+     * Итерация 13.21: ID родительской версии.
+     * Используется для построения иерархии в «Истории планов».
+     */
+    parent_version_id?: string | null;
 }
 
 // Текущий план: либо конкретный план, либо null (режим редактирования)
@@ -36,29 +42,61 @@ interface PlanContextType {
     currentPlanName: string;
     /**
      * Итерация 13.15: есть ли снапшоты у текущего плана.
-     * true  — план полноценный, справочники читаются из снапшотов.
-     * false — план пуст (снапшотов нет), справочники будут пустыми.
      */
     currentPlanHasSnapshot: boolean;
+
+    /**
+     * Итерация 13.19: флаг «план содержит несохранённые изменения,
+     * влияющие на расчёт».
+     *
+     * Устанавливается через markPlanDirty() при:
+     *   - изменении справочников (продукты, оборудование, операции,
+     *     рецепты, материалы);
+     *   - изменении заказов и партий;
+     *   - изменении capacity пулов;
+     *   - лабораторной блокировке / разблокировке;
+     *   - изменении calendar_event;
+     *   - изменении app_settings / plan_settings;
+     *   - перемещении / изменении длительности задачи на Ганте
+     *     (move-cascade / resize);
+     *   - pin / unpin задачи.
+     *
+     * Сбрасывается через clearPlanDirty() при:
+     *   - успешном пересчёте (recalculate);
+     *   - смене активного плана;
+     *   - создании нового плана.
+     */
+    planDirty: boolean;
+    markPlanDirty: () => void;
+    clearPlanDirty: () => void;
+
     versions: PlanVersion[];
     setPlan: (versionId: string | null, name: string, hasSnapshot?: boolean) => void;
     clearPlan: () => void;
     loadVersions: () => Promise<void>;
     createPlan: (name: string, versionType: string, comment?: string) => Promise<PlanVersion>;
     deletePlan: (versionId: string) => Promise<void>;
+
+    /**
+     * Итерация 13.21: показывать ли архивные версии в списке.
+     * Сохраняется в localStorage, чтобы не сбрасываться при F5.
+     */
+    includeArchived: boolean;
+    setIncludeArchived: (value: boolean) => void;
+
+    /**
+     * Итерация 13.21: разархивировать версию плана.
+     * После успеха обновляет список versions.
+     */
+    unarchiveVersion: (versionId: string) => Promise<void>;
 }
 
 export const PlanContext = createContext<PlanContextType | undefined>(undefined);
 
 const STORAGE_KEY = 'aps_current_plan';
+const STORAGE_KEY_INCLUDE_ARCHIVED = 'aps_include_archived';
 
 export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-    // Итерация 13.13: храним id и name в одном объекте,
-    // чтобы они не могли рассинхронизироваться.
-    // Также сохраняем в localStorage — чтобы план не сбрасывался при F5.
-    //
-    // Итерация 13.15: добавлен has_snapshot — чтобы UI знал, можно ли
-    // читать справочники из снапшотов или план пуст.
     const [currentPlan, setCurrentPlan] = useState<CurrentPlan | null>(() => {
         try {
             const raw = localStorage.getItem(STORAGE_KEY);
@@ -79,6 +117,24 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
     const [versions, setVersions] = useState<PlanVersion[]>([]);
 
+    /**
+     * Итерация 13.21: показывать ли архивные версии.
+     * По умолчанию — false (список чистый).
+     */
+    const [includeArchived, setIncludeArchivedState] = useState<boolean>(() => {
+        try {
+            return localStorage.getItem(STORAGE_KEY_INCLUDE_ARCHIVED) === '1';
+        } catch {
+            return false;
+        }
+    });
+
+    /**
+     * Итерация 13.19: флаг «план содержит несохранённые изменения».
+     * Хранится в localStorage по ключу плана, чтобы не терялся при F5.
+     */
+    const [planDirty, setPlanDirty] = useState<boolean>(false);
+
     const {isAuthenticated, isLoading} = useAuth();
 
     // Сохраняем currentPlan в localStorage при каждом изменении
@@ -94,20 +150,77 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
     }, [currentPlan]);
 
+    // Итерация 13.21: сохраняем includeArchived в localStorage
+    useEffect(() => {
+        try {
+            localStorage.setItem(
+                STORAGE_KEY_INCLUDE_ARCHIVED,
+                includeArchived ? '1' : '0',
+            );
+        } catch {
+            // ignore
+        }
+    }, [includeArchived]);
+
+    /**
+     * Итерация 13.19: сохраняем planDirty в localStorage per-plan,
+     * чтобы флаг не терялся при F5.
+     */
+    useEffect(() => {
+        if (!currentPlan?.id) return;
+        try {
+            const key = `aps_plan_dirty_${currentPlan.id}`;
+            if (planDirty) {
+                localStorage.setItem(key, '1');
+            } else {
+                localStorage.removeItem(key);
+            }
+        } catch {
+            // ignore
+        }
+    }, [planDirty, currentPlan?.id]);
+
+    /**
+     * Итерация 13.19: восстанавливаем planDirty при смене плана.
+     */
+    useEffect(() => {
+        if (!currentPlan?.id) {
+            setPlanDirty(false);
+            return;
+        }
+        try {
+            const key = `aps_plan_dirty_${currentPlan.id}`;
+            setPlanDirty(localStorage.getItem(key) === '1');
+        } catch {
+            setPlanDirty(false);
+        }
+    }, [currentPlan?.id]);
+
+    /**
+     * Итерация 13.21: сеттер для includeArchived с автоматической
+     * перезагрузкой списка версий.
+     */
+    const setIncludeArchived = useCallback((value: boolean) => {
+        setIncludeArchivedState(value);
+    }, []);
+
     const loadVersions = useCallback(async () => {
         try {
-            const response = await axios.get(`${API_BASE_URL}/api/v1/schedule/versions`);
+            // Итерация 13.21 (Вариант B): всегда получаем ВСЕ версии
+            // (включая архивные). Фильтрация — на фронте, в SchedulePage.
+            const response = await axios.get(
+                `${API_BASE_URL}/api/v1/schedule/versions`,
+                { params: { include_archived: true } },
+            );
             const list: PlanVersion[] = Array.isArray(response.data) ? response.data : [];
             setVersions(list);
 
-            // Синхронизация: если сохранённый план больше не существует в БД — сбрасываем его.
             setCurrentPlan((prev) => {
                 if (!prev) return prev;
                 const stillExists = list.some((v) => v.id === prev.id);
                 if (!stillExists) {
                     return null;
                 }
-                // Обновляем имя и has_snapshot, если они изменились
                 const fresh = list.find((v) => v.id === prev.id);
                 if (fresh) {
                     const freshHasSnapshot = fresh.has_snapshot !== false;
@@ -157,6 +270,14 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setCurrentPlan(null);
     }, []);
 
+    const markPlanDirty = useCallback(() => {
+        setPlanDirty(true);
+    }, []);
+
+    const clearPlanDirty = useCallback(() => {
+        setPlanDirty(false);
+    }, []);
+
     const createPlan = useCallback(async (
         name: string,
         versionType: string,
@@ -169,6 +290,8 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
         });
         const newVersion: PlanVersion = response.data;
         setVersions((prev) => [newVersion, ...prev]);
+        // Новый план создан со снапшотами и настройками — «чистый».
+        setPlanDirty(false);
         return newVersion;
     }, []);
 
@@ -182,7 +305,24 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
             return prev;
         });
+        try {
+            localStorage.removeItem(`aps_plan_dirty_${versionId}`);
+        } catch {
+            // ignore
+        }
     }, []);
+
+    /**
+     * Итерация 13.21: разархивация версии.
+     */
+    const unarchiveVersion = useCallback(async (versionId: string): Promise<void> => {
+        await axios.put(
+            `${API_BASE_URL}/api/v1/schedule/versions/${versionId}/unarchive`,
+        );
+        // Перезагружаем список — разархивированная появится,
+        // если includeArchived = false (или останется, если true).
+        await loadVersions();
+    }, [loadVersions]);
 
     const currentVersionId = currentPlan?.id ?? null;
     const currentPlanName = currentPlan?.name ?? "Режим редактирования";
@@ -193,12 +333,19 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
             currentVersionId,
             currentPlanName,
             currentPlanHasSnapshot,
+            planDirty,
+            markPlanDirty,
+            clearPlanDirty,
             versions,
             setPlan,
             clearPlan,
             loadVersions,
             createPlan,
             deletePlan,
+            // Итерация 13.21
+            includeArchived,
+            setIncludeArchived,
+            unarchiveVersion,
         }}>
             {children}
         </PlanContext.Provider>

@@ -132,7 +132,7 @@ cd backend
 pytest tests/ -v
 ```
 
-**Текущее состояние:** **535 passed**, 13 warnings.
+**Текущее состояние:** **563 passed**, 13 warnings.
 
 ### Конкретный файл
 
@@ -204,6 +204,7 @@ pytest tests/ -v --log-cli-level=DEBUG
 | **`test_snapshot.py`** | **Модуль snapshot (13.15)** |
 | **`test_schedule_create_version.py`** | **Создание версии + снапшоты (13.15)** |
 | **`test_saver_uses_snapshot.py`** | **saver → snapshot_all_catalogs (13.15)** |
+| **`test_schedule_versions_archive.py`** | **Архивация версий (13.21)** |
 
 ---
 
@@ -344,6 +345,12 @@ COMMIT;
 ```
 
 **Итерация 13.15 не требует миграции** — используются уже существующие снапшот-таблицы.
+
+**Итерация 13.21 использует миграцию `add_23.sql`:**
+- Добавляет колонку `schedule_version.is_archived`.
+- Создаёт partial-индекс `idx_schedule_version_archived`.
+- Добавляет настройку `auto_archive_on_recalc`.
+- Архивирует все неактивные версии (одноразово).
 
 ---
 
@@ -875,6 +882,14 @@ LOG_LEVEL=DEBUG
 
 Если этих строк нет — проверьте, что `snapshot_all_catalogs` действительно вызывается.
 
+**Отладка архивации (Итерация 13.21):**
+
+В логах backend:
+```
+Версия abcd1234 'План на октябрь' перемещена в архив
+Версия abcd1234 'План на октябрь' не архивирована: Используется в what-if сценариях: ...
+```
+
 ### Frontend
 
 **React DevTools** — расширение браузера.
@@ -891,6 +906,10 @@ console.error('Error:', value);
 **Отладка `has_snapshot`:**
 
 В React DevTools выберите `PlanProvider` — увидите `currentPlan` с полем `has_snapshot`. Если `has_snapshot: false` — план пуст.
+
+**Отладка `planDirty` (Итерация 13.19):**
+
+В React DevTools выберите `PlanProvider` — увидите `planDirty`. Если `true` — кнопка «Пересчитать» активна.
 
 ### Solver
 

@@ -1,12 +1,23 @@
 // frontend/src/pages/SchedulePage.tsx
-import React, {useCallback, useEffect, useState} from 'react';
+// Итерация 13.21: «История планов» — собственная группировка (Вариант B),
+//   иконка ▶/▼ у корней, состояние раскрытия сохраняется в localStorage.
+//   Чекбокс «Показать архивные», кнопка «↩ Разархивировать» для архивных версий.
+//   После пересчёта с заменой список обновляется автоматически.
+//
+// Итерация 13.22 (fix):
+//   - renderNameCell: единый слот 28×28 для иконки ▶/▼ и заглушки у детей.
+//     Раньше IconButton (~24px) и Box-заглушка (28px) давали горизонтальный
+//     сдвиг текста и границ колонок между корнем и его детьми.
+//   - renderNameCell: название сжимается через flexGrow: 1 + minWidth: 0,
+//     чип «активный» больше не обрезается родителем.
+//   - renderNameCell: Box получил width: '100%' — занимает всю ячейку.
+//   - renderNameCell: Typography component="span" — валидная вложенность.
+
+import React, {useCallback, useEffect, useMemo, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
 import {type PlanVersion, usePlan} from '../context/PlainContext';
-import {AgGridReact} from 'ag-grid-react';
 import type {ColDef, GridReadyEvent, RowStyle} from 'ag-grid-community';
 import {AllCommunityModule, ModuleRegistry} from 'ag-grid-community';
-import 'ag-grid-community/styles/ag-grid.css';
-import 'ag-grid-community/styles/ag-theme-alpine.css';
 import {
     Accordion,
     AccordionDetails,
@@ -16,10 +27,12 @@ import {
     Button,
     Card,
     CardContent,
+    Checkbox,
     Chip,
     CircularProgress,
     Divider,
     FormControl,
+    FormControlLabel,
     IconButton,
     InputLabel,
     MenuItem,
@@ -30,6 +43,9 @@ import {
 } from '@mui/material';
 import {
     Add as AddIcon,
+    Archive as ArchiveIcon,
+    ArrowDropDown as ArrowDropDownIcon,
+    ArrowRight as ArrowRightIcon,
     Autorenew as RescheduleIcon,
     Close as CloseIcon,
     Delete as DeleteIcon,
@@ -42,17 +58,21 @@ import {
     Save as SaveIcon,
     Settings as SettingsIcon,
     Timeline as TimelineIcon,
+    Unarchive as UnarchiveIcon,
     Visibility as ViewIcon,
     Warning as WarningIcon,
 } from '@mui/icons-material';
 import {Allotment} from 'allotment';
 import 'allotment/dist/style.css';
 import {advisorApi, rescheduleApi, scheduleApi, settingsApi} from '../services/api';
-import type {AdvisorResponse, AdvisorSeverity, RescheduleReason, RescheduleResponse,} from '../types';
+import type {AdvisorResponse, AdvisorSeverity, RescheduleReason, RescheduleResponse} from '../types';
 import PlanSettingsWizard, {type WizardMode} from './PlanSettingsWizard';
 import DraggableDialog from '../components/common/DraggableDialog';
+import {useExpandedRoots} from '../hooks/useExpandedRoots';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
+
+import AppAgGrid from '../components/common/AppAgGrid';
 
 const VERSION_TYPE_LABELS: Record<string, string> = {
     MONTHLY: 'Месячный (ОКП)',
@@ -81,8 +101,90 @@ const SEVERITY_ICONS: Record<AdvisorSeverity, React.ReactNode> = {
 const DEFAULT_HORIZON_HOURS = 720;
 const DEFAULT_TIMEOUT_SECONDS = 600;
 
+// ==========================================
+// Итерация 13.21: вспомогательный тип для группировки
+// ==========================================
+
+interface PlanVersionWithPath extends PlanVersion {
+    /** Путь от корня до этого узла: [rootId, childId, ...]. */
+    path: string[];
+    /** Глубина узла (0 для корня). */
+    depth: number;
+    /** ID корневой версии (для группировки). */
+    rootId: string;
+    /** Есть ли у этого узла дочерние версии (для иконки ▶/▼). */
+    hasChildren: boolean;
+}
+
+/**
+ * Строит иерархию версий по parent_version_id.
+ *
+ * Корни — версии с parent_version_id === null (или отсутствующим).
+ * Дети — по parent_version_id.
+ *
+ * Возвращает плоский список с полем `depth` для группировки.
+ * Если parent_version_id ссылается на отсутствующую версию (например,
+ * родитель удалён) — узел становится корнем.
+ */
+const buildVersionTree = (versions: PlanVersion[]): PlanVersionWithPath[] => {
+    const byId = new Map<string, PlanVersion>();
+    for (const v of versions) byId.set(v.id, v);
+
+    const childrenMap = new Map<string, PlanVersion[]>();
+    for (const v of versions) {
+        const parentId =
+            v.parent_version_id && byId.has(v.parent_version_id)
+                ? v.parent_version_id
+                : '__root__';
+        if (!childrenMap.has(parentId)) childrenMap.set(parentId, []);
+        childrenMap.get(parentId)!.push(v);
+    }
+
+    // Сортируем детей по created_at DESC (новые — выше)
+    for (const children of childrenMap.values()) {
+        children.sort((a, b) => {
+            const at = new Date(a.created_at).getTime();
+            const bt = new Date(b.created_at).getTime();
+            return bt - at;
+        });
+    }
+
+    const result: PlanVersionWithPath[] = [];
+
+    const visit = (
+        version: PlanVersion,
+        path: string[],
+        depth: number,
+        rootId: string,
+    ) => {
+        const newPath = [...path, version.id];
+        const children = childrenMap.get(version.id) || [];
+        const hasChildren = children.length > 0;
+        result.push({...version, path: newPath, depth, rootId, hasChildren});
+        for (const child of children) {
+            visit(child, newPath, depth + 1, rootId);
+        }
+    };
+
+    const roots = childrenMap.get('__root__') || [];
+    for (const root of roots) {
+        visit(root, [], 0, root.id);
+    }
+
+    return result;
+};
+
 const SchedulePage: React.FC = () => {
-    const { versions, setPlan, clearPlan, loadVersions, currentVersionId } = usePlan();
+    const {
+        versions,
+        setPlan,
+        clearPlan,
+        loadVersions,
+        currentVersionId,
+        includeArchived,
+        setIncludeArchived,
+        unarchiveVersion,
+    } = usePlan();
     const navigate = useNavigate();
 
     // Параметры расчёта — читаются из app_settings
@@ -94,6 +196,7 @@ const SchedulePage: React.FC = () => {
     const [loading, setLoading] = useState(false);
     const [result, setResult] = useState<any>(null);
     const [error, setError] = useState<string | null>(null);
+    const [success, setSuccess] = useState<string | null>(null);
 
     // Advisor
     const [advisorData, setAdvisorData] = useState<AdvisorResponse | null>(null);
@@ -118,6 +221,11 @@ const SchedulePage: React.FC = () => {
     });
     const [rescheduling, setRescheduling] = useState(false);
     const [rescheduleResult, setRescheduleResult] = useState<RescheduleResponse | null>(null);
+
+    // ==========================================
+    // Итерация 13.21: управление раскрытием корней
+    // ==========================================
+    const expandedRoots = useExpandedRoots();
 
     // ==========================================
     // Загрузка настроек планирования из app_settings
@@ -225,6 +333,20 @@ const SchedulePage: React.FC = () => {
         }
     };
 
+    // Итерация 13.21: разархивация
+    const handleUnarchivePlan = async (version: PlanVersion) => {
+        if (!window.confirm(`Разархивировать план "${version.name}"?`)) return;
+        try {
+            await unarchiveVersion(version.id);
+            setSuccess(`План «${version.name}» разархивирован`);
+        } catch (err: any) {
+            setError(
+                err.response?.data?.detail
+                || 'Ошибка разархивации плана',
+            );
+        }
+    };
+
     const handleOpenPlan = (version: PlanVersion) => {
         setPlan(
             version.id,
@@ -284,18 +406,34 @@ const SchedulePage: React.FC = () => {
         setRescheduling(true);
         setError(null);
         try {
+            // Итерация 13.21: проверяем auto_archive_on_recalc
+            let autoArchive = true;
+            try {
+                const planningSettings = await settingsApi.getCategory('planning');
+                if (typeof planningSettings.auto_archive_on_recalc === 'boolean') {
+                    autoArchive = planningSettings.auto_archive_on_recalc;
+                }
+            } catch {
+                autoArchive = true;
+            }
+
             const payload = {
                 from_version_id: currentVersionId,
                 reason: rescheduleForm.reason,
                 changes: {},
                 frozen_before: rescheduleForm.frozen_before || null,
                 comment: rescheduleForm.comment || null,
+                replace_version_id: autoArchive ? currentVersionId : null,
             };
             const res = await rescheduleApi.reschedule(payload);
             setRescheduleResult(res);
             await loadVersions();
             if (res.to_version_id) {
-                setPlan(res.to_version_id, `Перепланировано от ${new Date().toLocaleString('ru-RU')}`, true);
+                setPlan(
+                    res.to_version_id,
+                    `Перепланировано от ${new Date().toLocaleString('ru-RU')}`,
+                    true,
+                );
             }
         } catch (err: any) {
             const detail = err.response?.data?.detail;
@@ -305,8 +443,174 @@ const SchedulePage: React.FC = () => {
         }
     };
 
-    const columnDefs: ColDef[] = [
-        { headerName: 'Наименование', field: 'name', flex: 2 },
+    /**
+     * Итерация 13.21 (Вариант B): фронтовая фильтрация.
+     *
+     *  - Если includeArchived = true — берём все версии.
+     *  - Если includeArchived = false — берём неархивные + ИХ АРХИВНЫХ ПРЕДКОВ
+     *    (рекурсивно). Это сохраняет иерархию: если у активного плана
+     *    архивный родитель — родитель показывается как контекст (📦).
+     */
+    const versionsForTree = useMemo<PlanVersion[]>(() => {
+        if (includeArchived) return versions;
+
+        const byId = new Map(versions.map((v) => [v.id, v]));
+        const toKeep = new Set<string>();
+
+        // Рекурсивно добавляем версию и всех её предков.
+        const addWithParents = (v: PlanVersion) => {
+            if (toKeep.has(v.id)) return;
+            toKeep.add(v.id);
+            if (v.parent_version_id && byId.has(v.parent_version_id)) {
+                addWithParents(byId.get(v.parent_version_id)!);
+            }
+        };
+
+        // Начинаем с неархивных.
+        for (const v of versions) {
+            if (!v.is_archived) addWithParents(v);
+        }
+
+        return versions.filter((v) => toKeep.has(v.id));
+    }, [versions, includeArchived]);
+
+    const treeData = useMemo(
+        () => buildVersionTree(versionsForTree),
+        [versionsForTree],
+    );
+
+    /**
+     * Видимые строки: корни всегда видны, дети — только если корень раскрыт.
+     */
+    const visibleRows = useMemo(() => {
+        return treeData.filter((node) => {
+            if (node.depth === 0) return true;
+            return expandedRoots.isExpanded(node.rootId);
+        });
+    }, [treeData, expandedRoots]);
+
+    /**
+     * Итерация 13.21 (Вариант B): рендер ячейки «Наименование».
+     *
+     * Итерация 13.22 (fix #2):
+     *  - Иконка ▶/▼ и заглушка для детей имеют ОДИНАКОВУЮ ширину (28px) —
+     *    границы колонок выровнены во всех строках.
+     *  - Название сжимается через `flex: '1 1 200px'` — стартует с 200px,
+     *    может расти и сжиматься, но не схлопывается в 0.
+     *  - Чип «активный» имеет `flexShrink: 0` — не сжимается.
+     *  - 📦 (архив) убран из этой колонки — дублируется кнопкой ↩ справа.
+     */
+    const renderNameCell = useCallback((params: any) => {
+        const v = params.data as PlanVersionWithPath | undefined;
+        if (!v) return null;
+
+        const isRoot = v.depth === 0;
+        const isExpanded = isRoot && expandedRoots.isExpanded(v.id);
+        const isActive = v.is_active;
+        const isArchived = v.is_archived;
+        const hasSnapshot = v.has_snapshot !== false;
+
+        return (
+            <div
+                style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    width: '100%',
+                    height: '100%',
+                    minWidth: 0,
+                }}
+            >
+                {/* Слот иконки */}
+                <div
+                    style={{
+                        width: 28,
+                        height: 28,
+                        flexShrink: 0,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                    }}
+                >
+                    {isRoot && v.hasChildren && (
+                        <IconButton
+                            size="small"
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                expandedRoots.toggle(v.id);
+                            }}
+                            sx={{ p: 0.25 }}
+                        >
+                            {isExpanded
+                                ? <ArrowDropDownIcon fontSize="small"/>
+                                : <ArrowRightIcon fontSize="small"/>}
+                        </IconButton>
+                    )}
+                </div>
+
+                {/* ⚠ */}
+                {!hasSnapshot && (
+                    <WarningIcon
+                        fontSize="small"
+                        sx={{ color: '#e67e22', flexShrink: 0 }}
+                    />
+                )}
+
+                {/* НАЗВАНИЕ — чистый div, flex-элемент */}
+                <div
+                    style={{
+                        flex: '1 1 200px',      // ← стартует с 200px
+                        minWidth: '150px',      // ← ЖЁСТКИЙ минимум 150px
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        fontWeight: isActive ? 700 : 400,
+                        color: isArchived ? '#95a5a6' : 'inherit',
+                        fontSize: '0.875rem',
+                    }}
+                >
+                    {v.name}
+                </div>
+
+                {/* Чип активного */}
+                {isActive && (
+                    <Chip
+                        label="активный"
+                        color="success"
+                        size="small"
+                        sx={{
+                            height: 18,
+                            fontSize: '0.65rem',
+                            flexShrink: 0,
+                        }}
+                    />
+                )}
+            </div>
+        );
+    }, [expandedRoots]);
+
+    const columnDefs: ColDef<PlanVersionWithPath>[] = useMemo(() => [
+        {
+            headerName: 'Наименование',
+            field: 'name',
+            flex: 2,
+            minWidth: 400,
+            cellRenderer: renderNameCell,
+            // Отключаем сортировку по имени, чтобы не ломать иерархию
+            sortable: false,
+            filter: false,
+            cellStyle: (params: any) => {
+                const v = params.data as PlanVersionWithPath | undefined;
+                if (!v) return undefined;
+                // Отступ применяется к самой ячейке AG Grid
+                return {
+                    paddingLeft: 12 + v.depth * 24,
+                    // // Убираем дефолтный padding, чтобы отступ работал предсказуемо
+                    // display: 'flex',
+                    // alignItems: 'center',
+                };
+            },
+        },
         {
             headerName: 'Тип',
             field: 'version_type',
@@ -317,7 +621,9 @@ const SchedulePage: React.FC = () => {
             headerName: 'Дата создания',
             field: 'created_at',
             width: 180,
-            valueFormatter: (p) => p.value ? new Date(p.value).toLocaleString('ru-RU') : '—',
+            valueFormatter: (p) => p.value
+                ? new Date(p.value).toLocaleString('ru-RU')
+                : '—',
         },
         {
             headerName: 'Комментарий',
@@ -327,23 +633,18 @@ const SchedulePage: React.FC = () => {
         },
         {
             headerName: 'Действия',
-            width: 240,
+            width: 260,
             editable: false,
+            sortable: false,
+            filter: false,
             cellRenderer: (params: any) => {
-                const version = params.data as PlanVersion;
+                const version = params.data as PlanVersionWithPath;
                 const isCurrent = version.id === currentVersionId;
                 const hasSnapshot = version.has_snapshot !== false;
+                const isArchived = version.is_archived === true;
 
                 return (
                     <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
-                        {!hasSnapshot && (
-                            <Tooltip title="План создан до Итерации 13.15, снапшоты пусты. Пересоздайте план или пересчитайте.">
-                                <WarningIcon
-                                    fontSize="small"
-                                    sx={{ color: '#e67e22' }}
-                                />
-                            </Tooltip>
-                        )}
                         {isCurrent ? (
                             <Tooltip title="Закрыть план (вернуться в режим редактирования)">
                                 <IconButton
@@ -386,6 +687,17 @@ const SchedulePage: React.FC = () => {
                                 <SettingsIcon fontSize="small" />
                             </IconButton>
                         </Tooltip>
+                        {isArchived && (
+                            <Tooltip title="Разархивировать (вернуть в список)">
+                                <IconButton
+                                    size="small"
+                                    color="success"
+                                    onClick={() => handleUnarchivePlan(version)}
+                                >
+                                    <UnarchiveIcon fontSize="small" />
+                                </IconButton>
+                            </Tooltip>
+                        )}
                         <Tooltip title="Удалить план">
                             <IconButton
                                 size="small"
@@ -399,7 +711,7 @@ const SchedulePage: React.FC = () => {
                 );
             },
         },
-    ];
+    ], [currentVersionId, includeArchived, unarchiveVersion, renderNameCell, expandedRoots, navigate, setPlan, clearPlan, handleUnarchivePlan, handleDeletePlan, handleOpenPlan, handleOpenWizardEdit, handleClosePlan]);
 
     const renderAdvisorPanel = () => {
         return (
@@ -493,14 +805,78 @@ const SchedulePage: React.FC = () => {
     };
 
     const renderPlansGrid = () => {
+        const archivedCount = versions.filter((v) => v.is_archived).length;
+        const totalRoots = treeData.filter((n) => n.depth === 0).length;
+        const expandedCount = treeData.filter(
+            (n) => n.depth === 0 && expandedRoots.isExpanded(n.id)
+        ).length;
+
         return (
             <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column', m: 0.5 }}>
                 <CardContent sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', minHeight: 0, p: 2 }}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1, flexShrink: 0 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1, flexShrink: 0, flexWrap: 'wrap' }}>
                         <HistoryIcon color="primary" />
                         <Typography variant="h6" sx={{ fontWeight: 600, fontSize: '1rem' }}>
-                            История планов ({versions.length})
+                            История планов ({visibleRows.length}/{treeData.length})
                         </Typography>
+                        {archivedCount > 0 && !includeArchived && (
+                            <Chip
+                                icon={<ArchiveIcon />}
+                                label={`Архив: ${archivedCount}`}
+                                size="small"
+                                color="default"
+                                variant="outlined"
+                            />
+                        )}
+
+                        {/* Кнопки «Развернуть все» / «Свернуть все» */}
+                        <Box sx={{ display: 'flex', gap: 0.5, ml: 1 }}>
+                            <Tooltip title="Развернуть все корни">
+                                <Button
+                                    size="small"
+                                    variant="text"
+                                    startIcon={<ArrowDropDownIcon />}
+                                    onClick={() => expandedRoots.expandAll(
+                                        treeData.filter(n => n.depth === 0).map(n => n.id)
+                                    )}
+                                    disabled={expandedCount === totalRoots}
+                                    sx={{ textTransform: 'none', fontSize: '0.75rem' }}
+                                >
+                                    Развернуть
+                                </Button>
+                            </Tooltip>
+
+                            <Tooltip title="Свернуть все корни">
+                                <Button
+                                    size="small"
+                                    variant="text"
+                                    startIcon={<ArrowRightIcon />}
+                                    onClick={() => expandedRoots.collapseAll(
+                                        treeData.filter(n => n.depth === 0).map(n => n.id)
+                                    )}
+                                    disabled={expandedCount === 0}
+                                    sx={{ textTransform: 'none', fontSize: '0.75rem' }}
+                                >
+                                    Свернуть
+                                </Button>
+                            </Tooltip>
+                        </Box>
+
+                        <FormControlLabel
+                            control={
+                                <Checkbox
+                                    size="small"
+                                    checked={includeArchived}
+                                    onChange={(e) => setIncludeArchived(e.target.checked)}
+                                />
+                            }
+                            label={
+                                <Typography variant="caption">
+                                    Показать архивные
+                                </Typography>
+                            }
+                            sx={{ ml: 'auto' }}
+                        />
                         {currentVersionId && (
                             <Chip
                                 icon={<TimelineIcon />}
@@ -508,40 +884,46 @@ const SchedulePage: React.FC = () => {
                                 size="small"
                                 color="info"
                                 variant="outlined"
-                                sx={{ ml: 'auto' }}
                             />
                         )}
                     </Box>
-                    <Box className="ag-theme-alpine" sx={{ flexGrow: 1, width: '100%', minHeight: 0 }}>
-                        <AgGridReact
-                            rowData={versions}
+                    <Box sx={{ flexGrow: 1, width: '100%', minHeight: 0 }}>
+                        <AppAgGrid
+                            rowData={visibleRows}
                             columnDefs={columnDefs}
                             defaultColDef={{ sortable: true, filter: true, resizable: true }}
                             onGridReady={(params: GridReadyEvent) => params.api.sizeColumnsToFit()}
+                            getRowId={(params: any) => params.data.id}
                             getRowStyle={(params: any): RowStyle | undefined => {
-                                const isCurrent = params.data?.id === currentVersionId;
-                                const isActive = params.data?.is_active;
-                                const hasSnapshot = params.data?.has_snapshot !== false;
-                                if (isCurrent) {
+                                const v = params.data as PlanVersionWithPath | undefined;
+                                if (!v) return undefined;
+
+                                // Активный — голубой фон + синяя полоса слева (inset box-shadow,
+                                // не влияет на layout).
+                                if (v.is_active) {
                                     return {
                                         backgroundColor: '#e3f2fd',
-                                        fontWeight: 'bold',
-                                        borderLeft: '4px solid #1976d2',
+                                        boxShadow: 'inset 4px 0 0 0 #1976d2',
                                         color: '#0d47a1',
                                     } as RowStyle;
                                 }
-                                if (isActive) {
+
+                                // Архивный — серый.
+                                if (v.is_archived) {
                                     return {
-                                        backgroundColor: '#f1f8e9',
-                                        color: '#33691e',
+                                        backgroundColor: '#f5f5f5',
+                                        color: '#7f8c8d',
                                     } as RowStyle;
                                 }
-                                if (!hasSnapshot) {
+
+                                // Без снапшота — жёлтый.
+                                if (v.has_snapshot === false) {
                                     return {
                                         backgroundColor: '#fff8e1',
                                         color: '#7f6000',
                                     } as RowStyle;
                                 }
+
                                 return undefined;
                             }}
                         />
@@ -590,6 +972,12 @@ const SchedulePage: React.FC = () => {
             {error && (
                 <Alert severity="error" sx={{ mb: 2, flexShrink: 0 }} onClose={() => setError(null)}>
                     {error}
+                </Alert>
+            )}
+
+            {success && (
+                <Alert severity="success" sx={{ mb: 2, flexShrink: 0 }} onClose={() => setSuccess(null)}>
+                    {success}
                 </Alert>
             )}
 
@@ -682,7 +1070,7 @@ const SchedulePage: React.FC = () => {
                 open={rescheduleDialogOpen}
                 onClose={() => setRescheduleDialogOpen(false)}
                 title="Перепланирование"
-                initialWidth={600}
+                initialWidth={640}
                 initialHeight="auto"
                 minWidth={480}
                 minHeight={320}
@@ -751,6 +1139,35 @@ const SchedulePage: React.FC = () => {
                 ) : (
                     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                         <Alert severity="success">{rescheduleResult.message}</Alert>
+
+                        {/* Итерация 13.21: предупреждение, если старая версия не архивирована */}
+                        {rescheduleResult.replace_blocked && (
+                            <Alert severity="warning">
+                                <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
+                                    Старая версия не была архивирована
+                                </Typography>
+                                <Typography variant="body2">
+                                    {rescheduleResult.replace_blocked_reason
+                                        || 'Версия используется в what-if сценариях.'}
+                                </Typography>
+                                {rescheduleResult.used_by_whatif.length > 0 && (
+                                    <Typography variant="caption" sx={{ display: 'block', mt: 0.5 }}>
+                                        Сценарии: {rescheduleResult.used_by_whatif.join(', ')}
+                                    </Typography>
+                                )}
+                            </Alert>
+                        )}
+
+                        {/* Итерация 13.21: успешная архивация */}
+                        {rescheduleResult.replace_archived && (
+                            <Alert severity="info" icon={<ArchiveIcon />}>
+                                <Typography variant="body2">
+                                    Старая версия перемещена в архив.
+                                    Разархивировать можно через чекбокс «Показать архивные».
+                                </Typography>
+                            </Alert>
+                        )}
+
                         <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
                             <Chip
                                 label={`Затронуто задач: ${rescheduleResult.affected_tasks}`}

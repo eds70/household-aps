@@ -2,7 +2,7 @@
 
 **Система автоматического планирования производства на базе OR-Tools CP-SAT**
 
-Версия: **4.1.2** (Итерации 0–13.16 завершены)
+Версия: **4.2.0** (Итерации 0–13.21 завершены)
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -59,6 +59,7 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 - **Настроек, привязанных к плану** (`plan_settings` — снапшот настроек для каждого плана)
 - **Multi-objective оптимизации** (5 компонентов целевой функции с весами)
 - **What-if сценариев** (сценарное планирование без изменения БД)
+- **Архивации версий планов** (Итерация 13.21) — скрытие старых версий и иерархия
 
 ## 🎯 Ключевые возможности
 
@@ -410,6 +411,7 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
   - `cz` — Честный Знак
   - `resources` — персонал
   - `features` — feature-флаги
+  - `optimization` — веса multi-objective
 - ✅ `SchedulePage.tsx` — читает `horizon_hours` и `timeout_seconds` из `app_settings`:
   - При загрузке: `settingsApi.getCategory('planning')`
   - При построении плана: сохраняет параметры перед расчётом
@@ -532,146 +534,159 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 - ✅ UI `AuditPage.tsx` — страница аудита с группировкой по дням.
 - ✅ Фильтры синхронизируются с URL — можно делиться ссылкой.
 
+**Примечание Итерации 13.16:** пункт «Аудит» временно скрыт из меню
+(страница в разработке), роут `/audit` оставлен для отладки.
+
 ### Итерация 13.14 — Настройки, привязанные к плану
 
 **Проблема:**
-Глобальные настройки (`app_settings`) применяются ко **всем** планам одновременно. Если пользователь изменил `horizon_hours` с 720 на 1000 и пересчитал план — старые планы становятся «невалидными»: нельзя воспроизвести их результат, нельзя сравнить два плана, построенные с разными настройками.
+Глобальные настройки (`app_settings`) применяются ко **всем** планам одновременно. Если пользователь изменил `horizon_hours` с 720 на 1000 и пересчитал план — старые планы становятся «невалидными».
 
 **Решение:**
-Каждый план (`schedule_version`) хранит **свой снапшот** настроек в таблице `plan_settings`. Планировщик читает настройки из `plan_settings` **этого плана**, а не из `app_settings`. Глобальные `app_settings` остаются дефолтом для создания новых планов.
+Каждый план (`schedule_version`) хранит **свой снапшот** настроек в таблице `plan_settings`.
 
 **Что сделано:**
 
 **1. База данных (`add_21.sql`):**
-- ✅ Таблица `plan_settings`:
-  - `organization_id`, `schedule_version_id` — привязка
-  - `setting_key`, `setting_value` (JSONB) — ключ-значение
-  - `value_type`, `category`, `label`, `description` — метаданные (снапшот)
-  - `min_value`, `max_value`, `options`, `display_order`, `is_system`
-  - `UNIQUE (schedule_version_id, setting_key)` — защита от дублей
-  - `FOREIGN KEY ... ON DELETE CASCADE` — при удалении плана настройки удаляются
-- ✅ **Триггер `copy_app_settings_to_plan`:**
-  - `AFTER INSERT ON schedule_version` — автоматически копирует все `app_settings` в `plan_settings` нового плана
-  - Идемпотентен (`ON CONFLICT DO NOTHING`)
-  - Работает на уровне БД — не нужен ни Python, ни API
-- ✅ Индексы:
-  - `idx_plan_settings_version` — по `schedule_version_id`
-  - `idx_plan_settings_org_category` — по `(organization_id, category)`
+- ✅ Таблица `plan_settings`.
+- ✅ **Триггер `copy_app_settings_to_plan`:** копирует все `app_settings` в `plan_settings` нового плана при `INSERT INTO schedule_version`.
+- ✅ Индексы: `idx_plan_settings_version`, `idx_plan_settings_org_category`.
 
 **2. Backend:**
-- ✅ `DataLoader(version_id=...)` — читает настройки из `plan_settings` этого плана. Если `version_id=None` или `plan_settings` пуст → fallback на `app_settings`.
-- ✅ `ProductionScheduler(version_id=...)` — принимает `version_id`, прокидывает в `DataLoader`.
-- ✅ `settings_reader.py` — 3 функции получили параметр `version_id`:
-  - `read_feature_flags(db, org_id, version_id=None)`
-  - `read_setting(db, org_id, key, default, version_id=None)`
-  - `read_settings_dict(db, org_id, keys, version_id=None)`
-- ✅ `rescheduler.py` — `version_id=from_version_id` в основном и fallback вызовах `ProductionScheduler`.
-- ✅ `whatif.py` — `version_id=base_version_id` при запуске сценария.
-- ✅ **API `/api/v1/plan-settings`** — 3 эндпоинта:
-  - `GET    /version/{version_id}` — настройки плана + метаданные
-  - `PUT    /version/{version_id}` — массовое обновление (валидация через `validate_setting`)
-  - `POST   /version/{version_id}/reset` — сброс к глобальным `app_settings`
-- ✅ **6 API-модулей** обновлены — все получили опциональный `version_id`:
-  - `advisor.py`, `lab.py`, `cz.py`, `personnel.py`, `reschedule.py`, `shift.py`
+- ✅ `DataLoader(version_id=...)` — читает из `plan_settings`.
+- ✅ `ProductionScheduler(version_id=...)` — прокидывает в `DataLoader`.
+- ✅ `settings_reader.py` — 3 функции получили `version_id`.
+- ✅ `rescheduler.py`, `whatif.py`.
+- ✅ **API `/api/v1/plan-settings`** — 3 эндпоинта.
+- ✅ **6 API-модулей** обновлены — все получили `version_id`.
 
 **3. Frontend:**
-- ✅ `planSettingsApi` в `api.ts` — 3 метода (`getForVersion`, `updateForVersion`, `resetForVersion`)
-- ✅ `api.ts` — все API-модули получили опциональный `versionId?`
-- ✅ `PlanSettingsWizard.tsx` — **мастер настроек плана** (9 шагов):
-  1. Основные (`planning`)
-  2. Режим смен (`shifts`)
-  3. Календарь (`calendar`)
-  4. Охлаждение (`cooling`)
-  5. Ресурсы (`resources`)
-  6. Материалы и лаборатория (`materials` + `lab`)
-  7. Маршруты и функции (`features`)
-  8. Честный Знак (`cz`)
-  9. Оптимизация (`optimization`)
-- ✅ `SchedulePage.tsx` — кнопка «Настройки плана» (⚙) в действиях таблицы планов
-- ✅ `MainLayout.tsx` — активный план на верхней плашке
-- ✅ `SchedulePage.tsx` — усиленное визуальное выделение текущего плана
+- ✅ `planSettingsApi` в `api.ts`.
+- ✅ `PlanSettingsWizard.tsx` — мастер настроек плана (9 шагов).
+- ✅ `SchedulePage.tsx` — кнопка «Настройки плана» (⚙).
 
-**4. Тесты (+171, всего 492):**
-- ✅ `test_plan_settings_models.py` (8)
-- ✅ `test_plan_settings_api.py` (23)
-- ✅ `test_plan_settings_migration.py` (16)
-- ✅ `test_plan_settings_data_loader.py` (14)
-- ✅ `test_plan_settings_integration.py` (11)
-- ✅ `test_rescheduler_uses_plan_settings.py` (11)
-- ✅ `test_whatif_uses_plan_settings.py` (15)
+**4. Тесты:** +171, всего 492.
 
 **5. Ключевые гарантии:**
 - ✅ **Изоляция:** два плана имеют независимые настройки.
-- ✅ **Воспроизводимость:** зная `plan_settings`, можно пересчитать ровно тот же результат.
-- ✅ **Обратная совместимость:** все API-эндпоинты с опциональным `version_id`.
-- ✅ **Fallback:** старые планы без `plan_settings` — работают через `app_settings`.
-- ✅ **CASCADE DELETE:** при удалении плана его настройки удаляются автоматически.
+- ✅ **Воспроизводимость.**
+- ✅ **Обратная совместимость.**
 
-### Итерация 13.15 — Исправление: снапшоты при создании плана
+### Итерация 13.15 — Снапшоты при создании плана
 
 **Проблема:**
-При создании «пустого» плана через `POST /api/v1/schedule/versions` (например, из мастера `PlanSettingsWizard` в режиме create) снапшот-таблицы справочников (`equipment_snapshot`, `product_snapshot`, `operation_snapshot`, `calendar_snapshot`) **не заполнялись**. UI переключался в readonly-режим и показывал **пустые гриды** на всех страницах справочников (продукты, оборудование, техкарты, календарь).
+При создании «пустого» плана через `POST /api/v1/schedule/versions` снапшоты справочников **не заполнялись**. UI показывал **пустые гриды**.
 
 **Решение:**
-
-**1. Новый модуль `backend/app/scheduler/snapshot.py`:**
-- ✅ `snapshot_all_catalogs(session, org_id, version_id)` — заполняет все 4 снапшот-таблицы.
-- ✅ `snapshot_exists(session, version_id)` — проверяет, есть ли снапшоты.
-- ✅ `_has_column(session, table, column)` — graceful-проверка схемы.
-- ✅ Идемпотентен (`ON CONFLICT DO NOTHING`).
-
-**2. Изменения в API `schedule.py`:**
-- ✅ `POST /versions` вызывает `snapshot_all_catalogs` — при создании плана снапшоты заполняются сразу.
-- ✅ `GET /versions` возвращает поле `has_snapshot` — UI использует для индикации пустых планов.
-- ✅ `DELETE /versions/{id}` — без изменений (CASCADE удаляет снапшоты).
-
-**3. Изменения в `saver.py`:**
-- ✅ `_do_save` делегирует снапшоты в `snapshot_all_catalogs`.
-- ✅ Удалён inline SQL (4 INSERT'а) — теперь один вызов.
-
-**4. Frontend:**
-- ✅ `PlainContext.tsx`:
-  - `PlanVersion.has_snapshot?: boolean`
-  - `CurrentPlan.has_snapshot: boolean`
-  - `setPlan(id, name, hasSnapshot?)`
-  - `currentPlanHasSnapshot` в контексте.
-- ✅ `SchedulePage.tsx`:
-  - Индикация пустых планов: иконка ⚠ + жёлтая подсветка строки.
-  - Tooltip объясняет, что план старый и требует пересоздания.
-- ✅ `GanttPage.tsx`:
-  - Если у плана нет снапшотов — показывается предупреждение вместо диаграммы.
-  - Кнопки «Перейти к планированию» и «Закрыть план».
-
-**5. Тесты (+43, всего 535):**
-- ✅ `test_snapshot.py` (18)
-- ✅ `test_schedule_create_version.py` (10)
-- ✅ `test_saver_uses_snapshot.py` (10)
-- ✅ Обновлён `test_plan_settings_models.py`: `test_update_request_requires_settings` → `test_update_request_no_args_is_valid` (устаревший тест, сломанный до 13.15).
-
-**6. Ключевые гарантии:**
-- ✅ **Новые планы** сразу имеют снапшоты → справочники видны.
-- ✅ **Старые планы** подсвечены ⚠, при открытии — предупреждение.
-- ✅ **Единый источник правды** для снапшотов — модуль `snapshot.py`.
-- ✅ **Обратная совместимость:** старые планы всё ещё открываются (с предупреждением).
+- ✅ Новый модуль `backend/app/scheduler/snapshot.py`:
+  - `snapshot_all_catalogs(session, org_id, version_id)`.
+  - `snapshot_exists(session, version_id)`.
+  - `_has_column(session, table, column)` — graceful-проверка схемы.
+- ✅ API `schedule.py`: `POST /versions` вызывает `snapshot_all_catalogs`.
+- ✅ `saver.py`: `_do_save` делегирует в `snapshot_all_catalogs`.
+- ✅ Frontend: индикация ⚠ для планов без снапшотов.
+- ✅ Тесты: +43, всего 535.
 
 ### Итерация 13.16 — Унификация диалогов и UI-полировка
 
-**Что сделано:**
+- ✅ **Все 20 диалогов в 12 страницах** переведены на единый компонент `frontend/src/components/common/DraggableDialog.tsx`.
+- ✅ Добавлен проп `centerOnOpen?: boolean`.
+- ✅ Убран ~150 строк дублированного drag/resize-кода из `GanttPage.tsx`.
+- ✅ **`CzPage.tsx`** — исправлен layout.
+- ✅ **`MainLayout.tsx`** — пункт «Аудит» временно скрыт из меню.
 
-- ✅ **Все 20 диалогов в 12 страницах** переведены на единый компонент
-  `DraggableDialog.tsx`:
-  - Убран дублированный drag/resize-код.
-  - Добавлен проп `centerOnOpen` — диалоги открываются по центру.
-  - Единый стиль заголовков, кнопок закрытия и footer-действий.
-- ✅ **`CzPage.tsx`** — исправлен layout: заголовок `h5`, `gap: 2`,
-  Card-обёртки, единая типографика.
-- ✅ **`MainLayout.tsx`** — пункт «Аудит» временно скрыт из меню
-  (страница в разработке, роут `/audit` оставлен для отладки).
+### Итерация 13.17 — Каскадный сдвиг задач
 
-**Затронутые страницы:**
-`EquipmentPage`, `ProductsPage`, `MaterialsPage`, `RecipesPage`,
-`OperationsPage`, `OrdersPage`, `SchedulePage`, `ShiftPage`, `CzPage`,
-`WhatIfPage`, `SettingsPage`, `GanttPage`.
+- ✅ Новый модуль `backend/app/scheduler/reschedule_cascade.py`:
+  - `apply_cascade()` — каскадный сдвиг BFS.
+  - `validate_move()` — валидация.
+  - `CascadeBlockedError`.
+- ✅ Новые эндпоинты `PUT /schedule/task/{id}/move-cascade`, `PUT /schedule/task/{id}/resize`.
+- ✅ Полный рефакторинг `GanttPage.tsx`: вынесены хуки и компоненты.
+- ✅ Новые компоненты: `GanttToolbar`, `GanttFiltersBar`, `GanttFiltersPopover`, `GanttTaskDialog`, `TaskContextMenu`, `MoveValidationDialog`, `RecalcSettingsDialog`.
+- ✅ Новые хуки: `useGanttActions`, `useGanttTimeline`, `useGanttViewport`, `useGanttDependencies`, `useGanttFilters`, `useExpandedGroups`, `useCascadeMove`, `useTaskResize`, `useDragTooltip`, `useRecalculate`.
+
+### Итерация 13.18 — Улучшения Ганта
+
+- ✅ Tooltip при resize и move: `DragTooltip` показывает тип операции, Δ, исходное время.
+- ✅ `is_pinned` больше НЕ блокирует resize (только move).
+- ✅ Визуальная индикация pinned: 📌, светлый синий фон, плотная рамка.
+- ✅ Новый фильтр «Только закреплённые».
+
+### Итерация 13.19 — Флаг planDirty
+
+- ✅ Флаг `planDirty` в `PlanContext` (сохраняется в localStorage per-plan).
+- ✅ `markPlanDirty()` вызывается при любых изменениях, влияющих на расчёт.
+- ✅ Кнопка «Пересчитать» на Ганте активна только при `planDirty === true`.
+- ✅ Сбрасывается при успешном пересчёте.
+
+### Итерация 13.20 — Модальное окно прогресса пересчёта
+
+**Проблема:**
+Solver работает 30–120 секунд. Пользователь мог закрыть страницу, не понимая, что происходит.
+
+**Решение:**
+- ✅ Новый компонент `RecalcProgressDialog.tsx`:
+  - Спиннер + иконка песочных часов.
+  - Таймер «MM:SS» (тик каждую секунду).
+  - Прогресс-бар до `timeout_seconds`.
+  - Предупреждение «Не закрывайте страницу».
+  - Блокировка Esc/backdrop.
+- ✅ `GanttPage`: `RecalcOperation` type ('recalc' | 'force-recalc').
+- ✅ Диалог показывается, пока solver работает.
+
+### Итерация 13.21 — Архивирование версий планов
+
+**Проблема:**
+В «Истории планов» накапливалось много неактивных версий (55 за ~10 дней). Пользователь не понимал, какая версия актуальна.
+
+**Решение:**
+
+**1. База данных (миграция `add_23.sql`):**
+- ✅ Колонка `schedule_version.is_archived BOOLEAN NOT NULL DEFAULT FALSE`.
+- ✅ Partial-индекс `idx_schedule_version_archived`
+  по `(organization_id, created_at DESC) WHERE is_archived = FALSE`.
+- ✅ Настройка `app_settings.auto_archive_on_recalc` (bool, default=true).
+- ✅ Одноразовая миграция: 54 старые неактивные версии → в архив.
+
+**2. Backend:**
+- ✅ `ScheduleSaver._archive_version(session, version_id)` — архивирует версию,
+  если она не используется в `whatif_scenario` (статусы `DRAFT`, `RUNNING`).
+- ✅ `ScheduleSaver._check_version_usage(session, version_id)` — проверка what-if.
+- ✅ `save_schedule()` принимает `replace_version_id` в `schedule_data`.
+- ✅ `RescheduleRequest.replace_version_id` (опциональное поле).
+- ✅ `RescheduleResponse` + поля `replace_archived`, `replace_blocked`,
+  `replace_blocked_reason`, `used_by_whatif`.
+- ✅ `GET /versions?include_archived=true` — фильтр.
+- ✅ Новый эндпоинт `PUT /versions/{id}/unarchive`.
+
+**3. Frontend:**
+- ✅ `PlanVersion.is_archived`, `PlanVersion.parent_version_id` в типах.
+- ✅ `scheduleApi.unarchiveVersion(versionId)`.
+- ✅ `PlainContext`:
+  - `includeArchived`, `setIncludeArchived`, `unarchiveVersion`.
+  - `loadVersions()` учитывает `includeArchived`.
+- ✅ `useRecalculate` читает `auto_archive_on_recalc`.
+- ✅ `SchedulePage`:
+  - **Tree Data** для «Истории планов» (по `parent_version_id`).
+  - Чекбокс «Показать архивные».
+  - Кнопка «↩ Разархивировать» для архивных версий.
+  - Иконка 📦 для архивных, чип «активный» для активного.
+- ✅ `GanttPage`:
+  - Снекбар после успешного пересчёта:
+    - info — старая версия архивирована;
+    - warning — не архивирована (используется в what-if).
+  - `onRecalcSuccess` принимает `RescheduleResponse`.
+- ✅ `PlanSettingsWizard` — чекбокс `auto_archive_on_recalc` на шаге «Основные».
+
+**4. Тесты:** +28, всего 563.
+
+**5. Ключевые гарантии:**
+- ✅ **Архивация безопасна** — данные не удаляются, только скрываются.
+- ✅ **What-if защищён** — версия не архивируется, если используется в сценариях.
+- ✅ **Reschedule_log не блокирует** — ссылки на архивные версии валидны.
+- ✅ **Разархивация возможна** через UI-кнопку или API.
+- ✅ **Обратная совместимость.**
 
 ## 🛠️ Стек технологий
 
@@ -709,6 +724,8 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 household-aps/
 ├── quickstart.ps1 # ⚡ Скрипт быстрого старта
 ├── README.md
+├── CHANGELOG.md
+├── CONTRIBUTING.md
 ├── backend/
 │ ├── app/
 │ │ ├── api/v1/ # REST API endpoints
@@ -724,20 +741,14 @@ household-aps/
 │ │ │ ├── calendar.py
 │ │ │ ├── advisor.py
 │ │ │ ├── shift.py
-│ │ │ ├── shift_models.py
 │ │ │ ├── reschedule.py
-│ │ │ ├── reschedule_models.py
 │ │ │ ├── lab.py
-│ │ │ ├── lab_models.py
 │ │ │ ├── personnel.py
-│ │ │ ├── personnel_models.py
 │ │ │ ├── cz.py
-│ │ │ ├── cz_models.py
 │ │ │ ├── settings.py
 │ │ │ ├── plan_settings.py
 │ │ │ ├── whatif.py
-│ │ │ ├── whatif_models.py
-│ │ │ └── models.py
+│ │ │ └── audit.py
 │ │ ├── auth/
 │ │ ├── core/
 │ │ ├── scheduler/ # Ядро планировщика
@@ -749,9 +760,10 @@ household-aps/
 │ │ │ ├── feasibility.py
 │ │ │ ├── shifts.py
 │ │ │ ├── rescheduler.py
+│ │ │ ├── reschedule_cascade.py # ← НОВЫЙ (13.17)
 │ │ │ ├── cz.py
 │ │ │ ├── saver.py
-│ │ │ ├── snapshot.py # ← НОВЫЙ (Итерация 13.15)
+│ │ │ ├── snapshot.py # ← (13.15)
 │ │ │ ├── feature_flags.py
 │ │ │ ├── settings.py
 │ │ │ ├── settings_reader.py
@@ -761,29 +773,14 @@ household-aps/
 │ │ │ ├── whatif.py
 │ │ │ ├── logging_config.py
 │ │ │ ├── duration/
-│ │ │ └── constraints/
-│ │ │ └── plugins.py
+│ │ │ └── constraints/plugins.py
 │ │ └── main.py
 │ ├── migrations/
 │ │ ├── add_history_0_2.sql
-│ │ ├── add_06.sql
-│ │ ├── add_06b.sql
-│ │ ├── add_07.sql
-│ │ ├── add_08.sql
+│ │ ├── add_06.sql … add_16.sql
+│ │ ├── add_21.sql       # plan_settings
+│ │ ├── add_23.sql       # ← НОВЫЙ (13.21): is_archived
 │ │ ├── fix_versions_hotfix.sql
-│ │ ├── add_09.sql
-│ │ ├── add_09b.sql
-│ │ ├── add_09c.sql
-│ │ ├── add_09d.sql
-│ │ ├── add_10.sql
-│ │ ├── add_10b.sql
-│ │ ├── add_11.sql
-│ │ ├── add_12.sql
-│ │ ├── add_13.sql
-│ │ ├── add_14.sql
-│ │ ├── add_15.sql
-│ │ ├── add_16.sql
-│ │ ├── add_21.sql
 │ │ └── fix_shift_names.sql
 │ ├── .env
 │ ├── init_schema.sql
@@ -796,18 +793,55 @@ household-aps/
 │ └── run_server.py
 ├── frontend/
 │ ├── src/
-│ │ ├── components/layout/
+│ │ ├── components/
+│ │ │ ├── common/DraggableDialog.tsx
+│ │ │ ├── layout/MainLayout.tsx
+│ │ │ └── gantt/                    # ← НОВОЕ (13.17)
 │ │ ├── context/
-│ │ ├── hooks/
+│ │ │ ├── AuthContext.tsx
+│ │ │ └── PlainContext.tsx
+│ │ ├── hooks/                    # ← НОВОЕ (13.17)
 │ │ ├── pages/
+│ │ │ ├── LoginPage.tsx
+│ │ │ ├── EquipmentPage.tsx
+│ │ │ ├── ProductsPage.tsx
+│ │ │ ├── MaterialsPage.tsx
+│ │ │ ├── RecipesPage.tsx
+│ │ │ ├── OperationsPage.tsx
+│ │ │ ├── OrdersPage.tsx
+│ │ │ ├── SchedulePage.tsx
+│ │ │ ├── GanttPage.tsx
+│ │ │ ├── ShiftPage.tsx
+│ │ │ ├── PersonnelPage.tsx
+│ │ │ ├── CzPage.tsx
+│ │ │ ├── WhatIfPage.tsx
+│ │ │ ├── AuditPage.tsx
+│ │ │ ├── SettingsPage.tsx
+│ │ │ └── PlanSettingsWizard.tsx
 │ │ ├── services/api.ts
 │ │ ├── types/index.ts
+│ │ ├── utils/                    # ← НОВОЕ (13.17)
 │ │ ├── App.tsx
 │ │ ├── main.tsx
 │ │ └── index.css
 │ ├── package.json
 │ └── vite.config.ts
-└── README.md
+├── docs/
+│ ├── ARCHITECTURE.md
+│ ├── API.md
+│ ├── CONFIGURATION.md
+│ ├── OPERATIONS.md
+│ ├── TROUBLESHOOTING.md
+│ ├── DEVELOPMENT.md
+│ ├── ROADMAP.md
+│ ├── adr/
+│ │ ├── README.md
+│ │ ├── 0001-use-ortools-cp-sat.md
+│ │ ├── 0002-snapshot-tables-for-versioning.md
+│ │ ├── 0003-plan-settings-per-plan.md
+│ │ └── 0004-whatif-two-transactions.md
+│ └── requirements/ТЗ.txt
+└── tools/prompts/
 ```
 
 ## 🚀 Быстрый старт
@@ -852,10 +886,12 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/seed_demo_data.sql
 ```
 
-#### Шаг 2b (только при апгрейде существующей БД): применить миграцию add_21.sql
+#### Шаг 2b (только при апгрейде существующей БД): применить миграции
 ```
-docker cp backend/migrations/add_21.sql aps_postgres:/tmp/add_21.sql
+docker cp backend\migrations\add_21.sql aps_postgres:/tmp/add_21.sql
+docker cp backend\migrations\add_23.sql aps_postgres:/tmp/add_23.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_21.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_23.sql
 ```
 
 #### Шаг 3: Создание администратора
@@ -885,399 +921,52 @@ npm run dev
 *Приложение: http://localhost:5173*
 *Демо-доступ: `admin@household.ru` / `admin123`*
 
-## 📚 Документация API
-
-После запуска backend: **http://localhost:8000/docs**
-
-### Основные эндпоинты
-
-**Авторизация:**
-- `POST /api/v1/auth/login` — вход
-- `GET /api/v1/auth/me` — профиль
-
-**Справочники:**
-- `GET/POST/PUT/DELETE /api/v1/equipment` — оборудование
-- `GET/POST/PUT/DELETE /api/v1/products` — продукты
-- `GET/POST/PUT/DELETE /api/v1/materials` — материалы
-- `GET/POST/PUT/DELETE /api/v1/recipes` — рецептуры
-- `GET/POST/PUT/DELETE /api/v1/operations` — техкарты
-- `GET/POST/PUT/DELETE /api/v1/orders` — заказы
-- `GET/POST/PUT/DELETE /api/v1/calendar` — календарь простоев
-
-**Планирование:**
-- `POST /api/v1/schedule/build` — построить план
-- `GET /api/v1/schedule/versions` — список версий (с `has_snapshot`)
-- `POST /api/v1/schedule/versions` — создать версию (заполняет снапшоты)
-- `DELETE /api/v1/schedule/versions/{id}` — удалить
-
-**Advisor:**
-- `GET /api/v1/schedule/advice?version_id=...` — подсказки
-- `POST /api/v1/schedule/feasibility?version_id=...` — оценка исполнимости
-
-**Сменное планирование:**
-- `GET /api/v1/shift/list?version_id=...`
-- `GET /api/v1/shift/by-date/{date}?version_id=...`
-- `GET /api/v1/shift/{shift_id}/tasks?version_id=...`
-- `GET /api/v1/shift/{shift_id}/carryover?version_id=...`
-- `POST /api/v1/shift/task/{task_id}/fact?version_id=...`
-
-**Перепланирование:**
-- `POST /api/v1/schedule/reschedule` — перепланировать
-- `GET /api/v1/schedule/compare` — сравнить две версии
-- `PUT /api/v1/schedule/task/{id}/pin?version_id=...` — закрепить/открепить
-- `PUT /api/v1/schedule/task/{id}/move?version_id=...` — переместить
-
-**Лаборатория:**
-- `GET /api/v1/lab/pending?version_id=...`
-- `GET /api/v1/lab/batch/{id}?version_id=...`
-- `GET /api/v1/lab/batch/{id}/log?version_id=...`
-- `POST /api/v1/lab/batch/{id}/block?version_id=...`
-- `POST /api/v1/lab/batch/{id}/unblock?version_id=...`
-- `POST /api/v1/lab/batch/{id}/approve?version_id=...`
-- `POST /api/v1/lab/batch/{id}/request?version_id=...`
-
-**Персонал:**
-- `GET /api/v1/personnel/pools?version_id=...`
-- `GET /api/v1/personnel/pools/{id}?version_id=...`
-- `PUT /api/v1/personnel/pools/{id}?version_id=...`
-- `GET /api/v1/personnel/load?version_id=...`
-
-**Честный Знак:**
-- `POST   /api/v1/cz/scan?version_id=...`
-- `GET    /api/v1/cz/batch/{id}/progress?version_id=...`
-- `GET    /api/v1/cz/pending?version_id=...`
-- `GET    /api/v1/cz/log?version_id=...`
-- `GET    /api/v1/cz/stats?version_id=...`
-- `POST   /api/v1/cz/scan/{id}/attach?version_id=...`
-- `DELETE /api/v1/cz/scan/{id}?version_id=...`
-
-**Настройки:**
-- `GET    /api/v1/settings/schema`
-- `GET    /api/v1/settings/categories`
-- `GET    /api/v1/settings/`
-- `GET    /api/v1/settings/category/{cat}`
-- `PUT    /api/v1/settings/`
-- `PUT    /api/v1/settings/{key}`
-- `POST   /api/v1/settings/shift-mode` (ADMIN)
-
-**Настройки плана:**
-- `GET    /api/v1/plan-settings/version/{version_id}` — настройки плана
-- `PUT    /api/v1/plan-settings/version/{version_id}` — массовое обновление
-- `POST   /api/v1/plan-settings/version/{version_id}/reset` — сброс к глобальным
-
-**What-if сценарии:**
-- `POST   /api/v1/whatif/scenarios`
-- `GET    /api/v1/whatif/scenarios`
-- `GET    /api/v1/whatif/scenarios/{id}`
-- `PUT    /api/v1/whatif/scenarios/{id}`
-- `DELETE /api/v1/whatif/scenarios/{id}`
-- `POST   /api/v1/whatif/scenarios/{id}/run`
-- `GET    /api/v1/whatif/scenarios/{id}/compare`
-
-**Аудит:**
-- `GET /api/v1/audit/log`
-- `GET /api/v1/audit/stats`
-- `GET /api/v1/audit/sources`
-
-**Гант:**
-- `GET /api/v1/gantt/?version_id=...`
-- `GET /api/v1/gantt/export?version_id=...`
-
-## 🧩 Ключевые сущности
-
-### Оборудование
-- **REACTOR** — реакторы (5000–10000 кг)
-- **TANK** — накопительные ёмкости
-- **FILLING_LINE** — линии розлива
-- **MANUAL_STATION** — ручные станции
-- **BOILER** — бойлер (2000 кг)
-
-Все оборудование идентифицируется по полю **`code`**.
-
-### Пулы операторов (Итерация 6)
-
-| Пул | Capacity | Обслуживает |
-|-----|----------|-------------|
-| `REACTOR_OPERATOR` | 3 | 4 реактора |
-| `LINE_OPERATOR` | 2 | 3 линии розлива |
-| `MANUAL_OPERATOR` | 1 | LINE_3 (ручная станция) |
-| `LAB` | 1 | Лабораторные анализы |
-| `COOLING_ZONE` | 2 | Зона охлаждения (Итерация 7) |
-| `BOILER` | 1 | Бойлер |
-
-**Логика:** планировщик **физически не может** запланировать 4 реактора одновременно — только 3. `AddCumulative` запрещает это.
-
-### Режимы смен (Итерация 11)
-
-Настраиваются через `shift_mode` в `app_settings` (или `plan_settings` для конкретного плана). Значения:
-
-| Режим | Интервалы | Длительность смены | Смен в день |
-|-------|-----------|-------------------|-------------|
-| `1x8` | `08:00–16:00` | 8 ч | 1 |
-| `3x8` | `00:00–08:00`, `08:00–16:00`, `16:00–00:00` | 8 ч | 3 |
-| `2x12` | `08:00–20:00`, `20:00–08:00` | 12 ч | 2 |
-
-**Логика:**
-- `shift_intervals` хранится в `app_settings` как JSON-массив.
-- `shift_duration_hours` — целое число.
-- При смене `shift_mode` через `POST /api/v1/settings/shift-mode` — таблица `shift` **пересоздаётся** (`shift_regenerator.py`).
-- `shift_id` в `scheduled_task` сбрасывается (старые UUID невалидны).
-- Требуется пересчитать план.
-
-**Влияние на разбиение длинных LINE_FILL:**
-- `1x8`, `3x8` → max_part = 360 мин
-- `2x12` → max_part = 600 мин
-
-### Режимы охлаждения (Итерация 7)
-
-| Режим | Когда | Длительность | Иконка |
-|-------|-------|--------------|--------|
-| `fast` | 1 реактор охлаждается | base | ❄️ |
-| `slow` | 2+ реактора одновременно | base × 1.3 | ⏳ |
-| `null` | Операция не является охлаждением | — | — |
-
-**Модель в `core.py`:** `b_slow_i = 1 ⟺ ∃ j: cooling_j пересекается с cooling_i`. Если охлаждения последовательны — все `fast`.
-
-### Лабораторные блокировки (Итерация 5)
-
-**Статусы партии:**
-
-| Статус | Описание |
-|--------|----------|
-| `NOT_REQUIRED` | Партия не требует анализа |
-| `PENDING_LAB` | Ожидает анализа |
-| `APPROVED` | Одобрено |
-| `BLOCKED` | Заблокировано (не в плане) |
-
-**Логика:**
-1. После операции `needs_lab=true` партия → `PENDING_LAB`.
-2. Блокировка → `is_lab_blocked=true`, `lab_status=BLOCKED`.
-3. Планировщик **исключает заблокированные** из расписания.
-4. Разблокировка → `APPROVED`.
-
-**Права:** `LAB`, `MASTER`, `ADMIN`.
-
-### Маркировка Честного Знака (Итерация 8)
-
-**Статусы маркировки:**
-
-| Статус | Описание |
-|--------|----------|
-| `NOT_APPLICABLE` | Партия не требует маркировки |
-| `PENDING` | 0 сканов |
-| `IN_PROGRESS` | 0 < marked / planned < threshold |
-| `COMPLETED` | marked / planned ≥ threshold |
-
-**Поток данных:**
-1. Камера ТС сканирует код ЧЗ → `POST /api/v1/cz/scan` с заголовком `X-CZ-Api-Key`.
-2. Backend идемпотентно вставляет скан в `cz_scan_log` (UNIQUE на `cz_code`).
-3. **Fallback-сопоставление** с партией:
-- По `batch_id` (если камера знает).
-- По `task_id` (если камера знает).
-- По `line_code` + время (`LINE_FILL` задача в окне ±2 часа).
-- Иначе — скан «сирота» (`batch_id = NULL`).
-4. Если партия найдена — увеличиваем `batch.cz_marked_qty`, обновляем `cz_status`.
-5. Advisor выдаёт **`CZ_INCOMPLETE`** (WARNING), если задача слива закрыта, а маркировка не завершена.
-
-**Права:** `MASTER`/`PLANNER`/`ADMIN` — ручное сопоставление сирот; `ADMIN` — удаление скана.
-
-### Централизованные настройки (Итерация 11)
-
-**Таблица `app_settings`** — глобальный источник правды (дефолт для всех планов). Содержит метаданные:
-- `category` — для группировки в UI
-- `setting_key` — ключ
-- `setting_value` — JSONB-значение
-- `value_type` — `int` | `float` | `bool` | `str` | `json` | `select`
-- `label`, `description` — для UI
-- `min_value`, `max_value`, `options` — валидация
-- `is_system` — запрет на редактирование через UI
-
-**Чтение:** через модуль `settings_reader.py`:
-- `read_feature_flags(db, org_id, version_id=None)` — все `enable_*` флаги
-- `read_setting(db, org_id, key, default, version_id=None)` — одна настройка
-- `read_settings_dict(db, org_id, keys, version_id=None)` — несколько настроек
-
-**Категории:**
-
-| Категория | Label | Что содержит |
-|-----------|-------|--------------|
-| `planning` | Планирование | `planning_start_date`, `horizon_hours`, `timeout_seconds`, `max_fill_percent` |
-| `shifts` | Режим смен | `shift_mode`, `shift_intervals`, `shift_duration_hours`, `work_start_time`, `work_end_time` |
-| `cooling` | Охлаждение | `enable_cooling_degradation`, `cooling_degradation_factor`, `cooling_zone_capacity` |
-| `calendar` | Календарь | `max_task_hours_for_calendar`, `max_fill_part_hours`, `allow_weekend_work` |
-| `lab` | Лаборатория | `enable_lab_blocking` |
-| `materials` | Материалы | `enable_material_constraints` |
-| `cz` | Честный Знак | `enable_cz_integration`, `cz_completion_threshold`, `cz_api_key`, `enable_cz_auto_close` |
-| `resources` | Персонал | `enable_operator_pools`, `enable_manual_station` |
-| `features` | Feature-флаги | `enable_tank_routing`, `enable_shift_planning`, `enable_rescheduling`, `enable_advisor` |
-| `optimization` | Оптимизация | `weight_makespan`, `weight_setup`, `weight_underload`, `weight_cooling_slow`, `weight_tardiness` |
-
-### Настройки, привязанные к плану (Итерация 13.14)
-
-**Таблица `plan_settings`** — снапшот настроек для **конкретного плана**. Структура идентична `app_settings`, плюс колонка `schedule_version_id`.
-
-**Логика:**
-
-1. **При создании плана** (`INSERT INTO schedule_version`) триггер `copy_app_settings_to_plan` автоматически копирует все 32 настройки из `app_settings` в `plan_settings` этого плана.
-2. **Мастер настроек плана** (`PlanSettingsWizard.tsx`) позволяет пользователю переопределить значения для конкретного плана через `PUT /api/v1/plan-settings/version/{id}`.
-3. **Планировщик** (`DataLoader`) читает настройки из `plan_settings`, если передан `version_id`. Если `version_id=None` или `plan_settings` пуст — fallback на `app_settings`.
-
-**Что это даёт:**
-
-- ✅ **Изоляция:** два плана имеют независимые настройки.
-- ✅ **Воспроизводимость:** зная `plan_settings`, можно пересчитать ровно тот же результат.
-- ✅ **Сравнимость:** можно корректно сравнивать два плана.
-- ✅ **Обратная совместимость:** старые планы без `plan_settings` работают через `app_settings`.
-
-**Мастер настроек плана — 9 шагов:**
-
-1. Основные (`planning`)
-2. Режим смен (`shifts`)
-3. Календарь (`calendar`)
-4. Охлаждение (`cooling`)
-5. Ресурсы (`resources`)
-6. Материалы и лаборатория (`materials` + `lab`)
-7. Маршруты и функции (`features`)
-8. Честный Знак (`cz`)
-9. Оптимизация (`optimization`)
-
-**Права:** редактировать `plan_settings` может только `ADMIN` или `PLANNER`.
-
-### Снапшоты справочников (Итерация 13.15)
-
-**Таблицы-снапшоты** — «слепок» справочников на момент создания/расчёта плана:
-- `equipment_snapshot`
-- `product_snapshot`
-- `operation_snapshot`
-- `calendar_snapshot`
-
-**Заполняются из двух мест:**
-
-1. **При создании плана** (`POST /api/v1/schedule/versions`) — модуль `snapshot.py` вызывает `snapshot_all_catalogs`.
-2. **При расчёте плана** (`POST /api/v1/schedule/build`) — `ScheduleSaver._do_save` делегирует в `snapshot_all_catalogs`.
-
-**Проверка наличия снапшотов:**
-
-```sql
-SELECT EXISTS (
-    SELECT 1 FROM equipment_snapshot WHERE version_id = :vid LIMIT 1
-) AS has_snapshot;
-```
-
-**API возвращает `has_snapshot`** в `GET /api/v1/schedule/versions`. UI использует это для:
-- Иконка ⚠ + жёлтая подсветка строки для планов без снапшотов.
-- Предупреждение в `GanttPage.tsx` вместо диаграммы.
-
-**Обратная совместимость:** старые планы (созданные до Итерации 13.15) не имеют снапшотов. Они всё ещё открываются, но с предупреждением «План пуст».
-
-### Multi-objective оптимизация (Итерация 12)
-
-**Модуль `backend/app/scheduler/optimization.py`.**
-
-**5 компонентов целевой функции:**
-
-| Компонент | Что измеряет | Нормализация |
-|-----------|--------------|--------------|
-| `makespan` | Общее время плана (мин) | `makespan / horizon_minutes` |
-| `setup` | Сумма переналадок (мин) | `setup_sum / horizon_minutes` |
-| `underload` | Сумма недогрузки реакторов (кг) | `underload_sum / total_max_fill_kg` |
-| `cooling_slow` | Число замедленных охлаждений (шт) | `cooling_slow / total_cooling_count` |
-| `tardiness` | Сумма просрочек due_date (мин) | `tardiness_sum / (num_batches * horizon_minutes)` |
-
-**Веса в `[0, 1]`** задаются в `app_settings` (или `plan_settings`):
-- `weight_makespan = 1.0` (по умолчанию)
-- остальные = `0.0`
-
-### What-if сценарии (Итерация 12)
-
-**Таблица `whatif_scenario`.** Позволяет запускать альтернативные планы с изменениями (orders, shift_mode, capacity, calendar) без изменения основной БД. Результат — отдельная `schedule_version`.
-
-**Архитектура 2 транзакций:**
-
-1. **Транзакция №1 (rollback):** применить изменения → запустить scheduler → получить результат в памяти → rollback.
-2. **Транзакция №2 (commit):** сохранить результат через `ScheduleSaver` → commit.
-
-**Итерация 13.14:** `ProductionScheduler` в what-if получает `version_id=base_version_id` — использует настройки **базового плана**, а не глобальные.
-
-### Аудит (Итерация 13.3)
-
-**Объединённый журнал событий** из 4 источников:
-- `material_stock_log` — изменения остатков материалов
-- `reschedule_log` — перепланирования
-- `lab_analysis_log` — лабораторные блокировки
-- `cz_scan_log` — сканы Честного Знака
-
-**API `/api/v1/audit`:**
-- `GET /log` — объединённый журнал с фильтрами (источники, severity, даты, поиск)
-- `GET /stats` — счётчики по источникам за период
-- `GET /sources` — список доступных источников
-
-**UI `AuditPage.tsx`** — страница аудита с группировкой по дням, фильтры синхронизируются с URL.
-
-### Feature-флаги
-
-Читаются через `settings_reader.read_feature_flags(db, org_id, version_id)`.
-
-| Флаг | Статус | Итерация |
-|------|--------|----------|
-| enable_tank_routing | ✅ ON | 1 |
-| enable_advisor | ✅ ON | 2 |
-| enable_material_constraints | ✅ ON | 2 |
-| enable_shift_planning | ✅ ON | 3 |
-| enable_rescheduling | ✅ ON | 4 |
-| enable_lab_blocking | ✅ ON | 5 |
-| enable_operator_pools | ✅ ON | 6 |
-| enable_manual_station | ✅ ON | 6 |
-| enable_cooling_degradation | ✅ ON | 7 |
-| enable_cz_integration | ✅ ON | 8 |
+## 📚 Документация
+
+| Документ | Описание |
+|----------|----------|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Архитектура системы |
+| [docs/API.md](docs/API.md) | REST API endpoints |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Все настройки |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Операции с БД |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Решение проблем |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Руководство разработчика |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | План развития |
+| [docs/adr/](docs/adr/) | Архитектурные решения |
+| [CHANGELOG.md](CHANGELOG.md) | История изменений |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Как внести вклад |
+
+**Swagger UI** после запуска backend: **http://localhost:8000/docs**
 
 ## 🧪 Тестирование
+
 ```
 cd backend
 ..venv\Scripts\Activate.ps1
 pytest tests/ -v
 ```
 
-**Текущее состояние:** **535 passed**, 13 warnings.
+**Текущее состояние:** **563 passed**, 13 warnings.
+
+Основные тестовые файлы:
 
 | Файл | Тестов | Что проверяет |
 |------|--------|---------------|
 | `test_tz_case.py` | 41 | Эталонный кейс ТЗ |
 | `test_materials.py` | 11 | Расчёт потребности в сырье |
-| `test_advisor.py` | 17 | Подсказки Advisor (включая CZ_INCOMPLETE) |
-| `test_routing.py` | 15 | Цепочки операций + разбиение LINE_FILL |
-| `test_shifts.py` | 16 | Смены и API смен |
-| `test_rescheduler.py` | 18 | Перепланирование + фильтрация блокировок |
+| `test_advisor.py` | 17 | Подсказки Advisor |
+| `test_routing.py` | 15 | Цепочки операций |
+| `test_shifts.py` | 16 | Смены и API |
+| `test_rescheduler.py` | 18 | Перепланирование |
 | `test_lab.py` | 24 | Лабораторные блокировки |
 | `test_personnel.py` | 15 | Люди как ресурс |
 | `test_cooling_degradation.py` | 19 | Охлаждение с деградацией |
 | `test_cz.py` | 52 | Честный Знак |
 | `test_whatif.py` | 45 | What-if сценарии |
-| `test_versions.py` | 4 | Hotfix: деактивация версий |
-| `test_dependencies.py` | 9 | FastAPI dependencies |
-| `test_auth_models.py` | 9 | Pydantic-модели авторизации |
-| `test_security.py` | 5 | JWT и bcrypt |
-| `test_config.py` | 3 | Конфигурация |
-| `test_plan_settings_models.py` | 14 | Pydantic-модели plan_settings (13.14, обновлён в 13.15) |
-| `test_plan_settings_api.py` | 23 | API plan_settings (13.14) |
-| `test_plan_settings_migration.py` | 16 | Миграция add_21.sql (13.14) |
-| `test_plan_settings_data_loader.py` | 14 | Чтение plan_settings (13.14) |
-| `test_plan_settings_integration.py` | 11 | Интеграционные тесты (13.14) |
-| `test_rescheduler_uses_plan_settings.py` | 11 | rescheduler с version_id (13.14) |
-| `test_whatif_uses_plan_settings.py` | 15 | whatif с version_id (13.14) |
-| `test_audit.py` | 33 | API аудита (13.3) |
-| `test_audit_models.py` | 8 | Модели аудита (13.3) |
-| `test_material_import.py` | 12 | Импорт/экспорт Excel (13.2) |
-| `test_material_stock_log.py` | 11 | Журнал остатков (13.2) |
-| `test_materials_stock.py` | 12 | Остатки материалов (13.1) |
-| **`test_snapshot.py`** | **18** | **Модуль snapshot (13.15)** |
-| **`test_schedule_create_version.py`** | **10** | **Создание версии + снапшоты (13.15)** |
-| **`test_saver_uses_snapshot.py`** | **10** | **saver → snapshot_all_catalogs (13.15)** |
-
-**Warnings** (не критично):
-- `StarletteDeprecationWarning` — `httpx` с `starlette.testclient` устарел.
-- `DeprecationWarning` — `anyio.abc.BlockingPortal` alias устарел.
-- `PydanticDeprecatedSince20` — `class Config` вместо `ConfigDict` в некоторых моделях.
+| `test_plan_settings_*.py` | 78 | plan_settings |
+| `test_audit.py` | 33 | Аудит |
+| `test_snapshot.py` | 18 | Модуль snapshot |
+| **`test_schedule_versions_archive.py`** | **28** | **Архивация версий (13.21)** |
 
 ## 🔧 Полезные команды
 
@@ -1302,84 +991,18 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/seed_demo_data.sql
 
 ### Применить SQL-миграцию (правильный способ)
 ```
-docker cp backend\migrations\add_21.sql aps_postgres:/tmp/add_21.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_21.sql
+docker cp backend\migrations\add_23.sql aps_postgres:/tmp/add_23.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_23.sql
 ```
 
-### Очистить кэш Python
+### Проверить архивные версии (Итерация 13.21)
 ```
-cd backend
-Get-ChildItem -Path "app" -Recurse -Directory -Filter "pycache" | Remove-Item -Recurse -Force
-```
-
-### Полная очистка (снести контейнер и БД)
-```
-docker rm -f aps_postgres
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT COUNT(*) FILTER (WHERE is_archived = TRUE) AS archived, COUNT(*) FILTER (WHERE is_active = TRUE) AS active FROM schedule_version WHERE organization_id = '00000000-0000-0000-0000-000000000001';"
 ```
 
-### Экспорт данных из БД
+### Проверить настройку auto_archive_on_recalc (Итерация 13.21)
 ```
-docker exec aps_postgres pg_dump -U aps household > backup.sql
-```
-
-### Проверить таблицу plan_settings (Итерация 13.14)
-```
-docker exec -i aps_postgres psql -U aps -d household -c "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'plan_settings' ORDER BY ordinal_position;"
-```
-
-### Проверить триггер plan_settings (Итерация 13.14)
-```
-docker exec -i aps_postgres psql -U aps -d household -c "SELECT tgname, tgrelid::regclass AS on_table, tgenabled FROM pg_trigger WHERE tgname = 'trg_copy_app_settings_to_plan';"
-```
-
-### Проверить настройки конкретного плана (Итерация 13.14)
-```
-docker exec -i aps_postgres psql -U aps -d household -c "SELECT setting_key, setting_value FROM plan_settings WHERE schedule_version_id = (SELECT id FROM schedule_version WHERE is_active = true LIMIT 1) AND category = 'shifts' ORDER BY setting_key;"
-```
-
-### Проверить количество plan_settings у активного плана
-```
-docker exec -i aps_postgres psql -U aps -d household -c "SELECT (SELECT COUNT(*) FROM app_settings WHERE organization_id = '00000000-0000-0000-0000-000000000001') AS app_count, (SELECT COUNT(*) FROM plan_settings WHERE schedule_version_id = (SELECT id FROM schedule_version WHERE is_active = true LIMIT 1)) AS plan_count;"
-```
-
-### Проверить снапшоты конкретного плана (Итерация 13.15)
-```
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT
-    sv.name,
-    (SELECT COUNT(*) FROM product_snapshot WHERE version_id = sv.id) AS products,
-    (SELECT COUNT(*) FROM equipment_snapshot WHERE version_id = sv.id) AS equipment,
-    (SELECT COUNT(*) FROM operation_snapshot WHERE version_id = sv.id) AS ops,
-    (SELECT COUNT(*) FROM calendar_snapshot WHERE version_id = sv.id) AS cal,
-    (SELECT COUNT(*) FROM plan_settings WHERE schedule_version_id = sv.id) AS settings
-FROM schedule_version sv
-ORDER BY sv.created_at DESC LIMIT 5;
-"
-```
-
-### Проверить настройки режима смен (Итерация 11)
-```
-docker exec -i aps_postgres psql -U aps -d household -c "SELECT setting_key, setting_value FROM app_settings WHERE setting_key IN ('shift_mode', 'shift_intervals', 'shift_duration_hours', 'allow_weekend_work') ORDER BY setting_key;"
-```
-
-### Проверить веса multi-objective (Итерация 12)
-```
-docker exec -i aps_postgres psql -U aps -d household -c "SELECT setting_key, setting_value FROM app_settings WHERE category = 'optimization' ORDER BY display_order;"
-```
-
-### Проверить смены на конкретную дату (МСК)
-```
-docker exec -i aps_postgres psql -U aps -d household -c "SELECT name, starts_at AT TIME ZONE 'Europe/Moscow' AS starts_msk, ends_at AT TIME ZONE 'Europe/Moscow' AS ends_msk, is_working FROM shift WHERE organization_id = '00000000-0000-0000-0000-000000000001' AND (starts_at AT TIME ZONE 'Europe/Moscow')::date = '2026-09-01' ORDER BY starts_at;"
-```
-
-### Проверить настройки охлаждения (Итерация 7)
-```
-docker exec -i aps_postgres psql -U aps -d household -c "SELECT setting_key, setting_value FROM app_settings WHERE setting_key IN ('enable_cooling_degradation', 'cooling_degradation_factor', 'cooling_zone_capacity');"
-```
-
-### Проверить настройки ЧЗ (Итерация 8)
-```
-docker exec -i aps_postgres psql -U aps -d household -c "SELECT setting_key, setting_value FROM app_settings WHERE setting_key LIKE 'cz_%' OR setting_key = 'enable_cz_integration' ORDER BY setting_key;"
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT setting_key, setting_value FROM app_settings WHERE setting_key = 'auto_archive_on_recalc';"
 ```
 
 ### Проверить пулы ресурсов
@@ -1387,250 +1010,40 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT setting_key, set
 docker exec -i aps_postgres psql -U aps -d household -c "SELECT type, capacity FROM resource_pool ORDER BY type;"
 ```
 
-### Проверить what-if сценарии (Итерация 12)
+### Проверить настройки режима смен (Итерация 11)
 ```
-docker exec -i aps_postgres psql -U aps -d household -c "SELECT id, name, status, base_version_id, result_version_id, created_at FROM whatif_scenario WHERE organization_id = '00000000-0000-0000-0000-000000000001' ORDER BY created_at DESC;"
-```
-
-### Посмотреть распределение cooling_mode в активной версии
-```
-docker exec -i aps_postgres psql -U aps -d household -c "SELECT st.cooling_mode, COUNT(*) FROM scheduled_task st JOIN schedule_version sv ON sv.id = st.schedule_version_id WHERE sv.is_active = true GROUP BY st.cooling_mode ORDER BY st.cooling_mode NULLS LAST;"
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT setting_key, setting_value FROM app_settings WHERE setting_key IN ('shift_mode', 'shift_intervals', 'shift_duration_hours', 'allow_weekend_work') ORDER BY setting_key;"
 ```
 
-### Посмотреть статистику ЧЗ по партиям
+### Проверить снапшоты конкретного плана (Итерация 13.15)
 ```
-docker exec -i aps_postgres psql -U aps -d household -c "SELECT cz_status, COUNT(*) FROM batch WHERE organization_id = '00000000-0000-0000-0000-000000000001' GROUP BY cz_status ORDER BY cz_status;"
-```
-
-### Отправить тестовый скан ЧЗ (PowerShell)
-```powershell
-$body = '{"email": "admin@household.ru", "password": "admin123"}'
-$token = (Invoke-RestMethod -Uri "http://localhost:8000/api/v1/auth/login" -Method Post -Body $body -ContentType "application/json").access_token
-
-$scanBody = @{
-    cz_code = "0104600000000001215TEST0000000001"
-    gtin = "04600000000001"
-    line_code = "LINE_1"
-    camera_id = "CAM-01"
-} | ConvertTo-Json
-
-Invoke-RestMethod -Uri "http://localhost:8000/api/v1/cz/scan" `
-    -Method Post `
-    -Body $scanBody `
-    -ContentType "application/json" `
-    -Headers @{
-        Authorization = "Bearer $token"
-        "X-CZ-Api-Key" = "dev-cz-api-key-change-in-production"
-    } | ConvertTo-Json
-```
-
-### Создать what-if сценарий через API (PowerShell)
-```powershell
-$body = '{"email": "admin@household.ru", "password": "admin123"}'
-$token = (Invoke-RestMethod -Uri "http://localhost:8000/api/v1/auth/login" -Method Post -Body $body -ContentType "application/json").access_token
-
-$versions = Invoke-RestMethod -Uri "http://localhost:8000/api/v1/schedule/versions" -Headers @{Authorization="Bearer $token"}
-$activeVer = ($versions | Where-Object { $_.is_active })[0].id
-
-$scenarioBody = @{
-    name = "Test +20% cream"
-    base_version_id = $activeVer
-    changes = @{
-        shift_mode = "3x8"
-        resource_capacity = @{
-            REACTOR_OPERATOR = 5
-        }
-    }
-} | ConvertTo-Json -Depth 5
-
-$scenario = Invoke-RestMethod -Uri "http://localhost:8000/api/v1/whatif/scenarios" `
-    -Method Post `
-    -Body $scenarioBody `
-    -ContentType "application/json" `
-    -Headers @{Authorization="Bearer $token"}
-
-Invoke-RestMethod -Uri "http://localhost:8000/api/v1/whatif/scenarios/$($scenario.id)/run" `
-    -Method Post `
-    -Body '{}' `
-    -ContentType "application/json" `
-    -Headers @{Authorization="Bearer $token"}
-
-Start-Sleep -Seconds 30
-$status = Invoke-RestMethod -Uri "http://localhost:8000/api/v1/whatif/scenarios/$($scenario.id)" -Headers @{Authorization="Bearer $token"}
-Write-Host "Статус: $($status.status)"
-
-$compare = Invoke-RestMethod -Uri "http://localhost:8000/api/v1/whatif/scenarios/$($scenario.id)/compare" -Headers @{Authorization="Bearer $token"}
-$compare | ConvertTo-Json -Depth 5
-```
-
-### Получить настройки плана через API (PowerShell)
-```powershell
-$body = '{"email": "admin@household.ru", "password": "admin123"}'
-$token = (Invoke-RestMethod -Uri "http://localhost:8000/api/v1/auth/login" -Method Post -Body $body -ContentType "application/json").access_token
-
-$versions = Invoke-RestMethod -Uri "http://localhost:8000/api/v1/schedule/versions" -Headers @{Authorization="Bearer $token"}
-$activeVer = ($versions | Where-Object { $_.is_active })[0].id
-
-# Получить настройки
-$settings = Invoke-RestMethod -Uri "http://localhost:8000/api/v1/plan-settings/version/$activeVer" -Headers @{Authorization="Bearer $token"}
-$settings.settings | ConvertTo-Json -Depth 5
-
-# Обновить настройку horizon_hours
-$updateBody = @{
-    settings = @{
-        horizon_hours = 1440
-        weight_makespan = 0.8
-        weight_tardiness = 0.2
-    }
-} | ConvertTo-Json
-
-Invoke-RestMethod -Uri "http://localhost:8000/api/v1/plan-settings/version/$activeVer" `
-    -Method Put `
-    -Body $updateBody `
-    -ContentType "application/json" `
-    -Headers @{Authorization="Bearer $token"} | ConvertTo-Json
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT sv.name, (SELECT COUNT(*) FROM product_snapshot WHERE version_id = sv.id) AS products, (SELECT COUNT(*) FROM equipment_snapshot WHERE version_id = sv.id) AS equipment FROM schedule_version sv ORDER BY sv.created_at DESC LIMIT 5;"
 ```
 
 ## ⚠️ Известные ограничения
-- Слив на линию добавляется в конец цепочки (после замыва). Семантически неверно (по ТЗ замыв после слива), но структурно работает.
-- Материальные ограничения — предупреждения Advisor, не жёсткие constraints в CP-SAT.
-- График поставок — все поставки считаются доступными.
-- Крем-мыло 5л (Р2) имеет route_type=VIA_TANK, но Р2 не связан с танком. Advisor подсвечивает ROUTE_MISMATCH.
-- Лабораторные блокировки: после блокировки партии нужно вручную запустить перепланирование или через авто-перепланирование (Итерация 13.4).
-- Персонал: нет HR-подсистемы (нет ФИО, смен, отпусков). Только пулы с capacity.
-- Solver: при большом горизонте может выдать FEASIBLE вместо OPTIMAL.
-- Деградация охлаждения активна, но в тестовом кейсе ТЗ slow не появляется (узкие места в других ресурсах).
-- ЧЗ: формат данных от камер — гибкий JSON с опциональными полями.
-- ЧЗ: enable_cz_auto_close = false — автозакрытие задачи слива отключено.
-- ЧЗ: ручное сопоставление сироты требует ввода UUID партии.
-- Режимы смен: при смене shift_mode все задачи теряют привязку к сменам.
-- Разбиение LINE_FILL: длинные задачи разбиваются на много подзадач.
-- Pan + drag на Ганте: setup и downtime не таскаются.
-- What-if: удаление DONE-сценария не удаляет результирующий план.
-- Multi-objective: если все веса = 0 (кроме makespan), работает как single-objective.
-- What-if RUNNING: нельзя удалить сценарий во время расчёта.
-- What-if changes: формат JSON не строго типизирован на уровне Pydantic.
-- plan_settings (13.14): существующие планы (созданные до миграции add_21.sql) не имеют plan_settings — работают через fallback на app_settings.
-- plan_settings (13.14): при изменении app_settings после создания плана, значения в plan_settings этого плана не обновляются — это by design (снапшот).
-- Мастер настроек плана (13.14): работает только с существующими планами.
-- Системные настройки (13.14): shift_intervals, shift_duration_hours — is_system = true, не редактируются через мастер.
-- **Снапшоты справочников (13.15):** старые планы (созданные до Итерации 13.15) могут иметь пустые снапшоты. Они помечены ⚠ в списке планов, при открытии показывают предупреждение. Пересоздайте план через мастер или удалите его.
+
+Полный список — в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#известные-ограничения).
+
+Ключевые:
+- **Архивация (13.21):** версия НЕ архивируется, если используется в `whatif_scenario` со статусом `DRAFT` или `RUNNING`.
+- **Снапшоты (13.15):** старые планы могут иметь пустые снапшоты — помечены ⚠.
+- **Режимы смен:** при смене `shift_mode` все задачи теряют привязку к сменам.
+- **What-if RUNNING:** нельзя удалить сценарий во время расчёта.
+- **Multi-objective:** если все веса = 0 (кроме makespan), работает как single-objective.
 
 ## 🐛 Troubleshooting
 
-### 1. FastAPI 0.139+: _IncludedRouter в app.routes
-**Симптом:** проверка `getattr(r, 'path', None)` возвращает None для всех `include_router(...)`.
+Краткий список — в [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
-**Решение:** использовать `app.openapi()['paths']`.
-
-### 2. Кэш Python (__pycache__) на Windows
-**Решение:**
-```
-cd backend
-Get-ChildItem -Path "app" -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
-```
-
-### 3. Кэш браузера
-**Решение:** режим инкогнито или Ctrl+Shift+Delete.
-
-### 4. Таймзона naive datetime в asyncpg
-**Решение:** сравнение по МСК-дате.
-
-### 5–17. Ошибки миграций
-Если при запуске возникает UndefinedColumnError — не применена соответствующая миграция. Применить:
-```
-docker cp backend\migrations\add_XX.sql aps_postgres:/tmp/add_XX.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_XX.sql
-```
-
-### 18. usePlan must be used within PlanProvider (frontend)
-**Решение:** перезапустить Vite с очисткой кэша (`Remove-Item -Recurse -Force node_modules\.vite`).
-
-### 19. Advisor «дёргается» (бесконечный ре-рендер)
-**Решение:** в `PlainContext.tsx` обернуть функции в `useCallback`.
-
-### 20–23. Ошибки What-if
-См. Итерацию 12 в разделе изменений.
-
-### 24. Таблица plan_settings пуста (Итерация 13.14)
-**Симптом:** `SELECT COUNT(*) FROM plan_settings` возвращает 0.
-
-**Причина:** не применена миграция `add_21.sql`.
-
-**Решение:**
-```
-docker cp backend/migrations/add_21.sql aps_postgres:/tmp/add_21.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_21.sql
-```
-
-### 25. Триггер copy_app_settings_to_plan не срабатывает (Итерация 13.14)
-**Симптом:** создали план, но `plan_settings` пуст.
-
-**Причина:** триггер не создан на таблице `schedule_version`.
-
-**Решение:** проверить наличие:
-```
-docker exec -i aps_postgres psql -U aps -d household -c "SELECT tgname FROM pg_trigger WHERE tgname = 'trg_copy_app_settings_to_plan';"
-```
-Если пусто — пересоздать миграцию `add_21.sql`.
-
-### 26. 404 Not Found при GET /api/v1/plan-settings/version/{id} (Итерация 13.14)
-**Причина:** эндпоинт не подключён в `main.py`.
-
-**Решение:** проверить `main.py`:
-```python
-from app.api.v1.plan_settings import router as plan_settings_router
-app.include_router(plan_settings_router)
-```
-
-### 27. Мастер настроек показывает пустой список полей (Итерация 13.14)
-**Причина:** `settingsApi.getSchema()` вернул пустой `settings`.
-
-**Решение:** проверить `SETTINGS_REGISTRY` в `backend/app/scheduler/settings.py` — там должно быть 30+ записей.
-
-### 28. В мастере настроек отсутствует кнопка «Сохранить» (Итерация 13.14)
-**Причина:** `changedKeys.length === 0` — нет изменений.
-
-**Решение:** это by design. Измените любое поле — кнопка активируется.
-
-### 29. План открыт, но все справочники пусты (Итерация 13.15)
-**Симптом:** открыли план из списка, но на страницах «Продукты», «Оборудование», «Техкарты» гриды пусты.
-
-**Причина:** план создан до Итерации 13.15 (или до того, как появился фикс) — снапшоты не заполнялись.
-
-**Решение:**
-1. Закройте план (кнопка ✕).
-2. Удалите его через UI (кнопка 🗑).
-3. Создайте новый план через мастер — снапшоты заполнятся автоматически.
-
-**Проверка:**
-```
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT
-    sv.name,
-    (SELECT COUNT(*) FROM product_snapshot WHERE version_id = sv.id) AS products,
-    (SELECT COUNT(*) FROM equipment_snapshot WHERE version_id = sv.id) AS equipment
-FROM schedule_version sv
-ORDER BY sv.created_at DESC LIMIT 5;
-"
-```
-Если у плана `products = 0` — снапшоты не заполнены.
-
-### 30. План помечен ⚠ в списке планов (Итерация 13.15)
-**Симптом:** рядом с планом в «Истории планов» жёлтая иконка ⚠.
-
-**Причина:** `has_snapshot = false` — снапшоты справочников для этого плана не заполнены.
-
-**Решение:** тот же, что в пункте 29.
-
-### 31. GanttPage показывает «План пуст» вместо диаграммы (Итерация 13.15)
-**Симптом:** при открытии плана вместо диаграммы Ганта — предупреждение «План пуст».
-
-**Причина:** `currentPlanHasSnapshot === false` в `PlanContext`. План создан до 13.15.
-
-**Решение:** тот же, что в пункте 29.
+Частые проблемы:
+- **`UndefinedColumnError`** → не применена миграция (см. таблицу в TROUBLESHOOTING).
+- **`usePlan must be used within PlanProvider`** → очистить `node_modules\.vite`.
+- **Advisor «дёргается»** → `useCallback` в `PlainContext.tsx`.
+- **План пуст (⚠)** → снапшоты не заполнены, пересоздать план.
+- **Старая версия не архивируется** → используется в what-if сценарии, снекбар покажет детали.
 
 ## 🗺️ Roadmap
+
 | # | Итерация | Длит. | Приоритет | Статус |
 |---|----------|-------|-----------|--------|
 | 0 | Подготовка | 4 дня | 🔥 | ✅ |
@@ -1644,18 +1057,27 @@ ORDER BY sv.created_at DESC LIMIT 5;
 | 7 | Охлаждение с деградацией | 1.5 нед | 🔥 | ✅ |
 | 7h | Hotfix: модель деградации охлаждения | 2 дня | 🔥🔥🔥 | ✅ |
 | 8 | ЧЗ и интеграции | 2 нед | 🔥 | ✅ |
-| 9 | Рефакторинг, A3 (реальный пересчет), C2 (drag-and-drop) | 2 нед | 🟡 | ✅ |
-| 10 | Календарная постобработка, разбиение длинных задач | 2 нед | 🟡 | ✅ |
-| 11 | Режимы смен, app_settings, pan/zoom в Ганте | 2 нед | 🟡 | ✅ |
-| 12 | Multi-objective и what-if сценарии | 2 нед | 🟡 | ✅ |
-| 13.3 | Аудит (объединённый журнал событий) | 1 нед | 🟡 | ✅ |
-| 13.14 | Настройки, привязанные к плану (plan_settings) | 1 нед | 🟡 | ✅ |
-| 13.15 | Исправление: снапшоты при создании плана | 2 дня | 🔥🔥 | ✅ |
+| 9 | Рефакторинг, A3, C2 | 2 нед | 🟡 | ✅ |
+| 10 | Календарная постобработка | 2 нед | 🟡 | ✅ |
+| 11 | Режимы смен, app_settings, pan/zoom | 2 нед | 🟡 | ✅ |
+| 12 | Multi-objective и what-if | 2 нед | 🟡 | ✅ |
+| 13.3 | Аудит | 1 нед | 🟡 | ✅ |
+| 13.14 | plan_settings | 1 нед | 🟡 | ✅ |
+| 13.15 | Снапшоты при создании плана | 2 дня | 🔥🔥 | ✅ |
+| 13.16 | Унификация диалогов | 2 дня | 🟡 | ✅ |
+| 13.17 | Каскадный сдвиг задач | 1 нед | 🟡 | ✅ |
+| 13.18 | Улучшения Ганта | 3 дня | 🟡 | ✅ |
+| 13.19 | Флаг planDirty | 2 дня | 🟡 | ✅ |
+| 13.20 | Прогресс-диалог пересчёта | 1 день | 🔥🔥 | ✅ |
+| **13.21** | **Архивация версий планов** | **3 дня** | **🟡** | **✅** |
 | 14 | Встроенная справка пользователя | 1 нед | 🟡 | ⏳ |
 
+Полный Roadmap — в [docs/ROADMAP.md](docs/ROADMAP.md).
+
 ## 📄 Лицензия
+
 Внутренний проект.
 
-Итерации 0, 1, 2, 3, 4, 5, 5h, 6, 7, 7h, 8, 9, 10, 11, 12, 13.3, 13.14, 13.15 завершены.
+---
 
-Следующая — Итерация 14: Встроенная справка пользователя (⏳).
+Итерации 0–13.21 завершены. Следующая — Итерация 14: Встроенная справка пользователя (⏳).

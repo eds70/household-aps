@@ -52,7 +52,7 @@
 ```
 feat(scheduler): add plan_settings support to DataLoader
 fix(shift): correct timezone comparison for by-date endpoint
-docs(readme): update version to 4.1.0
+docs(readme): update version to 4.2.0
 test(plan_settings): add integration tests for trigger
 ```
 
@@ -64,10 +64,10 @@ test(plan_settings): add integration tests for trigger
    ```
 2. Откройте PR против `main`.
 3. Заполните шаблон PR:
-    - **Что сделано** — краткое описание.
-    - **Зачем** — ссылка на issue или итерацию.
-    - **Как проверить** — шаги для ревьюера.
-    - **Чек-лист** — тесты, документация, CHANGELOG.
+   - **Что сделано** — краткое описание.
+   - **Зачем** — ссылка на issue или итерацию.
+   - **Как проверить** — шаги для ревьюера.
+   - **Чек-лист** — тесты, документация, CHANGELOG.
 
 ### 5. Ревью
 
@@ -234,6 +234,7 @@ COMMIT;
 - `shift` — смены.
 - `personnel` — персонал.
 - `gantt` — диаграмма Ганта.
+- `snapshot` — снапшоты справочников.
 - `docs` — документация.
 
 ### Примеры
@@ -260,11 +261,15 @@ Fixes #456
 ```
 
 ```
-docs(readme): update version to 4.1.0
+fix(scheduler): fill snapshots on plan creation (iteration 13.15)
 
-- Добавлена секция "Настройки, привязанные к плану"
-- Обновлён Roadmap (13.3, 13.14)
-- Добавлены команды проверки plan_settings
+- Модуль snapshot.py с snapshot_all_catalogs
+- create_schedule_version вызывает snapshot_all_catalogs
+- saver._do_save делегирует в snapshot_all_catalogs
+- API возвращает has_snapshot
+- UI: ⚠ и предупреждение для пустых планов
+- +43 теста, всего 535 passed
+- Исправлен устаревший test_update_request_requires_settings
 ```
 
 ---
@@ -301,20 +306,20 @@ from uuid import uuid4
 
 @pytest.mark.asyncio
 async def test_read_setting_from_plan_settings(db_session, org_id, version_id):
-    """Читает настройку из plan_settings, если version_id передан."""
-    # Arrange
-    await db_session.execute(
-        "INSERT INTO plan_settings (...) VALUES (...)"
-    )
-    await db_session.commit()
+   """Читает настройку из plan_settings, если version_id передан."""
+   # Arrange
+   await db_session.execute(
+      "INSERT INTO plan_settings (...) VALUES (...)"
+   )
+   await db_session.commit()
 
-    # Act
-    result = await read_setting(
-        db_session, org_id, "horizon_hours", version_id=version_id
-    )
+   # Act
+   result = await read_setting(
+      db_session, org_id, "horizon_hours", version_id=version_id
+   )
 
-    # Assert
-    assert result == 1440
+   # Assert
+   assert result == 1440
 ```
 
 ### Frontend

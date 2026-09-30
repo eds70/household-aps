@@ -21,11 +21,11 @@
 1. Есть активный план (base).
 2. Пользователь создаёт сценарий: «Авария Р4 (25–28.09)».
 3. Система:
-    - Применяет изменения (добавляет `calendar_event` для Р4).
-    - Запускает планировщик.
-    - Получает результат.
-    - **Откатывает** изменения.
-    - Сохраняет результат как отдельную `schedule_version`.
+   - Применяет изменения (добавляет `calendar_event` для Р4).
+   - Запускает планировщик.
+   - Получает результат.
+   - **Откатывает** изменения.
+   - Сохраняет результат как отдельную `schedule_version`.
 4. Пользователь сравнивает base vs result.
 
 **Проблема:**
@@ -48,22 +48,22 @@
 
 ```python
 async with session.begin():  # Транзакция №1
-    # 1. Применяем изменения
-    await self._apply_changes(scenario.changes)
+   # 1. Применяем изменения
+   await self._apply_changes(scenario.changes)
 
-    # 2. Запускаем планировщик
-    scheduler = ProductionScheduler(
-        session=session,           # та же сессия!
-        version_id=base_version_id,
-    )
-    result = await scheduler.build_schedule()
+   # 2. Запускаем планировщик
+   scheduler = ProductionScheduler(
+      session=session,           # та же сессия!
+      version_id=base_version_id,
+   )
+   result = await scheduler.build_schedule()
 
-    # 3. Получаем результат в памяти
-    tasks = result.tasks
-    metrics = self._compute_metrics(result)
+   # 3. Получаем результат в памяти
+   tasks = result.tasks
+   metrics = self._compute_metrics(result)
 
-    # 4. Rollback (явно или через исключение)
-    raise RollbackTransaction()
+   # 4. Rollback (явно или через исключение)
+   raise RollbackTransaction()
 ```
 
 **Ключевое:**
@@ -76,15 +76,15 @@ async with session.begin():  # Транзакция №1
 
 ```python
 async with session.begin():  # Транзакция №2 (новая)
-    # 1. Создаём новую schedule_version
-    saver = ScheduleSaver(session=session, _owns_session=False)
-    await saver.save(
-        result=tasks,
-        name=f"What-if: {scenario.name}",
-        parent_version_id=base_version_id,
-    )
+   # 1. Создаём новую schedule_version
+   saver = ScheduleSaver(session=session, _owns_session=False)
+   await saver.save(
+      result=tasks,
+      name=f"What-if: {scenario.name}",
+      parent_version_id=base_version_id,
+   )
 
-    # 2. Commit — результат сохраняется
+   # 2. Commit — результат сохраняется
 ```
 
 **Ключевое:**
@@ -207,12 +207,12 @@ async with session.begin():  # Транзакция №2 (новая)
 
 ```python
 async with session.begin():
-    savepoint = await session.begin_nested()
-    try:
-        await self._apply_changes(changes)
-        result = await scheduler.build_schedule()
-    finally:
-        await savepoint.rollback()
+   savepoint = await session.begin_nested()
+   try:
+      await self._apply_changes(changes)
+      result = await scheduler.build_schedule()
+   finally:
+      await savepoint.rollback()
 ```
 
 **Плюсы:**
