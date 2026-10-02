@@ -11,6 +11,8 @@ from app.api.v1.calendar import router as calendar_router
 from app.api.v1.cz import router as cz_router
 from app.api.v1.equipment import router as equipment_router
 from app.api.v1.gantt import router as gantt_router
+from app.api.v1.help import router as help_router
+from app.api.v1.help_docs import router as help_docs_router
 from app.api.v1.lab import router as lab_router
 from app.api.v1.materials import router as materials_router
 from app.api.v1.operations import router as operations_router
@@ -48,6 +50,7 @@ tags_metadata = [
     {"name": "What-if сценарии"},
     {"name": "Аудит"},
     {"name": "Система"},
+    {"name": "Справка"},
 ]
 
 app = FastAPI(
@@ -91,6 +94,8 @@ app.include_router(settings_router)
 app.include_router(plan_settings_router)   # ← НОВОЕ
 app.include_router(whatif_router)
 app.include_router(audit_router)
+app.include_router(help_router)         # ← НОВОЕ
+app.include_router(help_docs_router)    # ← НОВОЕ
 
 
 @app.get("/health", tags=["Система"])

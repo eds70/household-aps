@@ -12,6 +12,7 @@
 - [Мониторинг](#мониторинг)
 - [Проверка конкретных таблиц](#проверка-конкретных-таблиц)
 - [Архивация версий планов (Итерация 13.21)](#архивация-версий-планов-итерация-1321)
+- [Встроенная справка (Итерация 15.1)](#встроенная-справка-итерация-151)
 - [Диагностика](#диагностика)
 
 ---
@@ -97,15 +98,15 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT pg_terminate_bac
 ### Правильный способ
 
 ```bash
-docker cp backend/migrations/add_23.sql aps_postgres:/tmp/add_23.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_23.sql
+docker cp backend/migrations/add_24.sql aps_postgres:/tmp/add_24.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_24.sql
 ```
 
 ### Неправильный способ (НЕ ИСПОЛЬЗОВАТЬ)
 
 ```bash
 # ❌ PowerShell испортит кириллицу
-Get-Content backend/migrations/add_23.sql | docker exec -i aps_postgres psql -U aps -d household
+Get-Content backend/migrations/add_24.sql | docker exec -i aps_postgres psql -U aps -d household
 ```
 
 ### История миграций
@@ -130,9 +131,19 @@ Get-Content backend/migrations/add_23.sql | docker exec -i aps_postgres psql -U 
 | `add_14.sql` | 11 | `allow_weekend_work` |
 | `add_15.sql` | 12 | Веса optimization |
 | `add_16.sql` | 12 | `whatif_scenario` |
+| `add_17.sql` | 13.1 | UNIQUE на `material_stock` |
+| `add_18.sql` | 13.2 | Журнал `material_stock_log` |
+| `add_19.sql` | 13.4 | TANK_2 |
+| `add_20.sql` | 13.6 | `depends_on_task_ids` |
 | `add_21.sql` | 13.14 | `plan_settings` |
+| `add_22.sql` | 13.17 | Индексы для каскадного сдвига |
 | `add_23.sql` | 13.21 | **Архивация версий планов** |
+| `add_24.sql` | 15.1 | **Таблица `help_article`** |
+| `add_24_seed_1.sql` | 15.1 | **3 статьи справки** |
+| `add_24_seed_2.sql` | 15.1 | **5 статей справки** |
+| `add_24_seed_3.sql` | 15.1 | **7 статей справки** |
 | `fix_shift_names.sql` | — | Исправление имён смен |
+| `fix_work_time.sql` | — | Исправление work_start/end_time |
 
 ### Применить все миграции по порядку
 
@@ -143,8 +154,10 @@ $migrations = @(
     "add_09.sql", "add_09b.sql", "add_09c.sql", "add_09d.sql",
     "add_10.sql", "add_10b.sql", "add_11.sql", "add_12.sql",
     "add_13.sql", "add_14.sql", "add_15.sql", "add_16.sql",
-    "add_21.sql", "add_23.sql",
-    "fix_shift_names.sql"
+    "add_17.sql", "add_18.sql", "add_19.sql", "add_20.sql",
+    "add_21.sql", "add_22.sql", "add_23.sql",
+    "add_24.sql", "add_24_seed_1.sql", "add_24_seed_2.sql", "add_24_seed_3.sql",
+    "fix_shift_names.sql", "fix_work_time.sql"
 )
 
 foreach ($m in $migrations) {
@@ -169,6 +182,17 @@ SELECT EXISTS (
 ```
 
 Если `t` — применена. Если `f` — нет.
+
+Для `add_24.sql` (справка):
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT EXISTS (
+    SELECT 1 FROM information_schema.tables
+    WHERE table_name = 'help_article'
+);
+"
+```
 
 ### Пересоздать БД с нуля
 
@@ -875,6 +899,113 @@ WHERE organization_id = '00000000-0000-0000-0000-000000000001'
 
 ---
 
+## Встроенная справка (Итерация 15.1)
+
+### Проверить, что таблица создана
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT EXISTS (
+    SELECT 1 FROM information_schema.tables
+    WHERE table_name = 'help_article'
+);
+"
+```
+
+Ожидаемо: `t`.
+
+### Количество статей по категориям
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT category, COUNT(*) AS cnt
+FROM help_article
+GROUP BY category
+ORDER BY category;
+"
+```
+
+**Ожидаемый вывод:**
+
+| category | cnt |
+|----------|-----|
+| `cz` | 1 |
+| `gantt` | 4 |
+| `getting-started` | 2 |
+| `lab` | 1 |
+| `planning` | 4 |
+| `settings` | 1 |
+| `shift` | 1 |
+| `whatif` | 1 |
+
+Всего: **15 статей**.
+
+### Список статей
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT slug, title, category, display_order
+FROM help_article
+ORDER BY category, display_order;
+"
+```
+
+### Проверить триггер updated_at
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT tgname, tgenabled
+FROM pg_trigger
+WHERE tgname = 'trg_help_article_updated_at';
+"
+```
+
+### Проверить GIN-индекс по тегам
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT indexname, indexdef
+FROM pg_indexes
+WHERE tablename = 'help_article' AND indexname = 'idx_help_article_tags';
+"
+```
+
+### Добавить статью через SQL (вручную)
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+INSERT INTO help_article
+    (organization_id, slug, title, category, content_md, tags,
+     display_order, is_published)
+VALUES
+    (NULL, 'my-new-article', 'Моя новая статья', 'getting-started',
+     \$md\$# Заголовок
+
+Текст статьи в markdown.\$md\$,
+     '[\"тег1\", \"тег2\"]'::jsonb,
+     100, TRUE)
+ON CONFLICT (slug) DO NOTHING;
+"
+```
+
+**⚠️ Внимание:** экранирование `$md$` в `-c` может быть проблематичным в PowerShell.
+Лучше создавать отдельный `.sql`-файл и применять через `docker cp` + `psql -f`.
+
+### Почистить `\r\n` в контенте статей
+
+Если статьи добавлялись через PowerShell-пайп, в `content_md` могли попасть
+символы `\r`. Не критично для рендера, но можно почистить:
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+UPDATE help_article
+SET content_md = REPLACE(content_md, E'\r\n', E'\n')
+WHERE content_md LIKE E'%\r%';
+"
+```
+
+---
+
 ## Диагностика
 
 ### Проверить активную версию плана
@@ -1004,6 +1135,21 @@ SELECT
 
 Все три должны быть `t`.
 
+**add_24.sql (справка):**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT
+    EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'help_article') AS has_table,
+    EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_help_article_category') AS has_category_idx,
+    EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_help_article_tags') AS has_tags_idx,
+    EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_help_article_updated_at') AS has_trigger,
+    (SELECT COUNT(*) FROM help_article) AS article_count;
+"
+```
+
+Все четыре `t`, `article_count` = 15.
+
 ### Полная диагностика системы
 
 ```bash
@@ -1052,6 +1198,11 @@ docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT COUNT(*) AS archived FROM schedule_version
 WHERE organization_id = '00000000-0000-0000-0000-000000000001'
   AND is_archived = TRUE;
+"
+
+# 9. Статьи справки
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT COUNT(*) AS help_articles FROM help_article;
 "
 ```
 

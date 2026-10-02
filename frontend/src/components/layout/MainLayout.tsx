@@ -28,6 +28,7 @@ import {
     ChevronLeft as ChevronLeftIcon,
     Edit as EditIcon,
     Factory as FactoryIcon,
+    HelpOutlined as HelpOutlineIcon,
     Inventory as InventoryIcon,
     Lock as LockIcon,
     Logout as LogoutIcon,
@@ -63,6 +64,7 @@ const MENU_ITEMS = [
     { path: '/whatif', label: 'What-if', icon: <ScienceIcon /> },
     // Итерация 13.16: пункт «Аудит» временно скрыт — страница в разработке.
     { path: '/settings', label: 'Настройки', icon: <SettingsIcon /> },
+    { path: '/help', label: 'Помощь', icon: <HelpOutlineIcon /> },
 ];
 
 const ROLE_LABELS: Record<string, string> = {

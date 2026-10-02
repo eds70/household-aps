@@ -21,6 +21,7 @@
 - [Смены](#смены)
 - [Гант](#гант)
 - [Редактирование плана (14.2)](#редактирование-плана-142)
+- [Встроенная справка (15.1)](#встроенная-справка-151)
 - [Диагностика](#диагностика)
 
 ---
@@ -112,6 +113,7 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_XX.sql
 | `whatif_scenario` (таблица) | `add_16.sql` |
 | `plan_settings` (таблица) | `add_21.sql` |
 | **`is_archived`** | **`add_23.sql`** |
+| **`help_article` (таблица)** | **`add_24.sql`** |
 
 ---
 
@@ -152,7 +154,38 @@ curl http://localhost:8000/openapi.json | grep "unarchive"
 
 ---
 
-### 8. `ModuleNotFoundError` при запуске
+### 8. `404 Not Found` на `/api/v1/help/*`
+
+**Симптом:** запросы к справке возвращают `404`.
+
+**Причина:** эндпоинты не подключены или не применена миграция `add_24.sql`.
+
+**Решение:**
+
+1. Проверить `main.py`:
+   ```python
+   from app.api.v1.help import router as help_router
+   from app.api.v1.help_docs import router as help_docs_router
+   app.include_router(help_router)
+   app.include_router(help_docs_router)
+   ```
+2. Проверить, что применена миграция `add_24.sql`:
+   ```bash
+   docker exec -i aps_postgres psql -U aps -d household -c "
+   SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'help_article');
+   "
+   ```
+3. Проверить, что применены seed-миграции `add_24_seed_1/2/3.sql`:
+   ```bash
+   docker exec -i aps_postgres psql -U aps -d household -c "
+   SELECT COUNT(*) FROM help_article;
+   "
+   ```
+   Должно быть 15.
+
+---
+
+### 9. `ModuleNotFoundError` при запуске
 
 **Симптом:** `ModuleNotFoundError: No module named 'app'`.
 
@@ -167,7 +200,7 @@ python run_server.py
 
 ---
 
-### 9. `ImportError` после добавления нового модуля
+### 10. `ImportError` после добавления нового модуля
 
 **Симптом:** `ImportError: cannot import name ...`.
 
@@ -181,7 +214,7 @@ python run_server.py
 
 ---
 
-### 10. Backend не стартует: `Address already in use`
+### 11. Backend не стартует: `Address already in use`
 
 **Симптом:** `OSError: [Errno 98] Address already in use`.
 
@@ -201,7 +234,7 @@ taskkill /PID <pid> /F
 
 ---
 
-### 11. JWT-токен истёк
+### 12. JWT-токен истёк
 
 **Симптом:** `401 Unauthorized` после некоторого времени работы.
 
@@ -211,7 +244,7 @@ taskkill /PID <pid> /F
 
 ---
 
-### 12. `snapshot.py` не импортируется (Итерация 13.15)
+### 13. `snapshot.py` не импортируется (Итерация 13.15)
 
 **Симптом:** при запуске backend — `ModuleNotFoundError: No module named 'app.scheduler.snapshot'`.
 
@@ -236,7 +269,7 @@ taskkill /PID <pid> /F
 
 ---
 
-### 13. `snapshot_all_catalogs` падает с `UndefinedColumnError`
+### 14. `snapshot_all_catalogs` падает с `UndefinedColumnError`
 
 **Симптом:** при создании плана или расчёте — ошибка типа `column operation_template.operator_pool does not exist`.
 
@@ -251,7 +284,7 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_09.sql
 
 ---
 
-### 14. `500 Internal Server Error` при пересчёте с `replace_version_id`
+### 15. `500 Internal Server Error` при пересчёте с `replace_version_id`
 
 **Симптом:** `POST /api/v1/schedule/reschedule` возвращает `500`, хотя задача вроде валидна.
 
@@ -277,7 +310,7 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_09.sql
 
 ## Frontend
 
-### 15. `usePlan must be used within PlanProvider`
+### 16. `usePlan must be used within PlanProvider`
 
 **Симптом:** ошибка `usePlan must be used within PlanProvider`.
 
@@ -293,7 +326,7 @@ npm run dev
 
 ---
 
-### 16. Advisor «дёргается» (бесконечный ре-рендер)
+### 17. Advisor «дёргается» (бесконечный ре-рендер)
 
 **Симптом:** панель Advisor постоянно перезагружается, в консоли — бесконечные запросы.
 
@@ -315,17 +348,17 @@ const setPlan = useCallback((plan: Plan | null) => {
 
 ---
 
-### 17. `401 Unauthorized` при первом заходе на `/login`
+### 18. `401 Unauthorized` при первом заходе на `/login`
 
 **Симптом:** при открытии `/login` в консоли — `401 Unauthorized`.
 
 **Причина:** `loadVersions` вызывается до аутентификации.
 
-**Решение:** см. пункт 16 — вызывать `loadVersions` только после аутентификации.
+**Решение:** см. пункт 17 — вызывать `loadVersions` только после аутентификации.
 
 ---
 
-### 18. `axios` не отправляет токен
+### 19. `axios` не отправляет токен
 
 **Симптом:** все запросы идут без `Authorization` header.
 
@@ -347,7 +380,7 @@ api.interceptors.request.use((config) => {
 
 ---
 
-### 19. Диаграмма Ганта: pan не работает
+### 20. Диаграмма Ганта: pan не работает
 
 **Симптом:** нельзя панорамировать диаграмму.
 
@@ -372,17 +405,17 @@ api.interceptors.request.use((config) => {
 
 ---
 
-### 20. Диаграмма Ганта: задачи не таскаются
+### 21. Диаграмма Ганта: задачи не таскаются
 
 **Симптом:** drag-and-drop не работает.
 
 **Причина:** `editable.updateTime` возвращает `false` для всех задач, или включён readonly-режим.
 
-**Решение:** см. пункт 19. `updateTime` должен быть **функцией**, возвращающей `true` для реальных задач и `false` для setup/downtime. Также проверить, что план открыт в режиме `✏️ Редактирование` (см. [Редактирование плана (14.2)](#редактирование-плана-142)).
+**Решение:** см. пункт 20. `updateTime` должен быть **функцией**, возвращающей `true` для реальных задач и `false` для setup/downtime. Также проверить, что план открыт в режиме `✏️ Редактирование` (см. [Редактирование плана (14.2)](#редактирование-плана-142)).
 
 ---
 
-### 21. Мастер смены: шапка «уезжает» вверх
+### 22. Мастер смены: шапка «уезжает» вверх
 
 **Симптом:** при большом количестве задач шапка уходит вверх при скролле.
 
@@ -397,7 +430,7 @@ api.interceptors.request.use((config) => {
 
 ---
 
-### 22. `npm install` падает с ошибкой
+### 23. `npm install` падает с ошибкой
 
 **Симптом:** `npm install` завершается с ошибкой.
 
@@ -413,7 +446,7 @@ npm install
 
 ---
 
-### 23. Frontend не видит backend
+### 24. Frontend не видит backend
 
 **Симптом:** запросы к API падают с `Network Error`.
 
@@ -425,27 +458,27 @@ npm install
 
 ---
 
-### 24. План в списке помечен ⚠ (Итерация 13.15)
+### 25. План в списке помечен ⚠ (Итерация 13.15)
 
 **Симптом:** рядом с планом жёлтая иконка ⚠.
 
 **Причина:** `has_snapshot = false` — снапшоты справочников не заполнены.
 
-**Решение:** см. пункт 30 (в разделе «Снапшоты справочников»).
+**Решение:** см. пункт 33 (в разделе «Снапшоты справочников»).
 
 ---
 
-### 25. GanttPage показывает «План пуст» (Итерация 13.15)
+### 26. GanttPage показывает «План пуст» (Итерация 13.15)
 
 **Симптом:** при открытии плана вместо диаграммы — предупреждение «План пуст».
 
 **Причина:** `currentPlanHasSnapshot === false` в `PlanContext`.
 
-**Решение:** см. пункт 30.
+**Решение:** см. пункт 33.
 
 ---
 
-### 26. Пункт «Аудит» отсутствует в меню
+### 27. Пункт «Аудит» отсутствует в меню
 
 **Симптом:** в левом сайдбаре нет пункта «Аудит».
 
@@ -455,7 +488,7 @@ npm install
 
 ---
 
-### 27. «История планов» показывает много версий
+### 28. «История планов» показывает много версий
 
 **Симптом:** в списке «История планов» десятки версий.
 
@@ -476,7 +509,7 @@ npm install
 
 ---
 
-### 28. Иерархия планов не строится (Tree Data)
+### 29. Иерархия планов не строится (Tree Data)
 
 **Симптом:** все версии показываются плоско, без иерархии.
 
@@ -501,7 +534,7 @@ npm install
 
 ---
 
-### 29. Кнопка «↩ Разархивировать» не появляется
+### 30. Кнопка «↩ Разархивировать» не появляется
 
 **Симптом:** у архивной версии нет кнопки разархивации.
 
@@ -521,7 +554,7 @@ npm install
 
 ## База данных
 
-### 30. `psql: FATAL: database "household" does not exist`
+### 31. `psql: FATAL: database "household" does not exist`
 
 **Симптом:** не удаётся подключиться к БД.
 
@@ -545,7 +578,7 @@ docker run --name aps_postgres \
 
 ---
 
-### 31. Кириллица отображается как «кракозябры»
+### 32. Кириллица отображается как «кракозябры»
 
 **Симптом:** русские буквы в БД выглядят как `????` или `ÐŸÑ€Ð¸Ð²ÐµÑ‚`.
 
@@ -560,7 +593,7 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema.sql
 
 ---
 
-### 32. `relation "..." does not exist`
+### 33. `relation "..." does not exist`
 
 **Симптом:** `relation "plan_settings" does not exist`.
 
@@ -570,7 +603,7 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema.sql
 
 ---
 
-### 33. `duplicate key value violates unique constraint`
+### 34. `duplicate key value violates unique constraint`
 
 **Симптом:** при вставке — `duplicate key value violates unique constraint`.
 
@@ -582,10 +615,11 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema.sql
 | `resource_pool (organization_id, type)` | Дубль пула | Удалить старый или обновить |
 | `cz_scan_log (organization_id, cz_code)` | Повторный скан | Идемпотентно, `duplicate: true` |
 | `equipment_snapshot (id, version_id)` | Дубль снапшота | `ON CONFLICT DO NOTHING` (by design) |
+| `help_article (slug)` | Дубль статьи | `ON CONFLICT (slug) DO NOTHING` |
 
 ---
 
-### 34. PostgreSQL не стартует
+### 35. PostgreSQL не стартует
 
 **Симптом:** `docker ps` не показывает `aps_postgres`.
 
@@ -607,7 +641,7 @@ docker run --name aps_postgres \
 
 ---
 
-### 35. Долгий запрос блокирует БД
+### 36. Долгий запрос блокирует БД
 
 **Симптом:** запросы висят, БД не отвечает.
 
@@ -631,7 +665,7 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT pg_terminate_bac
 
 ## Solver
 
-### 36. Solver выдаёт `FEASIBLE` вместо `OPTIMAL`
+### 37. Solver выдаёт `FEASIBLE` вместо `OPTIMAL`
 
 **Симптом:** в ответе `status: "FEASIBLE"`.
 
@@ -652,7 +686,7 @@ curl -X PUT http://localhost:8000/api/v1/settings/timeout_seconds \
 
 ---
 
-### 37. Solver не находит решение (`INFEASIBLE`)
+### 38. Solver не находит решение (`INFEASIBLE`)
 
 **Симптом:** `status: "INFEASIBLE"`.
 
@@ -666,7 +700,7 @@ curl -X PUT http://localhost:8000/api/v1/settings/timeout_seconds \
 
 ---
 
-### 38. Solver работает слишком долго
+### 39. Solver работает слишком долго
 
 **Симптом:** расчёт занимает >10 минут.
 
@@ -678,7 +712,7 @@ curl -X PUT http://localhost:8000/api/v1/settings/timeout_seconds \
 
 ---
 
-### 39. `overlaps_after > 0` после постобработки
+### 40. `overlaps_after > 0` после постобработки
 
 **Симптом:** после `calendar_postprocess` остаются пересечения.
 
@@ -701,7 +735,7 @@ curl -X PUT http://localhost:8000/api/v1/settings/timeout_seconds \
 
 ---
 
-### 40. `dependency_violations > 0`
+### 41. `dependency_violations > 0`
 
 **Симптом:** после постобработки есть нарушения зависимостей.
 
@@ -711,7 +745,7 @@ curl -X PUT http://localhost:8000/api/v1/settings/timeout_seconds \
 
 ## What-if
 
-### 41. Сценарий завис в статусе `RUNNING`
+### 42. Сценарий завис в статусе `RUNNING`
 
 **Симптом:** сценарий не завершается.
 
@@ -719,11 +753,11 @@ curl -X PUT http://localhost:8000/api/v1/settings/timeout_seconds \
 
 1. Подождать (solver может работать до 10 минут).
 2. Проверить логи backend.
-3. Удалить сценарий (если не удаляется — см. пункт 42).
+3. Удалить сценарий (если не удаляется — см. пункт 43).
 
 ---
 
-### 42. Не удаётся удалить сценарий
+### 43. Не удаётся удалить сценарий
 
 **Симптом:** `DELETE /api/v1/whatif/scenarios/{id}` возвращает ошибку.
 
@@ -733,7 +767,7 @@ curl -X PUT http://localhost:8000/api/v1/settings/timeout_seconds \
 
 ---
 
-### 43. What-if не откатывает изменения
+### 44. What-if не откатывает изменения
 
 **Симптом:** после what-if изменения в БД остались.
 
@@ -745,7 +779,7 @@ curl -X PUT http://localhost:8000/api/v1/settings/timeout_seconds \
 
 ---
 
-### 44. What-if: `500 Internal Server Error`
+### 45. What-if: `500 Internal Server Error`
 
 **Симптом:** `POST /run` возвращает 500.
 
@@ -759,7 +793,7 @@ curl -X PUT http://localhost:8000/api/v1/settings/timeout_seconds \
 
 ## plan_settings
 
-### 45. Таблица `plan_settings` пуста
+### 46. Таблица `plan_settings` пуста
 
 **Симптом:** `SELECT COUNT(*) FROM plan_settings` возвращает 0.
 
@@ -774,7 +808,7 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_21.sql
 
 ---
 
-### 46. Триггер `copy_app_settings_to_plan` не срабатывает
+### 47. Триггер `copy_app_settings_to_plan` не срабатывает
 
 **Симптом:** создали план, но `plan_settings` пуст.
 
@@ -790,7 +824,7 @@ SELECT tgname FROM pg_trigger WHERE tgname = 'trg_copy_app_settings_to_plan';
 
 ---
 
-### 47. `404 Not Found` при `GET /api/v1/plan-settings/version/{id}`
+### 48. `404 Not Found` при `GET /api/v1/plan-settings/version/{id}`
 
 **Причина:** не подключён в `main.py`.
 
@@ -798,7 +832,7 @@ SELECT tgname FROM pg_trigger WHERE tgname = 'trg_copy_app_settings_to_plan';
 
 ---
 
-### 48. Мастер настроек показывает пустой список полей
+### 49. Мастер настроек показывает пустой список полей
 
 **Причина:** `settingsApi.getSchema()` вернул пустой `settings`.
 
@@ -806,7 +840,7 @@ SELECT tgname FROM pg_trigger WHERE tgname = 'trg_copy_app_settings_to_plan';
 
 ---
 
-### 49. В мастере настроек отсутствует кнопка «Сохранить»
+### 50. В мастере настроек отсутствует кнопка «Сохранить»
 
 **Причина:** `changedKeys.length === 0` — нет изменений.
 
@@ -814,7 +848,7 @@ SELECT tgname FROM pg_trigger WHERE tgname = 'trg_copy_app_settings_to_plan';
 
 ---
 
-### 50. `plan_settings` не обновляются при изменении `app_settings`
+### 51. `plan_settings` не обновляются при изменении `app_settings`
 
 **Причина:** это by design (снапшот).
 
@@ -827,17 +861,17 @@ curl -X POST http://localhost:8000/api/v1/plan-settings/version/$VERSION_ID/rese
 
 ---
 
-### 51. Существующие планы не имеют `plan_settings`
+### 52. Существующие планы не имеют `plan_settings`
 
 **Причина:** планы созданы до миграции `add_21.sql`.
 
-**Решение:** сбросить к глобальным (см. пункт 50) или создать новый план.
+**Решение:** сбросить к глобальным (см. пункт 51) или создать новый план.
 
 ---
 
 ## Архивация версий (13.21)
 
-### 52. Старая версия не архивируется при пересчёте
+### 53. Старая версия не архивируется при пересчёте
 
 **Симптом:** пользователь нажал «Пересчитать», но старая версия осталась
 в списке (не архивировалась).
@@ -882,7 +916,7 @@ WHERE organization_id = '00000000-0000-0000-0000-000000000001'
 ```
 
 Если версия используется — либо завершить сценарий (запустить его),
-либо удалить, либо разархивировать вручную (см. пункт 54).
+либо удалить, либо разархивировать вручную (см. пункт 55).
 
 **Шаг 3. Проверить миграцию:**
 
@@ -901,7 +935,7 @@ WHERE table_name = 'schedule_version' AND column_name = 'is_archived';
 
 ---
 
-### 53. Колонка `is_archived` не найдена
+### 54. Колонка `is_archived` не найдена
 
 **Симптом:** `saver.py` логирует «Колонка is_archived не найдена — архивация пропущена».
 
@@ -929,7 +963,7 @@ SELECT EXISTS (
 
 ---
 
-### 54. Разархивировать версию вручную через SQL
+### 55. Разархивировать версию вручную через SQL
 
 **Симптом:** нужно разархивировать версию, но UI не работает.
 
@@ -956,7 +990,7 @@ WHERE id = '<version-uuid>';
 
 ---
 
-### 55. В списке планов 50+ версий после отключения архивации
+### 56. В списке планов 50+ версий после отключения архивации
 
 **Симптом:** пользователь отключил `auto_archive_on_recalc`, и список
 стал длинным.
@@ -977,7 +1011,7 @@ WHERE organization_id = '00000000-0000-0000-0000-000000000001'
 
 ---
 
-### 56. Иерархия планов плоская (все корни)
+### 57. Иерархия планов плоская (все корни)
 
 **Симптом:** в «Истории планов» все версии на одном уровне, иерархии нет.
 
@@ -1010,7 +1044,7 @@ ORDER BY created_at DESC LIMIT 5;
 
 ---
 
-### 57. Снекбар об архивации не показывается
+### 58. Снекбар об архивации не показывается
 
 **Симптом:** после пересчёта не появляется уведомление в правом нижнем углу.
 
@@ -1038,7 +1072,7 @@ ORDER BY created_at DESC LIMIT 5;
 
 ## Снапшоты справочников (13.15)
 
-### 58. План открыт, но все справочники пусты
+### 59. План открыт, но все справочники пусты
 
 **Симптом:** открыли план, но на страницах «Продукты», «Оборудование»,
 «Техкарты» гриды пусты.
@@ -1068,7 +1102,7 @@ ORDER BY sv.created_at DESC LIMIT 5;
 
 ---
 
-### 59. `POST /schedule/versions` создаёт план, но снапшоты пусты
+### 60. `POST /schedule/versions` создаёт план, но снапшоты пусты
 
 **Симптом:** создали план через API, но `snapshot_stats` показывает нули.
 
@@ -1088,7 +1122,7 @@ ORDER BY sv.created_at DESC LIMIT 5;
 
 ---
 
-### 60. Удалить все пустые планы одной командой
+### 61. Удалить все пустые планы одной командой
 
 **Симптом:** накопилось много планов без снапшотов.
 
@@ -1125,7 +1159,7 @@ WHERE organization_id = '00000000-0000-0000-0000-000000000001'
 
 ## Честный Знак
 
-### 61. Скан не привязывается к партии
+### 62. Скан не привязывается к партии
 
 **Симптом:** скан попадает в «сироты» (`batch_id = NULL`).
 
@@ -1142,7 +1176,7 @@ WHERE organization_id = '00000000-0000-0000-0000-000000000001'
 
 ---
 
-### 62. Дубликаты сканов
+### 63. Дубликаты сканов
 
 **Симптом:** `duplicate: true` в ответе.
 
@@ -1152,7 +1186,7 @@ WHERE organization_id = '00000000-0000-0000-0000-000000000001'
 
 ---
 
-### 63. `cz_status` не обновляется
+### 64. `cz_status` не обновляется
 
 **Симптом:** после сканов `cz_status` остаётся `PENDING`.
 
@@ -1162,7 +1196,7 @@ WHERE organization_id = '00000000-0000-0000-0000-000000000001'
 
 ---
 
-### 64. `CZ_INCOMPLETE` в Advisor, но маркировка завершена
+### 65. `CZ_INCOMPLETE` в Advisor, но маркировка завершена
 
 **Симптом:** Advisor выдаёт `CZ_INCOMPLETE`, хотя `cz_status = COMPLETED`.
 
@@ -1174,7 +1208,7 @@ WHERE organization_id = '00000000-0000-0000-0000-000000000001'
 
 ## Лаборатория
 
-### 65. Заблокированная партия всё равно в плане
+### 66. Заблокированная партия всё равно в плане
 
 **Симптом:** партия с `is_lab_blocked = true` есть в расписании.
 
@@ -1191,7 +1225,7 @@ curl -X POST http://localhost:8000/api/v1/schedule/reschedule \
 
 ---
 
-### 66. `LAB` не может заблокировать партию
+### 67. `LAB` не может заблокировать партию
 
 **Симптом:** `403 Forbidden`.
 
@@ -1199,15 +1233,15 @@ curl -X POST http://localhost:8000/api/v1/schedule/reschedule \
 
 ---
 
-### 67. После разблокировки партия не появляется в плане
+### 68. После разблокировки партия не появляется в плане
 
-**Решение:** см. пункт 65.
+**Решение:** см. пункт 66.
 
 ---
 
 ## Смены
 
-### 68. При смене `shift_mode` задачи теряют привязку
+### 69. При смене `shift_mode` задачи теряют привязку
 
 **Симптом:** после `POST /api/v1/settings/shift-mode` у задач `shift_id = NULL`.
 
@@ -1217,13 +1251,13 @@ curl -X POST http://localhost:8000/api/v1/schedule/reschedule \
 
 ---
 
-### 69. `by-date` не находит смену
+### 70. `by-date` не находит смену
 
 **Решение:** сравнение по МСК-дате (см. пункт 4).
 
 ---
 
-### 70. Смены не созданы
+### 71. Смены не созданы
 
 **Симптом:** таблица `shift` пуста.
 
@@ -1240,21 +1274,21 @@ curl -X POST http://localhost:8000/api/v1/settings/shift-mode \
 
 ## Гант
 
-### 71. Pan диаграммы не работает
+### 72. Pan диаграммы не работает
 
 **Симптом:** нельзя таскать диаграмму.
-
-**Решение:** см. пункт 19.
-
----
-
-### 72. Задачи не таскаются
 
 **Решение:** см. пункт 20.
 
 ---
 
-### 73. Tooltip не показывается при перетаскивании
+### 73. Задачи не таскаются
+
+**Решение:** см. пункт 21.
+
+---
+
+### 74. Tooltip не показывается при перетаскивании
 
 **Симптом:** при drag-and-drop задачи tooltip не появляется.
 
@@ -1268,7 +1302,7 @@ curl -X POST http://localhost:8000/api/v1/settings/shift-mode \
 
 ---
 
-### 74. Resize задачи не работает
+### 75. Resize задачи не работает
 
 **Симптом:** нельзя изменить длительность задачи.
 
@@ -1286,7 +1320,7 @@ curl -X POST http://localhost:8000/api/v1/settings/shift-mode \
 
 ---
 
-### 75. Группа LINE_FILL не раскрывается
+### 76. Группа LINE_FILL не раскрывается
 
 **Симптом:** при клике на свёрнутую группу ничего не происходит.
 
@@ -1304,7 +1338,7 @@ newTimeline.on('click', (props) => {
 
 ---
 
-### 76. Скобки партий не отображаются
+### 77. Скобки партий не отображаются
 
 **Симптом:** в режиме «По оборудованию» не видно цветных скобок партий.
 
@@ -1322,7 +1356,7 @@ newTimeline.on('click', (props) => {
 
 ---
 
-### 77. Режим «По партиям» показывает «спагетти» из связей
+### 78. Режим «По партиям» показывает «спагетти» из связей
 
 **Симптом:** в режиме «По партиям» слишком много красных линий-связей.
 
@@ -1336,7 +1370,7 @@ newTimeline.on('click', (props) => {
 
 ---
 
-### 78. Ошибка `<rect> attribute width: A negative value is not valid`
+### 79. Ошибка `<rect> attribute width: A negative value is not valid`
 
 **Симптом:** при zoom/pan в консоли браузера появляется эта ошибка.
 
@@ -1354,7 +1388,7 @@ npm run dev
 
 ## Редактирование плана (14.2)
 
-### 79. Задачи не перетаскиваются, хотя план открыт
+### 80. Задачи не перетаскиваются, хотя план открыт
 
 **Симптом:** открыт план, но задачи нельзя таскать.
 
@@ -1372,7 +1406,7 @@ npm run dev
 
 ---
 
-### 80. Иконка в шапке не меняется при переключении режима
+### 81. Иконка в шапке не меняется при переключении режима
 
 **Симптом:** переключили `✏️` в тулбаре, но чип в шапке остался `🔒`.
 
@@ -1391,7 +1425,7 @@ npm run dev
 
 ---
 
-### 81. При открытии плана всегда readonly
+### 82. При открытии плана всегда readonly
 
 **Симптом:** при открытии плана через 👁️ всегда включается `🔒 Просмотр`.
 
@@ -1405,7 +1439,7 @@ npm run dev
 
 ---
 
-### 82. Кнопка «Пересчитать» недоступна, хотя есть изменения
+### 83. Кнопка «Пересчитать» недоступна, хотя есть изменения
 
 **Симптом:** кнопка 🔄 в тулбаре серая, хотя меняли задачи.
 
@@ -1419,9 +1453,150 @@ npm run dev
 
 ---
 
+## Встроенная справка (15.1)
+
+### 84. Страница «Помощь» пуста
+
+**Симптом:** открыли `/help`, но список категорий пуст, статья не отображается.
+
+**Причина:** не применены seed-миграции `add_24_seed_1/2/3.sql`.
+
+**Решение:**
+
+```bash
+docker cp backend/migrations/add_24.sql aps_postgres:/tmp/add_24.sql
+docker cp backend/migrations/add_24_seed_1.sql aps_postgres:/tmp/add_24_seed_1.sql
+docker cp backend/migrations/add_24_seed_2.sql aps_postgres:/tmp/add_24_seed_2.sql
+docker cp backend/migrations/add_24_seed_3.sql aps_postgres:/tmp/add_24_seed_3.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_24.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_24_seed_1.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_24_seed_2.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_24_seed_3.sql
+```
+
+**Проверка:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT COUNT(*) FROM help_article;
+"
+```
+
+Должно быть **15**.
+
+---
+
+### 85. Статья не открывается (404)
+
+**Симптом:** клик по статье в сайдбаре — статья не открывается, в консоли 404.
+
+**Причина:** slug в URL не совпадает с `slug` в БД.
+
+**Решение:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT slug FROM help_article ORDER BY slug;
+"
+```
+
+Проверить, что URL вида `/help/intro-overview` совпадает с slug из БД.
+
+---
+
+### 86. Поиск не находит статьи
+
+**Симптом:** вводишь запрос, а результатов нет.
+
+**Причина:** поиск использует `ILIKE` — если запрос меньше 2 символов, поиск не срабатывает.
+
+**Решение:**
+
+1. Ввести минимум 2 символа.
+2. Проверить, что `title` / `content_md` / `tags` содержат искомое слово:
+   ```bash
+   docker exec -i aps_postgres psql -U aps -d household -c "
+   SELECT slug, title FROM help_article
+   WHERE title ILIKE '%ваш_запрос%' OR content_md ILIKE '%ваш_запрос%';
+   "
+   ```
+
+---
+
+### 87. `Markdown` отображается как plain text
+
+**Симптом:** в статье видны символы `#`, `**`, `[]()` вместо форматирования.
+
+**Причина:** `react-markdown` не установлен или не подключён.
+
+**Решение:**
+
+```bash
+cd frontend
+npm install react-markdown@^9.0.1 remark-gfm@^4.0.0
+npm run dev
+```
+
+Проверить, что в `HelpArticleView.tsx` есть:
+
+```tsx
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+```
+
+---
+
+### 88. Внутренние ссылки в статьях не работают
+
+**Симптом:** клик по ссылке вида `[текст](/help/some-article)` — ничего не происходит.
+
+**Причина:** не передан `onInternalLink` в `HelpArticleView`.
+
+**Решение:** в `HelpPage.tsx` проверить:
+
+```tsx
+<HelpArticleView
+    content={article.content_md}
+    onInternalLink={handleSelectArticle}
+/>
+```
+
+---
+
+### 89. Файлы `docs/*.md` не отдаются
+
+**Симптом:** `GET /api/v1/help/docs/ARCHITECTURE.md` возвращает 404.
+
+**Причина:** файл отсутствует в папке `docs/` или некорректный path.
+
+**Решение:**
+
+1. Проверить наличие файла:
+   ```bash
+   ls docs/ARCHITECTURE.md
+   ```
+2. Проверить, что в `help_docs.py` корректно определён `_DOCS_DIR`:
+   ```python
+   _BACKEND_DIR = Path(__file__).resolve().parent.parent.parent.parent
+   _DOCS_DIR = _BACKEND_DIR.parent / "docs"
+   ```
+3. Проверить, что файл `.md`, не превышает 1 МБ.
+
+---
+
+### 90. Ошибка path traversal при запросе `/help/docs/`
+
+**Симптом:** `GET /api/v1/help/docs/../etc/passwd` возвращает 400.
+
+**Причина:** это защита от path traversal — by design.
+
+**Решение:** используйте только корректные имена файлов (например, `ARCHITECTURE.md`).
+
+---
+
 ## Диагностика
 
-### 83. Общая проверка системы
+### 91. Общая проверка системы
 
 ```bash
 # PostgreSQL
@@ -1463,11 +1638,16 @@ SELECT
 FROM schedule_version sv
 WHERE sv.is_active = true LIMIT 1;
 "
+
+# Статьи справки
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT COUNT(*) AS help_articles FROM help_article;
+"
 ```
 
 ---
 
-### 84. Полная очистка и пересоздание
+### 92. Полная очистка и пересоздание
 
 ```bash
 # 1. Снести контейнер
@@ -1493,7 +1673,10 @@ $migrations = @("add_06.sql", "add_06b.sql", "add_07.sql", "add_08.sql",
                 "add_09.sql", "add_09b.sql", "add_09c.sql", "add_09d.sql",
                 "add_10.sql", "add_10b.sql", "add_11.sql", "add_12.sql",
                 "add_13.sql", "add_14.sql", "add_15.sql", "add_16.sql",
-                "add_21.sql", "add_23.sql", "fix_shift_names.sql")
+                "add_17.sql", "add_18.sql", "add_19.sql", "add_20.sql",
+                "add_21.sql", "add_22.sql", "add_23.sql",
+                "add_24.sql", "add_24_seed_1.sql", "add_24_seed_2.sql", "add_24_seed_3.sql",
+                "fix_shift_names.sql", "fix_work_time.sql")
 foreach ($m in $migrations) {
     docker cp "backend/migrations/$m" "aps_postgres:/tmp/$m"
     docker exec -i aps_postgres psql -U aps -d household -f "/tmp/$m"
@@ -1510,7 +1693,7 @@ cd ../frontend; npm run dev
 
 ---
 
-### 85. Полезные ссылки
+### 93. Полезные ссылки
 
 - [README.md](../README.md) — основная документация.
 - [docs/OPERATIONS.md](OPERATIONS.md) — операции с БД.

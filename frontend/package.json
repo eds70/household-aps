@@ -24,8 +24,10 @@
     "date-fns": "^4.4.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "react-markdown": "^9.1.0",
     "react-resizable-panels": "^4.12.4",
     "react-router-dom": "^7.18.3",
+    "remark-gfm": "^4.0.1",
     "vis-data": "^8.0.5",
     "vis-timeline": "^8.5.4"
   },

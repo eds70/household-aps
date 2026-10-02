@@ -1081,3 +1081,81 @@ export interface BatchBracket {
      */
     hasSlowCooling: boolean;
 }
+
+// ==========================================
+// ИТЕРАЦИЯ 15.1: ВСТРОЕННАЯ СПРАВКА
+// ==========================================
+
+/**
+ * Краткая информация о статье (для списка).
+ */
+export interface HelpArticleListItem {
+    slug: string;
+    title: string;
+    category: string;
+    tags: string[];
+    display_order: number;
+    updated_at: string;
+}
+
+/**
+ * Полная статья с markdown-контентом.
+ */
+export interface HelpArticle {
+    slug: string;
+    title: string;
+    category: string;
+    content_md: string;
+    tags: string[];
+    display_order: number;
+    updated_at: string;
+}
+
+/**
+ * Категория справки.
+ */
+export interface HelpCategory {
+    key: string;
+    label: string;
+    article_count: number;
+}
+
+/**
+ * Список категорий.
+ */
+export interface HelpCategoriesResponse {
+    categories: HelpCategory[];
+}
+
+/**
+ * Список статей.
+ */
+export interface HelpArticlesListResponse {
+    articles: HelpArticleListItem[];
+    total: number;
+}
+
+/**
+ * Результат поиска.
+ */
+export interface HelpSearchHit {
+    slug: string;
+    title: string;
+    category: string;
+    snippet: string;
+}
+
+export interface HelpSearchResponse {
+    query: string;
+    hits: HelpSearchHit[];
+    total: number;
+}
+
+/**
+ * Ответ от /api/v1/help/docs/{filename}.
+ */
+export interface HelpDocFileResponse {
+    filename: string;
+    content_md: string;
+    size: number;
+}

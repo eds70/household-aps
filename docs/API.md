@@ -23,6 +23,7 @@ REST API системы **APS Production Scheduler**.
 - [Настройки плана](#настройки-плана)
 - [What-if](#what-if)
 - [Аудит](#аудит)
+- [Справка](#справка)
 - [Гант](#гант)
 - [Соглашения](#соглашения)
 
@@ -68,6 +69,22 @@ REST API системы **APS Production Scheduler**.
   "email": "admin@household.ru",
   "role": "ADMIN",
   "organization_id": "00000000-0000-0000-0000-000000000001"
+}
+```
+
+**Права:** любой авторизованный.
+
+---
+
+### `POST /api/v1/auth/change-password`
+
+Смена пароля.
+
+**Тело:**
+```json
+{
+  "old_password": "admin123",
+  "new_password": "newsecurepassword"
 }
 ```
 
@@ -1238,6 +1255,143 @@ REST API системы **APS Production Scheduler**.
 
 ---
 
+## Справка
+
+**Итерация 15.1.**
+
+### `GET /api/v1/help/articles`
+
+Список статей справки.
+
+**Query:**
+- `category` (optional) — фильтр по категории.
+
+**Ответ:**
+```json
+{
+  "articles": [
+    {
+      "slug": "intro-overview",
+      "title": "Обзор системы",
+      "category": "getting-started",
+      "tags": ["обзор", "начало работы"],
+      "display_order": 10,
+      "updated_at": "2026-10-02T10:00:00Z"
+    }
+  ],
+  "total": 15
+}
+```
+
+**Права:** любой.
+
+---
+
+### `GET /api/v1/help/articles/{slug}`
+
+Одна статья с markdown-контентом.
+
+**Ответ:**
+```json
+{
+  "slug": "intro-overview",
+  "title": "Обзор системы",
+  "category": "getting-started",
+  "content_md": "# Обзор системы\n\n...",
+  "tags": ["обзор", "начало работы"],
+  "display_order": 10,
+  "updated_at": "2026-10-02T10:00:00Z"
+}
+```
+
+**Ошибки:**
+- `404` — статья не найдена.
+
+**Права:** любой.
+
+---
+
+### `GET /api/v1/help/categories`
+
+Список категорий справки с количеством статей.
+
+**Ответ:**
+```json
+{
+  "categories": [
+    {"key": "getting-started", "label": "Начало работы", "article_count": 2},
+    {"key": "planning", "label": "Планирование", "article_count": 4},
+    {"key": "gantt", "label": "Диаграмма Ганта", "article_count": 4},
+    {"key": "shift", "label": "Мастера смены", "article_count": 1},
+    {"key": "lab", "label": "Лаборатория", "article_count": 1},
+    {"key": "cz", "label": "Честный Знак", "article_count": 1},
+    {"key": "whatif", "label": "What-if", "article_count": 1},
+    {"key": "settings", "label": "Настройки", "article_count": 1}
+  ]
+}
+```
+
+**Права:** любой.
+
+---
+
+### `GET /api/v1/help/search`
+
+Поиск по статьям.
+
+**Query:**
+- `q` (required, min 2) — поисковый запрос.
+- `limit` (default 30, max 100).
+
+**Ответ:**
+```json
+{
+  "query": "гант",
+  "hits": [
+    {
+      "slug": "gantt-overview",
+      "title": "Обзор диаграммы Ганта",
+      "category": "gantt",
+      "snippet": "…Диаграмма Ганта — главный инструмент визуализации плана…"
+    }
+  ],
+  "total": 1
+}
+```
+
+**Логика:** поиск по `title ILIKE %q%` / `content_md ILIKE %q%` / `tags::text ILIKE %q%`.
+
+**Права:** любой.
+
+---
+
+### `GET /api/v1/help/docs/{filename}`
+
+Отдача файлов `docs/*.md`.
+
+**Ограничения:**
+- Только файлы `.md`.
+- Имя файла не должно содержать `/`, `\`, `..`.
+- Размер файла — не более 1 МБ.
+
+**Ответ:**
+```json
+{
+  "filename": "API.md",
+  "content_md": "# API Reference\n\n...",
+  "size": 29045
+}
+```
+
+**Ошибки:**
+- `400` — не `.md`, или содержит path traversal.
+- `404` — файл не найден.
+- `413` — файл больше 1 МБ.
+
+**Права:** любой.
+
+---
+
 ## Гант
 
 ### `GET /api/v1/gantt/`
@@ -1310,6 +1464,7 @@ Authorization: Bearer <token>
 - `403` — нет прав.
 - `404` — не найдено.
 - `409` — конфликт (например, каскад заблокирован pinned-задачей).
+- `413` — файл слишком большой (для `help/docs`).
 - `422` — ошибка валидации.
 - `500` — внутренняя ошибка.
 
@@ -1336,6 +1491,13 @@ Authorization: Bearer <token>
 - С `include_archived=true` — возвращает все, включая архивные.
 - Каждая версия имеет поле `is_archived: bool`.
 - Разархивация — через `PUT /versions/{id}/unarchive`.
+
+### Справка (Итерация 15.1)
+
+- `GET /api/v1/help/articles` — глобальные + per-org статьи.
+- `GET /api/v1/help/search` — простой `ILIKE`, неполнотекстовый.
+- `GET /api/v1/help/docs/{filename}` — отдача `docs/*.md` без дублирования в БД.
+- Все эндпоинты `/help/*` — read-only, доступны любому авторизованному.
 
 ### Идемпотентность
 

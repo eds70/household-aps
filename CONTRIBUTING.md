@@ -235,6 +235,7 @@ COMMIT;
 - `personnel` — персонал.
 - `gantt` — диаграмма Ганта.
 - `snapshot` — снапшоты справочников.
+- `help` — встроенная справка.
 - `docs` — документация.
 
 ### Примеры
@@ -281,6 +282,16 @@ feat(gantt): add local edit mode toggle (iteration 14.2)
 - Кнопка «Пересчитать» доступна в обоих режимах
 - Удалён Chip с названием плана (дублировал шапку)
 - Фикс: защита от отрицательной ширины в drawBatchBrackets
+```
+
+```
+feat(help): add markdown-based help system (iteration 15.1)
+
+- Миграция add_24.sql: таблица help_article
+- Seed-миграции add_24_seed_1/2/3.sql: 15 статей в 8 категориях
+- API /api/v1/help: articles, categories, search, docs
+- Frontend: HelpPage, HelpSidebar, HelpArticleView
+- +38 тестов, всего 601 passed
 ```
 
 ---
@@ -357,6 +368,7 @@ npm run lint
 | Архитектурное решение | `docs/ARCHITECTURE.md` |
 | Команды БД | `docs/OPERATIONS.md`, `README.md` |
 | Troubleshooting | `docs/TROUBLESHOOTING.md`, `README.md` |
+| Статья справки | `backend/migrations/add_24_seed_*.sql` |
 
 ### Стиль документации
 
@@ -413,6 +425,22 @@ npm run lint
 5. Добавьте тест в `test_<module>_api.py`.
 6. Обновите `docs/API.md` и `README.md`.
 
+### Как добавить настройку
+
+1. Добавьте запись в `SETTINGS_REGISTRY` (`backend/app/scheduler/settings.py`).
+2. Создайте миграцию для `INSERT INTO app_settings`.
+3. Обновите `docs/CONFIGURATION.md`.
+4. Добавьте тест в `test_settings_*.py`.
+
+### Как добавить статью справки
+
+1. Создайте новый seed-файл `backend/migrations/add_NN_seed_M.sql`.
+2. Используйте `INSERT INTO help_article ... ON CONFLICT (slug) DO NOTHING`.
+3. Категории: `getting-started`, `planning`, `gantt`, `shift`,
+   `lab`, `cz`, `whatif`, `settings`.
+4. Примените миграцию через `docker cp` + `psql -f`.
+5. Добавьте тест в `tests/test_help.py`.
+
 ### Как обновить CHANGELOG
 
 1. Откройте `CHANGELOG.md`.
@@ -426,7 +454,7 @@ npm run lint
    ```
 3. При релизе — перенесите `[Unreleased]` в новую версию:
    ```
-   ## [4.3.0] — 2026-10-02
+   ## [4.4.0] — 2026-10-02
    ```
 
 ---

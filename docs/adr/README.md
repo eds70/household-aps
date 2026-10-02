@@ -95,6 +95,7 @@
 - `0002-snapshot-tables-for-versioning.md`
 - `0003-plan-settings-per-plan.md`
 - `0004-whatif-two-transactions.md`
+- `0005-help-system.md`
 
 ---
 
@@ -106,6 +107,7 @@
 | 0002 | [Snapshot tables for versioning](0002-snapshot-tables-for-versioning.md) | Принято | 2026-09-05 | 1 |
 | 0003 | [Plan settings per plan](0003-plan-settings-per-plan.md) | Принято | 2026-09-25 | 13.14 |
 | 0004 | [What-if two transactions](0004-whatif-two-transactions.md) | Принято | 2026-09-24 | 12 |
+| 0005 | [Help system as markdown articles](0005-help-system.md) | Принято | 2026-10-02 | 15.1 |
 
 ### Краткое описание
 
@@ -157,6 +159,18 @@
 
 ---
 
+#### [0005. Help system as markdown articles](0005-help-system.md)
+
+**Проблема:** как реализовать встроенную справку пользователя?
+
+**Решение:** markdown-статьи в PostgreSQL + `react-markdown` + отдача `docs/*.md`.
+
+**Альтернативы:** статические файлы во frontend, внешняя wiki, JSON-контент, редактор WYSIWYG.
+
+**Итерация:** 15.1.
+
+---
+
 ## Как добавить ADR
 
 ### 1. Создать файл
@@ -172,13 +186,13 @@
 Добавить строку в таблицу [Индекс ADR](#индекс-adr):
 
 ```markdown
-| 0005 | [Новое решение](0005-new-decision.md) | Принято | 2026-10-01 | 15 |
+| 0006 | [Новое решение](0006-new-decision.md) | Принято | 2026-10-03 | 15.2 |
 ```
 
 ### 4. Добавить краткое описание
 
 ```markdown
-#### [0005. Новое решение](0005-new-decision.md)
+#### [0006. Новое решение](0006-new-decision.md)
 
 **Проблема:** ...
 
@@ -186,14 +200,14 @@
 
 **Альтернативы:** ...
 
-**Итерация:** 15.
+**Итерация:** 15.2.
 ```
 
 ### 5. Обновить CHANGELOG
 
 ```markdown
 ### Added
-- ADR 0005: Новое решение.
+- ADR 0006: Новое решение.
 ```
 
 ### 6. Обновить ARCHITECTURE.md (если нужно)

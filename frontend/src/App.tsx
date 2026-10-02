@@ -19,7 +19,8 @@ import ShiftPage from './pages/ShiftPage';
 import PersonnelPage from './pages/PersonnelPage';
 import CzPage from './pages/CzPage';
 import SettingsPage from './pages/SettingsPage';
-import WhatIfPage from './pages/WhatIfPage'; // Итерация 12
+import WhatIfPage from './pages/WhatIfPage';
+import HelpPage from './pages/HelpPage';
 import {Box, CircularProgress} from '@mui/material';
 
 const theme = createTheme({
@@ -99,7 +100,8 @@ const AppRoutes: React.FC = () => {
                 <Route path="cz" element={<CzPage />} />
                 <Route path="whatif" element={<WhatIfPage />} />   {/* Итерация 12 */}
                 <Route path="settings" element={<SettingsPage />} />
-                <Route path="settings" element={<SettingsPage />} />
+                <Route path="help" element={<HelpPage />} />
+                <Route path="help/:slug" element={<HelpPage />} />
             </Route>
 
             <Route path="*" element={<Navigate to="/equipment" replace />} />

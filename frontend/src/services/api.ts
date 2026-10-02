@@ -942,4 +942,55 @@ export const auditApi = {
     },
 };
 
+// ==========================================
+// Help API (Итерация 15.1)
+// ==========================================
+
+export const helpApi = {
+    /** Список статей (можно фильтровать по категории). */
+    listArticles: async (
+        category?: string,
+    ): Promise<import('../types').HelpArticlesListResponse> => {
+        const params = category ? { category } : {};
+        const response = await api.get('/api/v1/help/articles', { params });
+        return response.data;
+    },
+
+    /** Одна статья по slug. */
+    getArticle: async (
+        slug: string,
+    ): Promise<import('../types').HelpArticle> => {
+        const response = await api.get(`/api/v1/help/articles/${slug}`);
+        return response.data;
+    },
+
+    /** Список категорий. */
+    listCategories: async (): Promise<import('../types').HelpCategoriesResponse> => {
+        const response = await api.get('/api/v1/help/categories');
+        return response.data;
+    },
+
+    /** Поиск по статьям. */
+    search: async (
+        q: string,
+        limit: number = 30,
+    ): Promise<import('../types').HelpSearchResponse> => {
+        const response = await api.get('/api/v1/help/search', {
+            params: { q, limit },
+        });
+        return response.data;
+    },
+
+    /**
+     * Получить содержимое файла docs/*.md.
+     * Используется для отображения технической документации.
+     */
+    getDocFile: async (
+        filename: string,
+    ): Promise<import('../types').HelpDocFileResponse> => {
+        const response = await api.get(`/api/v1/help/docs/${filename}`);
+        return response.data;
+    },
+};
+
 export default api;

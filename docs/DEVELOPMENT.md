@@ -11,10 +11,12 @@
 - [Как добавить миграцию](#как-добавить-миграцию)
 - [Как добавить эндпоинт](#как-добавить-эндпоинт)
 - [Как добавить настройку](#как-добавить-настройку)
+- [Как добавить статью справки](#как-добавить-статью-справки)
 - [Как добавить ADR](#как-добавить-adr)
 - [Conventional Commits](#conventional-commits)
 - [Как обновлять CHANGELOG](#как-обновлять-changelog)
 - [Полезные команды](#полезные-команды)
+- [Отладка](#отладка)
 
 ---
 
@@ -132,7 +134,7 @@ cd backend
 pytest tests/ -v
 ```
 
-**Текущее состояние:** **563 passed**, 13 warnings.
+**Текущее состояние:** **601 passed**, 13 warnings.
 
 ### Конкретный файл
 
@@ -201,10 +203,12 @@ pytest tests/ -v --log-cli-level=DEBUG
 | `test_material_import.py` | Импорт/экспорт Excel |
 | `test_material_stock_log.py` | Журнал остатков |
 | `test_materials_stock.py` | Остатки материалов |
-| **`test_snapshot.py`** | **Модуль snapshot (13.15)** |
-| **`test_schedule_create_version.py`** | **Создание версии + снапшоты (13.15)** |
-| **`test_saver_uses_snapshot.py`** | **saver → snapshot_all_catalogs (13.15)** |
-| **`test_schedule_versions_archive.py`** | **Архивация версий (13.21)** |
+| `test_snapshot.py` | Модуль snapshot (13.15) |
+| `test_schedule_create_version.py` | Создание версии + снапшоты (13.15) |
+| `test_saver_uses_snapshot.py` | saver → snapshot_all_catalogs (13.15) |
+| `test_schedule_versions_archive.py` | Архивация версий (13.21) |
+| `test_reschedule_cascade.py` | Каскадный сдвиг (13.17) |
+| **`test_help.py`** | **Встроенная справка (15.1)** |
 
 ---
 
@@ -347,6 +351,8 @@ COMMIT;
 **Итерация 13.15 не требует миграции** — используются уже существующие снапшот-таблицы.
 
 **Итерация 13.21 использует миграцию `add_23.sql`:** добавлена колонка `is_archived`, partial-индекс, настройка `auto_archive_on_recalc`.
+
+**Итерация 15.1 использует миграцию `add_24.sql`:** таблица `help_article`, индексы, триггер. Плюс 3 seed-файла `add_24_seed_1/2/3.sql`.
 
 ---
 
@@ -541,6 +547,92 @@ async def test_my_new_setting(db_session, org_id):
 
 ---
 
+## Как добавить статью справки
+
+**Итерация 15.1.**
+
+### 1. Создать seed-файл
+
+`backend/migrations/add_NN_seed_M.sql`, где `NN` — номер миграции, `M` — номер seed-пакета.
+
+### 2. Структура
+
+```sql
+-- ==========================================
+-- SEED M/N: СПРАВКА — <НАЗВАНИЕ>
+-- ==========================================
+-- Добавляет N новых статей в категорию '<category>'.
+--
+-- Идемпотентна: ON CONFLICT (slug) DO NOTHING.
+-- ==========================================
+
+BEGIN;
+
+INSERT INTO help_article
+    (organization_id, slug, title, category, content_md, tags,
+     display_order, is_published)
+VALUES
+    (NULL, 'my-article-slug', 'Заголовок статьи', 'planning',
+     $md$# Заголовок статьи
+
+Текст статьи в **markdown**.
+
+- Список
+- Ещё пункт
+
+| Колонка 1 | Колонка 2 |
+|-----------|-----------|
+| Значение  | Значение  |
+$md$,
+     '["тег1", "тег2"]'::jsonb,
+     100, TRUE)
+    ON CONFLICT (slug) DO NOTHING;
+
+COMMIT;
+
+SELECT COUNT(*) AS seeded FROM help_article
+WHERE slug = 'my-article-slug';
+-- Ожидаемо: 1
+```
+
+### 3. Категории
+
+Доступные категории:
+
+| Ключ | Название |
+|------|----------|
+| `getting-started` | Начало работы |
+| `planning` | Планирование |
+| `gantt` | Диаграмма Ганта |
+| `shift` | Мастера смены |
+| `lab` | Лаборатория |
+| `cz` | Честный Знак |
+| `whatif` | What-if |
+| `settings` | Настройки |
+
+### 4. Применить
+
+```bash
+docker cp backend/migrations/add_NN_seed_M.sql aps_postgres:/tmp/add_NN_seed_M.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_NN_seed_M.sql
+```
+
+### 5. Добавить тест
+
+`tests/test_help.py`:
+
+```python
+def test_seed_file_exists():
+    path = Path("migrations/add_NN_seed_M.sql")
+    assert path.exists()
+
+def test_seed_contains_slug():
+    sql = Path("migrations/add_NN_seed_M.sql").read_text()
+    assert "'my-article-slug'" in sql
+```
+
+---
+
 ## Как добавить ADR
 
 ### 1. Создать файл
@@ -554,7 +646,7 @@ async def test_my_new_setting(db_session, org_id):
 
 **Дата:** 2026-09-25
 **Статус:** Принято
-**Контекст:** Итерация 13.14
+**Контекст:** Итерация 15.1
 
 ## Контекст
 
@@ -596,14 +688,15 @@ async def test_my_new_setting(db_session, org_id):
 | 0002 | [Snapshot tables for versioning](0002-snapshot-tables-for-versioning.md) | Принято |
 | 0003 | [Plan settings per plan](0003-plan-settings-per-plan.md) | Принято |
 | 0004 | [What-if two transactions](0004-whatif-two-transactions.md) | Принято |
-| 0005 | [Новое решение](0005-new-decision.md) | Принято |
+| 0005 | [Help system](0005-help-system.md) | Принято |
+| 0006 | [Новое решение](0006-new-decision.md) | Принято |
 ```
 
 ### 4. Обновить CHANGELOG
 
 ```markdown
 ### Added
-- ADR 0005: Новое решение.
+- ADR 0006: Новое решение.
 ```
 
 ---
@@ -636,7 +729,7 @@ async def test_my_new_setting(db_session, org_id):
 
 ### Scope
 
-`scheduler`, `api`, `frontend`, `db`, `settings`, `whatif`, `cz`, `lab`, `shift`, `personnel`, `gantt`, `snapshot`, `docs`.
+`scheduler`, `api`, `frontend`, `db`, `settings`, `whatif`, `cz`, `lab`, `shift`, `personnel`, `gantt`, `snapshot`, `help`, `docs`.
 
 ### Примеры
 
@@ -684,6 +777,16 @@ feat(gantt): add local edit mode toggle (iteration 14.2)
 - Фикс: защита от отрицательной ширины в drawBatchBrackets
 ```
 
+```
+feat(help): add markdown-based help system (iteration 15.1)
+
+- Миграция add_24.sql: таблица help_article
+- Seed-миграции add_24_seed_1/2/3.sql: 15 статей в 8 категориях
+- API /api/v1/help: articles, categories, search, docs
+- Frontend: HelpPage, HelpSidebar, HelpArticleView
+- +38 тестов, всего 601 passed
+```
+
 ---
 
 ## Как обновлять CHANGELOG
@@ -708,7 +811,7 @@ feat(gantt): add local edit mode toggle (iteration 14.2)
 ### 3. При релизе — перенести в новую версию
 
 ```markdown
-## [4.3.0] — 2026-10-02
+## [4.4.0] — 2026-10-02
 
 ### Added
 - ...
@@ -896,6 +999,15 @@ LOG_LEVEL=DEBUG
 Версия abcd1234 'План на октябрь' перемещена в архив
 Версия abcd1234 'План на октябрь' не архивирована: Используется в what-if сценариях: ...
 ```
+
+**Отладка справки (Итерация 15.1):**
+
+В логах backend:
+```
+[app.api.help] Загружено статей: 15
+```
+
+Если статей 0 — проверьте seed-миграции.
 
 ### Frontend
 

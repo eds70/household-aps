@@ -8,7 +8,120 @@
 ## [Unreleased]
 
 ### Added
-- Заготовка для Итерации 15: встроенная справка пользователя.
+- Заготовка для Итерации 15.2: контекстные подсказки.
+
+---
+
+## [4.4.0] — 2026-10-02
+
+Итерация 15.1 — встроенная справка пользователя.
+
+### Added
+
+#### Итерация 15.1 — Встроенная справка пользователя
+
+**Проблема:**
+Пользователь, впервые открывший систему, не понимает, что делать.
+Документация — в `docs/*.md`, но она для разработчиков. Нужна
+встроенная справка прямо в UI.
+
+**Решение:**
+
+**1. База данных (миграция `add_24.sql`):**
+- ✅ Таблица `help_article`:
+    - `slug` (UNIQUE) — идентификатор для URL.
+    - `title`, `category`, `content_md` (TEXT).
+    - `tags` (JSONB-массив).
+    - `display_order`, `is_published`.
+    - `organization_id` (nullable — глобальные статьи).
+- ✅ Триггер `help_article_set_updated_at`.
+- ✅ Индексы: `idx_help_article_category`, `idx_help_article_tags` (GIN).
+
+**2. Seed-миграции (`add_24_seed_1/2/3.sql`):**
+- ✅ 15 стартовых статей в 8 категориях.
+- ✅ Категории: `getting-started` (2), `planning` (4), `gantt` (4),
+  `shift` (1), `lab` (1), `cz` (1), `whatif` (1), `settings` (1).
+- ✅ Идемпотентны (`ON CONFLICT (slug) DO NOTHING`).
+- ✅ Markdown в dollar-quoted strings (`$md$...$md$`).
+
+**3. Backend:**
+- ✅ Модуль `help_models.py` — Pydantic-модели:
+    - `HelpArticleListItem`, `HelpArticleResponse`.
+    - `HelpCategoriesResponse`, `HelpCategoryResponse`.
+    - `HelpArticlesListResponse`.
+    - `HelpSearchHit`, `HelpSearchResponse`.
+- ✅ Модуль `help.py` — 4 эндпоинта:
+    - `GET /api/v1/help/articles` — список статей (с фильтром по категории).
+    - `GET /api/v1/help/articles/{slug}` — одна статья.
+    - `GET /api/v1/help/categories` — список категорий с количеством.
+    - `GET /api/v1/help/search?q=...` — поиск по title / content / tags.
+- ✅ Модуль `help_docs.py` — отдача `docs/*.md`:
+    - `GET /api/v1/help/docs/{filename}`.
+    - Защита от path traversal (`/`, `\`, `..`).
+    - Ограничение размера 1 МБ.
+    - Только `.md`.
+- ✅ Подключение в `main.py`:
+    - `from app.api.v1.help import router as help_router`
+    - `from app.api.v1.help_docs import router as help_docs_router`
+    - `{"name": "Справка"}` в `tags_metadata`.
+    - `app.include_router(help_router)`
+    - `app.include_router(help_docs_router)`
+
+**4. Frontend:**
+- ✅ `npm install react-markdown@^9.0.1 remark-gfm@^4.0.0`.
+- ✅ `helpApi` в `api.ts` — 5 методов:
+    - `listArticles(category?)`, `getArticle(slug)`, `listCategories()`,
+      `search(q, limit)`, `getDocFile(filename)`.
+- ✅ Типы `HelpArticle`, `HelpArticleListItem`, `HelpCategory`,
+  `HelpCategoriesResponse`, `HelpArticlesListResponse`,
+  `HelpSearchHit`, `HelpSearchResponse`, `HelpDocFileResponse`.
+- ✅ `HelpSidebar.tsx` — левая панель:
+    - Поиск с debounce 300 мс.
+    - Категории в аккордеонах.
+    - При активном поиске — список найденных статей с сниппетами.
+- ✅ `HelpArticleView.tsx` — markdown-рендер:
+    - `react-markdown` + `remark-gfm`.
+    - Кастомные компоненты для таблиц, кода, цитат.
+    - Внутренние ссылки `/help/slug` перехватываются и открывают
+      статьи внутри приложения.
+- ✅ `HelpPage.tsx` — страница:
+    - Двухпанельный layout через `Allotment`.
+    - Роуты `/help` (редирект на `/help/intro-overview`) и `/help/:slug`.
+- ✅ `MainLayout.tsx` — пункт меню «Помощь» с иконкой `HelpOutlined`.
+- ✅ `App.tsx` — 2 роута для `/help` и `/help/:slug`.
+
+**5. Тесты (+38, всего 601):**
+- ✅ `test_help.py` (38):
+    - Pydantic-модели (7).
+    - Константы категорий (3).
+    - Хелперы `_parse_tags`, `_make_snippet` (8).
+    - Структура модулей (4).
+    - Безопасность `help_docs` (3).
+    - Миграция `add_24.sql` (6).
+    - Seed-файлы (3).
+    - Регистрация в `main.py` (2).
+    - Sanity (2).
+
+**6. ADR:**
+- ✅ `docs/adr/0005-help-system.md` — обоснование выбора
+  markdown-статей в PostgreSQL.
+
+**Ключевые гарантии:**
+- ✅ **15 статей** покрывают 80% сценариев.
+- ✅ **Поиск** работает по title, content, tags.
+- ✅ **Markdown-рендер** с таблицами и кодом.
+- ✅ **Внутренние ссылки** — переход между статьями.
+- ✅ **Отдача `docs/*.md`** — техническая документация.
+- ✅ **Обратная совместимость** — read-only эндпоинты.
+
+### Changed
+
+- Версия проекта: `4.3.0` → `4.4.0`.
+- `main.py` — подключены `help_router`, `help_docs_router`.
+- `MainLayout.tsx` — пункт меню «Помощь».
+- `App.tsx` — роуты `/help`, `/help/:slug`.
+- `api.ts` — модуль `helpApi` (5 методов).
+- `types/index.ts` — 8 новых типов для справки.
 
 ---
 
