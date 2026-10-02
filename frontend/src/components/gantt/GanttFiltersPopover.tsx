@@ -1,6 +1,7 @@
 // frontend/src/components/gantt/GanttFiltersPopover.tsx
 /**
- * Popover с настройкой фильтров на Ганте (Итерация 13.17 + 13.18).
+ * Popover с настройкой фильтров на Ганте
+ * (Итерация 13.17 + 13.18 + 14.1).
  *
  * Содержит:
  *  - Select: оборудование (мультивыбор).
@@ -14,6 +15,13 @@
  *  - Checkbox: только не промаркированные.
  *  - Checkbox: только закреплённые (Итерация 13.18).
  *  - Кнопка «Сбросить все фильтры».
+ *
+ * Итерация 14.1:
+ *  - В секции «Отображение» добавлены:
+ *      * Чекбокс «Скобки партий» (доступен только в режиме 'equipment').
+ *      * Чекбокс «Показывать все связи» уже был — оставлен.
+ *  - Режим группировки вынесен в Toolbar (не в Popover),
+ *    так как это не фильтр, а глобальная настройка вида.
  */
 import React from 'react';
 import {
@@ -30,6 +38,7 @@ import {
     Typography,
 } from '@mui/material';
 import {FilterAltOff as FilterAltOffIcon} from '@mui/icons-material';
+import type {GroupByMode} from '../../types';
 
 export interface GanttFiltersPopoverProps {
     // Управление popover
@@ -76,6 +85,21 @@ export interface GanttFiltersPopoverProps {
 
     // Сброс всех фильтров
     onResetAll: () => void;
+
+    // ==========================================
+    // ИТЕРАЦИЯ 14.1: РЕЖИМЫ ОТОБРАЖЕНИЯ
+    // ==========================================
+
+    /**
+     * Текущий режим группировки.
+     * Нужен, чтобы показать/скрыть настройку «Скобки партий»
+     * (только в режиме 'equipment').
+     */
+    groupByMode: GroupByMode;
+
+    /** Показывать ли скобки партий (только в режиме 'equipment'). */
+    showBatchBrackets: boolean;
+    onToggleBatchBrackets: () => void;
 }
 
 const GanttFiltersPopover: React.FC<GanttFiltersPopoverProps> = ({
@@ -108,7 +132,13 @@ const GanttFiltersPopover: React.FC<GanttFiltersPopoverProps> = ({
                                                                      onShowOnlyCzIncompleteChange,
                                                                      onShowOnlyPinnedChange,
                                                                      onResetAll,
+                                                                     groupByMode,
+                                                                     showBatchBrackets,
+                                                                     onToggleBatchBrackets,
                                                                  }) => {
+    // Скобки партий доступны только в режиме 'equipment'
+    const bracketsAvailable = groupByMode === 'equipment';
+
     return (
         <Popover
             open={open}
@@ -223,6 +253,28 @@ const GanttFiltersPopover: React.FC<GanttFiltersPopoverProps> = ({
                     }
                     label={<Typography variant="body2">📅 Выходные (фон)</Typography>}
                 />
+
+                {/* ==========================================
+                    ИТЕРАЦИЯ 14.1: чекбокс «Скобки партий»
+                    (только в режиме 'equipment')
+                ========================================== */}
+                {bracketsAvailable && (
+                    <FormControlLabel
+                        control={
+                            <Checkbox
+                                checked={showBatchBrackets}
+                                onChange={onToggleBatchBrackets}
+                                size="small"
+                                color="secondary"
+                            />
+                        }
+                        label={
+                            <Typography variant="body2">
+                                🎨 Скобки партий
+                            </Typography>
+                        }
+                    />
+                )}
 
                 {showDependencies && (
                     <FormControlLabel

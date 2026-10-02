@@ -1,19 +1,51 @@
 // frontend/src/components/gantt/GanttToolbar.tsx
 /**
- * Верхняя панель (тулбар) диаграммы Ганта (Итерация 13.17 + 13.19).
+ * Верхняя панель (тулбар) диаграммы Ганта
+ * (Итерация 13.17 + 13.19 + 14.1 + 14.2).
  *
  * Итерация 13.19: кнопка «Пересчитать» становится активной ТОЛЬКО
  * если planDirty === true (есть несохранённые изменения,
  * влияющие на расчёт).
+ *
+ * Итерация 14.1:
+ *   - Добавлен переключатель режима группировки
+ *     («По оборудованию» / «По партиям»).
+ *   - Добавлен чекбокс «Скобки партий» (только в режиме 'equipment').
+ *   - Добавлен чип с количеством партий на диаграмме.
+ *
+ * Итерация 14.2 (НОВОЕ):
+ *   - Добавлен ToggleButtonGroup «🔒 Просмотр / ✏️ Редактирование»,
+ *     позволяющий переключать режим редактирования прямо на Ганте,
+ *     не закрывая план.
+ *   - Кнопка «Пересчитать» теперь рендерится всегда, когда передан
+ *     onRecalculate (не только в readonly-режиме).
  */
 import React from 'react';
-import {Chip, Divider, IconButton, InputAdornment, Paper, TextField, Tooltip, Typography,} from '@mui/material';
+import {
+    Checkbox,
+    Chip,
+    Divider,
+    FormControl,
+    FormControlLabel,
+    IconButton,
+    InputAdornment,
+    InputLabel,
+    MenuItem,
+    Paper,
+    Select,
+    TextField,
+    ToggleButton,
+    ToggleButtonGroup,
+    Tooltip,
+    Typography,
+} from '@mui/material';
 import {
     AccountTree as AccountTreeIcon,
     ArrowBack as ArrowBackIcon,
     ArrowForward as ArrowForwardIcon,
     Autorenew as RecalcIcon,
     Download as DownloadIcon,
+    Edit as EditIcon,
     FilterAlt as FilterAltIcon,
     FitScreen as FitScreenIcon,
     History as HistoryIcon,
@@ -22,9 +54,11 @@ import {
     Refresh as RefreshIcon,
     Search as SearchIcon,
     Today as TodayIcon,
+    ViewStream as ViewStreamIcon,
     ZoomIn as ZoomInIcon,
     ZoomOut as ZoomOutIcon,
 } from '@mui/icons-material';
+import type {GroupByMode} from '../../types';
 
 export interface GanttToolbarProps {
     // Статистика
@@ -34,9 +68,11 @@ export interface GanttToolbarProps {
     equipmentCount: number;
     hasActiveFilters: boolean;
 
-    // Readonly
-    isReadOnly: boolean;
-    currentPlanName: string;
+    /**
+     * Итерация 14.1: количество партий на диаграмме.
+     * Показывается в чипе рядом с оборудованием.
+     */
+    batchCount: number;
 
     // Поиск
     searchQuery: string;
@@ -77,6 +113,39 @@ export interface GanttToolbarProps {
      * на расчёт. Кнопка «Пересчитать» активна только при true.
      */
     planDirty: boolean;
+
+    // ==========================================
+    // ИТЕРАЦИЯ 14.1: РЕЖИМЫ ОТОБРАЖЕНИЯ
+    // ==========================================
+
+    /**
+     * Режим группировки строк.
+     *   - 'equipment' — по оборудованию.
+     *   - 'batch' — по партиям.
+     */
+    groupByMode: GroupByMode;
+    onGroupByModeChange: (mode: GroupByMode) => void;
+
+    /**
+     * Показывать ли фантомные скобки партий
+     * (доступно только в режиме 'equipment').
+     */
+    showBatchBrackets: boolean;
+    onToggleBatchBrackets: () => void;
+
+    // ==========================================
+    // ИТЕРАЦИЯ 14.2: РЕЖИМ РЕДАКТИРОВАНИЯ
+    // ==========================================
+
+    /**
+     * Локальный режим редактирования.
+     * Если true — задачи можно таскать/ресайзить.
+     * Если false — readonly.
+     */
+    localEditMode: boolean;
+
+    /** Колбэк переключения режима. */
+    onLocalEditModeChange: (value: boolean) => void;
 }
 
 const GanttToolbar: React.FC<GanttToolbarProps> = ({
@@ -85,8 +154,7 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
                                                        makespanHours,
                                                        equipmentCount,
                                                        hasActiveFilters,
-                                                       isReadOnly,
-                                                       currentPlanName,
+                                                       batchCount,
                                                        searchQuery,
                                                        onSearchChange,
                                                        onToggleFilters,
@@ -108,7 +176,16 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
                                                        onRecalculate,
                                                        recalculating = false,
                                                        planDirty,
+                                                       groupByMode,
+                                                       onGroupByModeChange,
+                                                       showBatchBrackets,
+                                                       onToggleBatchBrackets,
+                                                       localEditMode,
+                                                       onLocalEditModeChange,
                                                    }) => {
+    // В режиме 'batch' скобки партий недоступны — они там не нужны
+    const bracketsAvailable = groupByMode === 'equipment';
+
     return (
         <Paper
             elevation={1}
@@ -134,6 +211,114 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
             >
                 📊 Диаграмма Ганта
             </Typography>
+
+            {/* ==========================================
+                ИТЕРАЦИЯ 14.2 (compact): Переключатель режима.
+                Только иконки — текст в tooltip.
+            ========================================== */}
+            <ToggleButtonGroup
+                size="small"
+                value={localEditMode ? 'edit' : 'view'}
+                exclusive
+                onChange={(_, value) => {
+                    if (value !== null) {
+                        onLocalEditModeChange(value === 'edit');
+                    }
+                }}
+                sx={{
+                    ml: 0.5,
+                    // Компактные кнопки: 28×28 вместо 40×40 (MUI default)
+                    '& .MuiToggleButton-root': {
+                        padding: '4px 6px',
+                        minWidth: 32,
+                        borderColor: '#bdc3c7',
+                        '&.Mui-selected': {
+                            backgroundColor: '#3498db',
+                            color: '#ffffff',
+                            '&:hover': {
+                                backgroundColor: '#2980b9',
+                            },
+                        },
+                    },
+                }}
+            >
+                <Tooltip title="Режим просмотра. Переключите в «Редактирование», чтобы двигать задачи." arrow>
+                    <ToggleButton value="view" aria-label="Режим просмотра">
+                        <LockIcon sx={{fontSize: 16}} />
+                    </ToggleButton>
+                </Tooltip>
+                <Tooltip title="Режим редактирования. Задачи можно перетаскивать, изменения сохранятся после «Пересчитать»." arrow>
+                    <ToggleButton value="edit" aria-label="Режим редактирования">
+                        <EditIcon sx={{fontSize: 16}} />
+                    </ToggleButton>
+                </Tooltip>
+            </ToggleButtonGroup>
+
+            <Divider orientation="vertical" flexItem sx={{mx: 0.5}} />
+
+            {/* ==========================================
+                ИТЕРАЦИЯ 14.1: Переключатель режима группировки
+            ========================================== */}
+            <FormControl
+                size="small"
+                variant="outlined"
+                sx={{minWidth: 170}}
+            >
+                <InputLabel id="gantt-group-by-label">Группировка</InputLabel>
+                <Select
+                    labelId="gantt-group-by-label"
+                    value={groupByMode}
+                    label="Группировка"
+                    variant="outlined"
+                    onChange={(e) =>
+                        onGroupByModeChange(e.target.value as GroupByMode)
+                    }
+                    startAdornment={
+                        <InputAdornment position="start" sx={{ml: 0.5}}>
+                            <ViewStreamIcon fontSize="small"/>
+                        </InputAdornment>
+                    }
+                >
+                    <MenuItem value="equipment">
+                        По оборудованию
+                    </MenuItem>
+                    <MenuItem value="batch">
+                        По партиям
+                    </MenuItem>
+                </Select>
+            </FormControl>
+
+            {/* ==========================================
+                ИТЕРАЦИЯ 14.1: Чекбокс «Скобки партий»
+                (только в режиме 'equipment')
+            ========================================== */}
+            {bracketsAvailable && (
+                <Tooltip
+                    title={
+                        showBatchBrackets
+                            ? 'Скрыть цветные рамки вокруг партий'
+                            : 'Показать цветные рамки вокруг партий (помогают видеть партию как целое)'
+                    }
+                >
+                    <FormControlLabel
+                        control={
+                            <Checkbox
+                                size="small"
+                                checked={showBatchBrackets}
+                                onChange={onToggleBatchBrackets}
+                            />
+                        }
+                        label={
+                            <Typography
+                                variant="caption"
+                                sx={{userSelect: 'none'}}
+                            >
+                                Скобки партий
+                            </Typography>
+                        }
+                    />
+                </Tooltip>
+            )}
 
             <Tooltip
                 title={
@@ -170,14 +355,16 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
                 />
             </Tooltip>
 
-            {isReadOnly && (
-                <Tooltip title={`Режим просмотра: ${currentPlanName}`}>
+            {/* ==========================================
+                ИТЕРАЦИЯ 14.1: Чип с количеством партий
+            ========================================== */}
+            {batchCount > 0 && (
+                <Tooltip title="Количество партий на диаграмме">
                     <Chip
-                        icon={<LockIcon fontSize="small" />}
-                        label="Просмотр"
+                        label={`${batchCount} парт.`}
                         size="small"
-                        color="info"
-                        variant="filled"
+                        variant="outlined"
+                        sx={{borderColor: '#9b59b6', color: '#8e44ad'}}
                     />
                 </Tooltip>
             )}
@@ -188,12 +375,12 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
                 placeholder="Поиск..."
                 value={searchQuery}
                 onChange={(e) => onSearchChange(e.target.value)}
-                sx={{ width: 200, ml: 'auto' }}
+                sx={{width: 200, ml: 'auto'}}
                 slotProps={{
                     input: {
                         startAdornment: (
                             <InputAdornment position="start">
-                                <SearchIcon fontSize="small" />
+                                <SearchIcon fontSize="small"/>
                             </InputAdornment>
                         ),
                     },
@@ -207,13 +394,16 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
                     onClick={onToggleFilters}
                     color={hasActiveFilters ? 'warning' : 'default'}
                 >
-                    <FilterAltIcon />
+                    <FilterAltIcon/>
                 </IconButton>
             </Tooltip>
 
-            {/* Итерация 13.17 (9e): кнопка «Пересчитать» */}
-            {/* Итерация 13.19: активна только при planDirty */}
-            {isReadOnly && onRecalculate && (
+            {/* ==========================================
+                ИТЕРАЦИЯ 14.2: кнопка «Пересчитать»
+                Рендерится всегда, когда передан onRecalculate.
+                Активна, когда planDirty === true.
+            ========================================== */}
+            {onRecalculate && (
                 <Tooltip
                     title={
                         planDirty
@@ -228,7 +418,7 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
                             color={planDirty ? 'primary' : 'default'}
                             disabled={recalculating || !planDirty}
                         >
-                            <RecalcIcon />
+                            <RecalcIcon/>
                         </IconButton>
                     </span>
                 </Tooltip>
@@ -248,34 +438,34 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
             >
                 <Tooltip title="Сдвинуть влево">
                     <IconButton size="small" onClick={onPanLeft}>
-                        <ArrowBackIcon fontSize="small" />
+                        <ArrowBackIcon fontSize="small"/>
                     </IconButton>
                 </Tooltip>
                 <Tooltip title="Сдвинуть вправо">
                     <IconButton size="small" onClick={onPanRight}>
-                        <ArrowForwardIcon fontSize="small" />
+                        <ArrowForwardIcon fontSize="small"/>
                     </IconButton>
                 </Tooltip>
-                <Divider orientation="vertical" flexItem sx={{ mx: 0.25 }} />
+                <Divider orientation="vertical" flexItem sx={{mx: 0.25}}/>
                 <Tooltip title="Приблизить">
                     <IconButton size="small" onClick={onZoomIn}>
-                        <ZoomInIcon fontSize="small" />
+                        <ZoomInIcon fontSize="small"/>
                     </IconButton>
                 </Tooltip>
                 <Tooltip title="Отдалить">
                     <IconButton size="small" onClick={onZoomOut}>
-                        <ZoomOutIcon fontSize="small" />
+                        <ZoomOutIcon fontSize="small"/>
                     </IconButton>
                 </Tooltip>
-                <Divider orientation="vertical" flexItem sx={{ mx: 0.25 }} />
+                <Divider orientation="vertical" flexItem sx={{mx: 0.25}}/>
                 <Tooltip title="Показать весь план">
                     <IconButton size="small" onClick={onFitAll}>
-                        <FitScreenIcon fontSize="small" />
+                        <FitScreenIcon fontSize="small"/>
                     </IconButton>
                 </Tooltip>
                 <Tooltip title="Перейти к сегодня">
                     <IconButton size="small" onClick={onGoToToday}>
-                        <TodayIcon fontSize="small" />
+                        <TodayIcon fontSize="small"/>
                     </IconButton>
                 </Tooltip>
             </Paper>
@@ -293,7 +483,7 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
                     onClick={onToggleMinimap}
                     color={showMinimap ? 'primary' : 'default'}
                 >
-                    <MapIcon />
+                    <MapIcon/>
                 </IconButton>
             </Tooltip>
 
@@ -312,7 +502,7 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
                     onClick={onToggleDependencies}
                     color={showDependencies ? 'primary' : 'default'}
                 >
-                    <AccountTreeIcon />
+                    <AccountTreeIcon/>
                 </IconButton>
             </Tooltip>
 
@@ -330,7 +520,7 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
                         color={showAllDependencies ? 'secondary' : 'default'}
                         variant={showAllDependencies ? 'filled' : 'outlined'}
                         onClick={onToggleAllDependencies}
-                        sx={{ cursor: 'pointer', fontSize: '0.7rem' }}
+                        sx={{cursor: 'pointer', fontSize: '0.7rem'}}
                     />
                 </Tooltip>
             )}
@@ -351,22 +541,22 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
                 </Tooltip>
             )}
 
-            <Divider orientation="vertical" flexItem sx={{ mx: 0.25 }} />
+            <Divider orientation="vertical" flexItem sx={{mx: 0.25}}/>
 
             {/* Действия */}
             <Tooltip title="История изменений">
                 <IconButton size="small" onClick={onOpenAudit}>
-                    <HistoryIcon />
+                    <HistoryIcon/>
                 </IconButton>
             </Tooltip>
             <Tooltip title="Обновить">
                 <IconButton size="small" onClick={onRefresh}>
-                    <RefreshIcon />
+                    <RefreshIcon/>
                 </IconButton>
             </Tooltip>
             <Tooltip title="Экспорт в Excel">
                 <IconButton size="small" color="success" onClick={onExport}>
-                    <DownloadIcon />
+                    <DownloadIcon/>
                 </IconButton>
             </Tooltip>
         </Paper>

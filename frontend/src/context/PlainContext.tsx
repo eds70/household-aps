@@ -13,24 +13,18 @@ export interface PlanVersion {
     comment?: string | null;
     /**
      * Итерация 13.15: заполнены ли снапшот-таблицы для этой версии.
-     *
-     * true  — план рассчитан или создан через snapshot_all_catalogs.
-     * false — «пустой» план (создан до Итерации 13.15, снапшотов нет).
      */
     has_snapshot?: boolean;
     /**
      * Итерация 13.21: архивная версия.
-     * Архивные версии скрыты из списка по умолчанию.
      */
     is_archived?: boolean;
     /**
      * Итерация 13.21: ID родительской версии.
-     * Используется для построения иерархии в «Истории планов».
      */
     parent_version_id?: string | null;
 }
 
-// Текущий план: либо конкретный план, либо null (режим редактирования)
 export interface CurrentPlan {
     id: string;
     name: string;
@@ -46,29 +40,19 @@ interface PlanContextType {
     currentPlanHasSnapshot: boolean;
 
     /**
-     * Итерация 13.19: флаг «план содержит несохранённые изменения,
-     * влияющие на расчёт».
-     *
-     * Устанавливается через markPlanDirty() при:
-     *   - изменении справочников (продукты, оборудование, операции,
-     *     рецепты, материалы);
-     *   - изменении заказов и партий;
-     *   - изменении capacity пулов;
-     *   - лабораторной блокировке / разблокировке;
-     *   - изменении calendar_event;
-     *   - изменении app_settings / plan_settings;
-     *   - перемещении / изменении длительности задачи на Ганте
-     *     (move-cascade / resize);
-     *   - pin / unpin задачи.
-     *
-     * Сбрасывается через clearPlanDirty() при:
-     *   - успешном пересчёте (recalculate);
-     *   - смене активного плана;
-     *   - создании нового плана.
+     * Итерация 13.19: флаг «план содержит несохранённые изменения».
      */
     planDirty: boolean;
     markPlanDirty: () => void;
     clearPlanDirty: () => void;
+
+    /**
+     * Итерация 14.2: локальный режим редактирования для Ганта.
+     * Если true — задачи можно таскать/ресайзить.
+     * Используется в GanttPage и MainLayout (для иконки в шапке).
+     */
+    localEditMode: boolean;
+    setLocalEditMode: (value: boolean) => void;
 
     versions: PlanVersion[];
     setPlan: (versionId: string | null, name: string, hasSnapshot?: boolean) => void;
@@ -79,14 +63,12 @@ interface PlanContextType {
 
     /**
      * Итерация 13.21: показывать ли архивные версии в списке.
-     * Сохраняется в localStorage, чтобы не сбрасываться при F5.
      */
     includeArchived: boolean;
     setIncludeArchived: (value: boolean) => void;
 
     /**
      * Итерация 13.21: разархивировать версию плана.
-     * После успеха обновляет список versions.
      */
     unarchiveVersion: (versionId: string) => Promise<void>;
 }
@@ -119,7 +101,6 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     /**
      * Итерация 13.21: показывать ли архивные версии.
-     * По умолчанию — false (список чистый).
      */
     const [includeArchived, setIncludeArchivedState] = useState<boolean>(() => {
         try {
@@ -131,9 +112,16 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     /**
      * Итерация 13.19: флаг «план содержит несохранённые изменения».
-     * Хранится в localStorage по ключу плана, чтобы не терялся при F5.
      */
     const [planDirty, setPlanDirty] = useState<boolean>(false);
+
+    /**
+     * Итерация 14.2: глобальный режим редактирования для Ганта.
+     * По умолчанию — true (когда план не открыт).
+     * Синхронизируется с currentVersionId: при открытии плана
+     * сбрасывается в false (readonly).
+     */
+    const [localEditMode, setLocalEditMode] = useState<boolean>(true);
 
     const {isAuthenticated, isLoading} = useAuth();
 
@@ -163,8 +151,7 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }, [includeArchived]);
 
     /**
-     * Итерация 13.19: сохраняем planDirty в localStorage per-plan,
-     * чтобы флаг не терялся при F5.
+     * Итерация 13.19: сохраняем planDirty в localStorage per-plan.
      */
     useEffect(() => {
         if (!currentPlan?.id) return;
@@ -197,8 +184,19 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }, [currentPlan?.id]);
 
     /**
-     * Итерация 13.21: сеттер для includeArchived с автоматической
-     * перезагрузкой списка версий.
+     * Итерация 14.2: при открытии плана → readonly по умолчанию.
+     * При закрытии → редактирование.
+     */
+    useEffect(() => {
+        if (currentPlan?.id) {
+            setLocalEditMode(false);
+        } else {
+            setLocalEditMode(true);
+        }
+    }, [currentPlan?.id]);
+
+    /**
+     * Итерация 13.21: сеттер для includeArchived.
      */
     const setIncludeArchived = useCallback((value: boolean) => {
         setIncludeArchivedState(value);
@@ -206,8 +204,7 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const loadVersions = useCallback(async () => {
         try {
-            // Итерация 13.21 (Вариант B): всегда получаем ВСЕ версии
-            // (включая архивные). Фильтрация — на фронте, в SchedulePage.
+            // Итерация 13.21: всегда получаем ВСЕ версии.
             const response = await axios.get(
                 `${API_BASE_URL}/api/v1/schedule/versions`,
                 { params: { include_archived: true } },
@@ -290,7 +287,6 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
         });
         const newVersion: PlanVersion = response.data;
         setVersions((prev) => [newVersion, ...prev]);
-        // Новый план создан со снапшотами и настройками — «чистый».
         setPlanDirty(false);
         return newVersion;
     }, []);
@@ -319,8 +315,6 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await axios.put(
             `${API_BASE_URL}/api/v1/schedule/versions/${versionId}/unarchive`,
         );
-        // Перезагружаем список — разархивированная появится,
-        // если includeArchived = false (или останется, если true).
         await loadVersions();
     }, [loadVersions]);
 
@@ -346,6 +340,11 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
             includeArchived,
             setIncludeArchived,
             unarchiveVersion,
+            // ==========================================
+            // Итерация 14.2: глобальный режим редактирования
+            // ==========================================
+            localEditMode,
+            setLocalEditMode,
         }}>
             {children}
         </PlanContext.Provider>

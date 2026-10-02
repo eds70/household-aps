@@ -1,6 +1,6 @@
 // frontend/src/utils/ganttRenderItems.ts
 /**
- * Построение items и groups для vis-timeline (Итерация 13.17 + 13.18).
+ * Построение items и groups для vis-timeline (Итерация 13.17 + 13.18 + 14.1).
  *
  * Вынесено из GanttPage.tsx. Чистая функция без побочных эффектов:
  *  - принимает отфильтрованные задачи и оборудование;
@@ -9,12 +9,19 @@
  *
  * Итерация 13.18: улучшена визуализация is_pinned (📌 иконка,
  * светлый фон, плотная синяя рамка).
+ *
+ * Итерация 14.1: добавлен режим группировки groupByMode:
+ *   - 'equipment' — groups = оборудование (как было).
+ *   - 'batch' — groups = партии (batch_id), внутри каждой группы
+ *     все операции партии. Окраска задач — по equipment_id.
  */
-import type {TaskData} from '../types';
+
+import type {GroupByMode, TaskData} from '../types';
 import type {GanttGroup, GanttItem} from '../components/gantt/types';
-import {PROBLEM_COLORS, ROLE_COLORS, ROLE_COLORS_DEFAULT,} from '../components/gantt/constants';
+import {NON_BATCH_VALUES, PROBLEM_COLORS, ROLE_COLORS, ROLE_COLORS_DEFAULT,} from '../components/gantt/constants';
 import {generateSetups} from './ganttSetups';
 import {type BackgroundItem, generateWeekendBackgrounds,} from './ganttDowntimes';
+import {getBatchColor, getBatchLabel} from './ganttBatchColors';
 
 export interface BuildGanttItemsOptions {
     /** Задачи после фильтрации (только реальные task, без setup/downtime). */
@@ -29,6 +36,12 @@ export interface BuildGanttItemsOptions {
     showSetups: boolean;
     /** Показывать ли фоновые полосы выходных. */
     showDowntimes: boolean;
+    /**
+     * Итерация 14.1: режим группировки.
+     *   - 'equipment' — groups = оборудование.
+     *   - 'batch' — groups = партии (batch_id).
+     */
+    groupByMode: GroupByMode;
 }
 
 export interface BuildGanttItemsResult {
@@ -61,6 +74,7 @@ export const buildGanttItems = (
         showAllDependencies,
         showSetups,
         showDowntimes,
+        groupByMode,
     } = options;
 
     // ==========================================
@@ -76,8 +90,10 @@ export const buildGanttItems = (
     // ==========================================
     const taskItems: TaskData[] = [...filteredTasks, ...setups];
 
+    // Пересчитываем equipment_id для каждой задачи в зависимости от режима
     const itemsArray: GanttItem[] = taskItems.map((task) => {
-        return buildSingleTaskItem(task, {
+        const groupId = resolveGroupId(task, groupByMode);
+        return buildSingleTaskItem(task, groupId, groupByMode, {
             showDependencies,
             showAllDependencies,
         });
@@ -86,10 +102,11 @@ export const buildGanttItems = (
     // ==========================================
     // 3. Groups для основного Timeline
     // ==========================================
-    const groupsArray: GanttGroup[] = equipment.map((eq) => ({
-        id: eq,
-        content: `<b>${eq}</b>`,
-    }));
+    const groupsArray: GanttGroup[] = buildGroups(
+        filteredTasks,
+        equipment,
+        groupByMode,
+    );
 
     // ==========================================
     // 4. Items и groups для миникарты
@@ -103,8 +120,8 @@ export const buildGanttItems = (
         className: item.className,
     }));
 
-    const minimapGroups: GanttGroup[] = equipment.map((eq) => ({
-        id: eq,
+    const minimapGroups: GanttGroup[] = groupsArray.map((g) => ({
+        id: g.id,
         content: '',
     }));
 
@@ -124,7 +141,122 @@ export const buildGanttItems = (
 };
 
 // ==========================================
-// ВНУТРЕННИЕ
+// ОПРЕДЕЛЕНИЕ ГРУППЫ ЗАДАЧИ
+// ==========================================
+
+/**
+ * Возвращает ID группы (строки) для задачи в зависимости от режима.
+ *
+ * В режиме 'equipment' — это equipment_id (как было).
+ * В режиме 'batch' — это batch_id, с fallback на equipment_id
+ * для setup/downtime (у них нет batch_id).
+ */
+const resolveGroupId = (
+    task: TaskData,
+    mode: GroupByMode,
+): string => {
+    if (mode === 'equipment') {
+        return task.equipment_id;
+    }
+
+    // mode === 'batch'
+    // Для setup / downtime — своя группа (по equipment_id)
+    if (task.item_type === 'setup') {
+        return `__setup__${task.equipment_id}`;
+    }
+    if (task.item_type === 'downtime') {
+        return `__downtime__${task.equipment_id}`;
+    }
+
+    // Для реальных задач — batch_id
+    if (task.batch_id && !NON_BATCH_VALUES.has(task.batch_id)) {
+        return task.batch_id;
+    }
+
+    // Fallback: партия не определена — используем equipment_id
+    return task.equipment_id;
+};
+
+// ==========================================
+// ПОСТРОЕНИЕ GROUPS
+// ==========================================
+
+/**
+ * Строит список groups для vis-timeline в зависимости от режима.
+ *
+ * В режиме 'equipment' — группы = список оборудования.
+ * В режиме 'batch' — группы = список партий (уникальные batch_id),
+ * отсортированные по времени первой операции.
+ */
+const buildGroups = (
+    filteredTasks: TaskData[],
+    equipment: string[],
+    mode: GroupByMode,
+): GanttGroup[] => {
+    if (mode === 'equipment') {
+        // Классический режим: группы = оборудование
+        return equipment.map((eq) => ({
+            id: eq,
+            content: `<b>${eq}</b>`,
+        }));
+    }
+
+    // mode === 'batch'
+    // Собираем уникальные batch_id и их время начала
+    const batchInfo = new Map<
+        string,
+        {startMs: number; productName: string | null}
+    >();
+
+    for (const task of filteredTasks) {
+        if (!task.batch_id || NON_BATCH_VALUES.has(task.batch_id)) continue;
+        if (task.item_type && task.item_type !== 'task') continue;
+
+        const startMs = new Date(task.start).getTime();
+        const existing = batchInfo.get(task.batch_id);
+
+        if (!existing) {
+            batchInfo.set(task.batch_id, {
+                startMs,
+                productName:
+                    task.product_id && task.product_id !== '—'
+                        ? task.product_id
+                        : null,
+            });
+        } else if (startMs < existing.startMs) {
+            existing.startMs = startMs;
+            if (!existing.productName && task.product_id && task.product_id !== '—') {
+                existing.productName = task.product_id;
+            }
+        }
+    }
+
+    // Сортируем партии по времени начала
+    const sortedBatches = Array.from(batchInfo.entries()).sort(
+        (a, b) => a[1].startMs - b[1].startMs,
+    );
+
+    const batchGroups: GanttGroup[] = sortedBatches.map(
+        ([batchId, info]) => {
+            const color = getBatchColor(batchId);
+            const label = getBatchLabel(batchId, info.productName);
+            return {
+                id: batchId,
+                content: `
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span style="display: inline-block; width: 10px; height: 10px; border-radius: 2px; background-color: ${color}; flex-shrink: 0;"></span>
+                        <b style="font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${label}</b>
+                    </div>
+                `,
+            };
+        },
+    );
+
+    return batchGroups;
+};
+
+// ==========================================
+// ВНУТРЕННИЕ: одна задача → item
 // ==========================================
 
 interface BuildSingleTaskOptions {
@@ -134,6 +266,8 @@ interface BuildSingleTaskOptions {
 
 const buildSingleTaskItem = (
     task: TaskData,
+    groupId: string,
+    groupByMode: GroupByMode,
     opts: BuildSingleTaskOptions,
 ): GanttItem => {
     const itemType = task.item_type || 'task';
@@ -142,10 +276,10 @@ const buildSingleTaskItem = (
     let className = '';
 
     if (itemType === 'task') {
-        const {style: s, title: t, className: c} = buildTaskStyle(task, opts);
-        style = s;
-        title = t;
-        className = c;
+        const result = buildTaskStyle(task, groupByMode, opts);
+        style = result.style;
+        title = result.title;
+        className = result.className;
     } else if (itemType === 'setup') {
         const setupColor =
             task.setup_type === 'same_pf' ? '#95a5a6' : '#e67e22';
@@ -158,7 +292,7 @@ const buildSingleTaskItem = (
         title = `<div style="padding: 8px; min-width: 280px;"><b>📅 ${task.operation_name}</b><br>${task.duration_minutes} мин</div>`;
     }
 
-    // Итерация 13.18: pin-иконка идёт первой (важнее всего)
+    // Иконки в содержимом item
     const pinIcon = task.is_pinned ? '📌 ' : '';
     const blockedIcon = task.is_lab_blocked ? '🔒 ' : '';
     const slowCoolingIcon = task.cooling_mode === 'slow' ? '⏳ ' : '';
@@ -174,7 +308,7 @@ const buildSingleTaskItem = (
             ? task.operation_name.substring(0, 22) + '…'
             : task.operation_name;
 
-    // Приоритет цвета текста: pinned → blocked → slow cooling → обычный
+    // Приоритет цвета текста
     const contentColor = task.is_pinned
         ? '#1976d2'
         : task.is_lab_blocked
@@ -185,7 +319,7 @@ const buildSingleTaskItem = (
 
     return {
         id: task.id,
-        group: task.equipment_id,
+        group: groupId,
         content: `
             <div style="padding: 4px; font-size: 11px;">
               <div style="font-weight: bold; color: ${contentColor}; margin-bottom: 2px;">
@@ -214,6 +348,7 @@ interface TaskStyleResult {
 
 const buildTaskStyle = (
     task: TaskData,
+    groupByMode: GroupByMode,
     opts: BuildSingleTaskOptions,
 ): TaskStyleResult => {
     const isBlocked = task.is_lab_blocked === true;
@@ -228,19 +363,18 @@ const buildTaskStyle = (
     let className = '';
 
     // ==========================================
-    // Итерация 13.18: приоритет стилей
-    //   1. is_pinned  — самая заметная рамка (синяя, плотная)
-    //   2. isBlocked  — красная рамка
-    //   3. isSlowCooling — оранжевая пунктирная
-    //   4. isCzIncomplete — синяя пунктирная
-    //   5. обычный — цвет по роли
+    // Приоритет стилей:
+    //   1. is_pinned
+    //   2. isBlocked
+    //   3. isSlowCooling
+    //   4. isCzIncomplete
+    //   5. обычный (цвет по роли или по оборудованию)
     // ==========================================
     if (isPinned) {
-        // Светлый синий фон + плотная синяя рамка слева
         style =
-            `background-color: #e3f2fd; ` +
-            `border: 2px solid #1976d2; ` +
-            `border-left: 6px solid #1976d2; ` +
+            `background-color: ${PROBLEM_COLORS.pinned.bg}; ` +
+            `border: 2px solid ${PROBLEM_COLORS.pinned.border}; ` +
+            `border-left: 6px solid ${PROBLEM_COLORS.pinned.border}; ` +
             `border-radius: 4px; ` +
             `box-shadow: 0 0 4px rgba(25, 118, 210, 0.35);`;
         className = 'item-pinned';
@@ -254,9 +388,17 @@ const buildTaskStyle = (
         style = `background-color: ${PROBLEM_COLORS.czIncomplete.bg}; border: 2px dotted ${PROBLEM_COLORS.czIncomplete.border}; border-radius: 4px;`;
         className = 'item-cz-incomplete';
     } else {
-        const roleColor =
-            ROLE_COLORS[task.task_role || ''] || ROLE_COLORS_DEFAULT;
-        style = `background-color: ${roleColor}25; border-left: 4px solid ${roleColor}; border-radius: 4px;`;
+        // Обычный стиль — зависит от режима
+        if (groupByMode === 'batch') {
+            // В режиме «По партиям» — цвет задачи по оборудованию
+            const eqColor = getEquipmentColor(task.equipment_id);
+            style = `background-color: ${eqColor}25; border-left: 4px solid ${eqColor}; border-radius: 4px;`;
+        } else {
+            // В режиме «По оборудованию» — цвет по роли (как было)
+            const roleColor =
+                ROLE_COLORS[task.task_role || ''] || ROLE_COLORS_DEFAULT;
+            style = `background-color: ${roleColor}25; border-left: 4px solid ${roleColor}; border-radius: 4px;`;
+        }
     }
 
     // ==========================================
@@ -319,13 +461,18 @@ const buildTaskStyle = (
         (isBlocked ? '🔒 ' : '') +
         (isSlowCooling ? '⏳ ' : '');
 
+    // В режиме 'batch' — показываем партию как первую строку
+    const batchLine =
+        groupByMode === 'batch' && task.batch_id && !NON_BATCH_VALUES.has(task.batch_id)
+            ? `<b>Партия:</b> ${getBatchLabel(task.batch_id, task.product_id)}<br>`
+            : '';
+
     const title = `
             <div style="padding: 8px; min-width: 280px;">
               <b style="font-size: 14px; color: ${titleColor};">${titlePrefix}${task.operation_name}</b><br>
               <hr style="margin: 8px 0; border: none; border-top: 1px solid #ecf0f1;">
               <div style="font-size: 12px; line-height: 1.6;">
-                <b>Партия:</b> ${task.batch_id}<br>
-                <b>Продукт:</b> ${task.product_id}<br>
+                ${batchLine}
                 <b>Оборудование:</b> ${task.equipment_id}<br>
                 <b>Роль:</b> ${task.task_role || '—'}<br>
                 <b>Длительность:</b> ${task.duration_minutes} мин<br>
@@ -341,4 +488,51 @@ const buildTaskStyle = (
           `;
 
     return {style, title, className};
+};
+
+// ==========================================
+// ЦВЕТ ОБОРУДОВАНИЯ (для режима 'batch')
+// ==========================================
+
+/**
+ * Возвращает детерминированный цвет для оборудования.
+ *
+ * В режиме «По партиям» все задачи партии в одной строке,
+ * поэтому нужно визуально различать на каком оборудовании
+ * идёт каждая операция.
+ *
+ * Используем ту же палитру, что и для партий, но с другим
+ * хешем (чтобы цвета не совпадали с цветами партий случайно).
+ */
+const EQUIPMENT_COLOR_PALETTE: Record<string, string> = {
+    // Реакторы — синяя гамма
+    REACTOR_1: '#3498db',
+    REACTOR_2: '#2980b9',
+    REACTOR_3: '#1f618d',
+    REACTOR_4: '#1a5276',
+    // Линии — зелёная гамма
+    LINE_1: '#27ae60',
+    LINE_2: '#229954',
+    LINE_3: '#1e8449',
+    // Танки — оранжевая гамма
+    TANK_1: '#e67e22',
+    TANK_2: '#d35400',
+    // Бойлер — красный
+    BOILER: '#e74c3c',
+    // Fallback
+    __default__: '#95a5a6',
+};
+
+/**
+ * Возвращает цвет для оборудования по его имени (id).
+ *
+ * Используется в режиме 'batch', чтобы видеть, на каком
+ * оборудовании идёт каждая операция.
+ */
+const getEquipmentColor = (equipmentId: string): string => {
+    if (!equipmentId) return EQUIPMENT_COLOR_PALETTE.__default__;
+    return (
+        EQUIPMENT_COLOR_PALETTE[equipmentId] ||
+        EQUIPMENT_COLOR_PALETTE.__default__
+    );
 };

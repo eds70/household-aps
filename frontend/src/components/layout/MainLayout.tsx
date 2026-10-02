@@ -62,7 +62,6 @@ const MENU_ITEMS = [
     { path: '/cz', label: 'Честный Знак', icon: <QrCodeScannerIcon /> },
     { path: '/whatif', label: 'What-if', icon: <ScienceIcon /> },
     // Итерация 13.16: пункт «Аудит» временно скрыт — страница в разработке.
-    // { path: '/audit', label: 'Аудит', icon: <HistoryIcon /> },
     { path: '/settings', label: 'Настройки', icon: <SettingsIcon /> },
 ];
 
@@ -76,7 +75,14 @@ const ROLE_LABELS: Record<string, string> = {
 
 const MainLayout: React.FC = () => {
     const { user, logout } = useAuth();
-    const { currentVersionId, currentPlanName } = usePlan();
+    const {
+        currentVersionId,
+        currentPlanName,
+        // ==========================================
+        // Итерация 14.2: режим редактирования для иконки в шапке
+        // ==========================================
+        localEditMode,
+    } = usePlan();
     const navigate = useNavigate();
     const location = useLocation();
     const [mobileOpen, setMobileOpen] = useState(false);
@@ -271,29 +277,61 @@ const MainLayout: React.FC = () => {
                         />
 
                         {isPlanOpen ? (
-                            <Tooltip
-                                title={`Открыт план: ${currentPlanName}. Режим просмотра (readonly).`}
-                                arrow
-                            >
-                                <Chip
-                                    icon={<LockIcon sx={{ color: '#ffffff !important' }} />}
-                                    label={currentPlanName}
-                                    size="small"
-                                    sx={{
-                                        bgcolor: '#3498db',
-                                        color: '#ffffff',
-                                        fontWeight: 600,
-                                        fontSize: '0.8rem',
-                                        maxWidth: 420,
-                                        border: '1px solid #2980b9',
-                                        '& .MuiChip-label': {
-                                            overflow: 'hidden',
-                                            textOverflow: 'ellipsis',
-                                            whiteSpace: 'nowrap',
-                                        },
-                                    }}
-                                />
-                            </Tooltip>
+                            localEditMode ? (
+                                // ==========================================
+                                // Итерация 14.2: план открыт, но редактируется
+                                // ==========================================
+                                <Tooltip
+                                    title={`Открыт план: ${currentPlanName}. Режим редактирования.`}
+                                    arrow
+                                >
+                                    <Chip
+                                        icon={<EditIcon sx={{ color: '#ffffff !important' }} />}
+                                        label={currentPlanName}
+                                        size="small"
+                                        sx={{
+                                            bgcolor: '#27ae60',
+                                            color: '#ffffff',
+                                            fontWeight: 600,
+                                            fontSize: '0.8rem',
+                                            maxWidth: 420,
+                                            border: '1px solid #1e8449',
+                                            '& .MuiChip-label': {
+                                                overflow: 'hidden',
+                                                textOverflow: 'ellipsis',
+                                                whiteSpace: 'nowrap',
+                                            },
+                                        }}
+                                    />
+                                </Tooltip>
+                            ) : (
+                                // ==========================================
+                                // Итерация 14.2: план открыт, readonly
+                                // ==========================================
+                                <Tooltip
+                                    title={`Открыт план: ${currentPlanName}. Режим просмотра (readonly).`}
+                                    arrow
+                                >
+                                    <Chip
+                                        icon={<LockIcon sx={{ color: '#ffffff !important' }} />}
+                                        label={currentPlanName}
+                                        size="small"
+                                        sx={{
+                                            bgcolor: '#3498db',
+                                            color: '#ffffff',
+                                            fontWeight: 600,
+                                            fontSize: '0.8rem',
+                                            maxWidth: 420,
+                                            border: '1px solid #2980b9',
+                                            '& .MuiChip-label': {
+                                                overflow: 'hidden',
+                                                textOverflow: 'ellipsis',
+                                                whiteSpace: 'nowrap',
+                                            },
+                                        }}
+                                    />
+                                </Tooltip>
+                            )
                         ) : (
                             <Tooltip
                                 title="План не выбран. Справочники доступны для редактирования."

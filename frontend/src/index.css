@@ -7,6 +7,24 @@
    инжектит CSS сам через theme={agGridTheme}.
    Оставлены только функциональные правила (курсоры,
    flex-центрирование для actions-ячеек).
+
+   Итерация 14.1: добавлены стили для:
+   - SVG-слоя скобок партий (.gantt-batch-brackets-svg);
+   - связей между партиями (.gantt-dependency-line.inter-batch);
+   - заголовков групп партий (в режиме 'batch').
+
+   Итерация 14.1 (fix): скобки партий рисуются БЕЗ заливки —
+   только пунктирный контур + ярлык-плашка.
+
+   Итерация 14.1 (fix #2): переход на Вариант D.
+   - По умолчанию: только ярлыки над первыми задачами.
+   - Контур — только для выбранной партии.
+   - Остальные задачи затемняются (opacity 0.4).
+   - SVG монтируется в .vis-panel.vis-center.
+
+   Итерация 14.1 (fix #3): при выборе партии ярлыки остальных
+   партий тоже затемняются (opacity 0.25 + saturate 0.4).
+   Исключение — заблокированные партии (ярлыки всегда яркие).
    ========================================== */
 
 /* ==========================================
@@ -56,34 +74,23 @@ body {
 
 /* ==========================================
    AG GRID — функциональные правила
-
-   Итерация 14.0: цвета, границы и header управляются
-   через agGridTheme (Theming API). Здесь оставлены только
-   правила, которые AG Grid не может задать через параметры:
-   - flex-центрирование содержимого ячеек;
-   - курсоры для actions-ячеек.
    ========================================== */
 
-/* 1. Ячейки с классом-маркером `ag-cell-actions` — центрируем
-      и по горизонтали, и по вертикали. Используется в таблицах
-      с IconButton (ProductsPage, RecipesPage и т.п.). */
+/* 1. Ячейки с классом-маркером `ag-cell-actions` — центрируем. */
 .ag-cell.ag-cell-actions {
   display: flex !important;
   align-items: center !important;
   justify-content: center !important;
 }
 
-/* 2. Внутренние элементы (Button, IconButton) — по центру
-      по вертикали, без внешних отступов. */
+/* 2. Внутренние элементы (Button, IconButton) — по центру. */
 .ag-cell .MuiButton-root,
 .ag-cell .MuiIconButton-root {
   align-self: center !important;
   margin: 0 !important;
 }
 
-/* 3. Ячейки с MUI Box (flex-контейнер) — растягиваем
-      на всю высоту и ширину, чтобы внутренний flex
-      работал предсказуемо. */
+/* 3. Ячейки с MUI Box (flex-контейнер) — растягиваем на всю высоту. */
 .ag-cell .MuiBox-root {
   display: flex;
   align-items: center;
@@ -91,14 +98,12 @@ body {
   width: 100%;
 }
 
-/* 4. Ячейка с классом-маркером — растягиваем внутренний Box
-      на всю ширину и центрируем содержимое. */
+/* 4. Ячейка с классом-маркером — центрируем содержимое. */
 .ag-cell.ag-cell-actions .MuiBox-root {
   justify-content: center;
 }
 
-/* 5. Tooltip AG Grid — оставляем тёмный фон,
-      т.к. он используется для читаемости длинных описаний. */
+/* 5. Tooltip AG Grid — тёмный фон. */
 .ag-tooltip {
   background-color: #2c3e50 !important;
   color: #ffffff !important;
@@ -208,9 +213,6 @@ body {
 
 /* ==========================================
    ГАНТ (vis-timeline) — общие стили
-   ==========================================
-   ВАЖНО: vis-timeline НЕ трогается миграцией AG Grid.
-   Здесь свои CSS-классы .vis-*. Оставляем как есть.
    ========================================== */
 
 /* 1. Задачи — базовый hover */
@@ -271,9 +273,7 @@ body {
   cursor: grabbing;
 }
 
-/* 8. Курсор grab — только для тела задачи.
-      vis-timeline сам ставит ew-resize на краях
-      через .vis-drag-left/right. */
+/* 8. Курсор grab — только для тела задачи. */
 .gantt-container .vis-item.vis-range:not(.item-downtime):not(.item-setup) .vis-drag-center {
   cursor: grab;
 }
@@ -479,6 +479,20 @@ body {
 }
 
 /* ==========================================
+   ИТЕРАЦИЯ 14.1: СВЯЗИ МЕЖДУ ПАРТИЯМИ
+   ========================================== */
+
+.gantt-dependency-line.inter-batch {
+  stroke-width: 2;
+  stroke-opacity: 0.85;
+  stroke-dasharray: 6, 3;
+}
+
+.gantt-dependency-arrowhead.inter-batch {
+  fill-opacity: 0.85;
+}
+
+/* ==========================================
    Итерация 13.10: фоновые полосы выходных
    ========================================== */
 
@@ -579,6 +593,127 @@ body {
 .gantt-readonly .gantt-container .vis-item.item-pinned:hover,
 .gantt-container.gantt-readonly .vis-item.item-pinned:hover {
   box-shadow: 0 0 4px rgba(25, 118, 210, 0.35);
+}
+
+/* ==========================================
+   ИТЕРАЦИЯ 14.1 (fix #2, #3): СКОВКИ ПАРТИЙ — ВАРИАНТ D
+   ==========================================
+   Дизайн:
+     - По умолчанию: только ярлыки-плашки над первыми задачами.
+     - Контур — только для ВЫБРАННОЙ партии.
+     - Заблокированные партии — тонкий красный контур всегда.
+     - При выборе партии ярлыки остальных партий затемняются
+       (кроме ярлыков заблокированных партий).
+
+   SVG монтируется в .vis-panel.vis-center.
+   Это исключает наложение:
+     - на ось времени (сверху) — она в .vis-panel.vis-top;
+     - на левую колонку с названиями — она в .vis-panel.vis-left.
+   ========================================== */
+
+/* Контейнер .vis-panel.vis-center — position: relative,
+   чтобы SVG позиционировался относительно него. */
+.gantt-container .vis-panel.vis-center {
+  position: relative;
+}
+
+/* SVG-слой со скобками — внутри .vis-center */
+.gantt-batch-brackets-svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  overflow: visible;
+  /* z-index задаётся в JS: BATCH_BRACKETS_Z_INDEX = 2 */
+}
+
+/* Ярлык — группа (rect + text). Кликабельная. */
+.gantt-batch-label-group {
+  pointer-events: none;
+  transition: opacity 0.2s ease, filter 0.2s ease;
+}
+
+.gantt-batch-label-group[style*="pointer-events: auto"],
+.gantt-batch-label-group.clickable {
+  pointer-events: auto;
+}
+
+/* ==========================================
+   ИТЕРАЦИЯ 14.1 (fix #3): затемнение ярлыков
+   невыбранных партий.
+   ==========================================
+   Применяется к ярлыкам партий, когда выбрана другая партия.
+   Исключение — ярлыки заблокированных партий (класс не добавляется).
+
+   Визуально: ярлык бледнеет и теряет насыщенность.
+   ========================================== */
+
+.gantt-container .gantt-batch-label-group.gantt-batch-label-dimmed {
+  opacity: 0.25;
+  filter: saturate(0.4);
+}
+
+/* Текст ярлыка — не выделяется */
+.gantt-batch-brackets-svg text {
+  user-select: none;
+  pointer-events: none;
+}
+
+/* Контур — плавный переход при подсветке */
+.gantt-batch-brackets-svg rect {
+  transition: stroke-width 0.15s, stroke-opacity 0.15s, fill-opacity 0.15s;
+}
+
+/* Ярлык при подсветке — drop-shadow */
+.gantt-batch-label-group.highlighted rect {
+  filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.8));
+}
+
+/* ==========================================
+   ИТЕРАЦИЯ 14.1 (fix #2): ЗАТЕМНЕНИЕ ЗАДАЧ
+   ==========================================
+   При выборе партии (клик на ярлык) — все задачи,
+   НЕ принадлежащие этой партии, получают opacity 0.4.
+   ========================================== */
+
+.gantt-container .vis-item.task-dimmed {
+  opacity: 0.4;
+  transition: opacity 0.2s ease;
+  filter: grayscale(0.3);
+}
+
+.gantt-container .vis-item.task-batch-highlighted {
+  z-index: 15 !important;
+  box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.6),
+  0 4px 12px rgba(52, 152, 219, 0.35);
+  transition: box-shadow 0.2s ease;
+}
+
+/* ==========================================
+   ИТЕРАЦИЯ 14.1: ЗАГОЛОВКИ ГРУПП ПАРТИЙ
+   (в режиме «По партиям»)
+   ========================================== */
+
+.gantt-container .vis-label .gantt-batch-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.gantt-container .vis-label .gantt-batch-label-color {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.gantt-container .vis-label .gantt-batch-label-text {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ==========================================

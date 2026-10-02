@@ -2,7 +2,7 @@
 
 **Система автоматического планирования производства на базе OR-Tools CP-SAT**
 
-Версия: **4.2.0** (Итерации 0–13.21 завершены)
+Версия: **4.3.0** (Итерации 0–14.2 завершены)
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -60,6 +60,7 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 - **Multi-objective оптимизации** (5 компонентов целевой функции с весами)
 - **What-if сценариев** (сценарное планирование без изменения БД)
 - **Архивации версий планов** (Итерация 13.21) — скрытие старых версий и иерархия
+- **Редактирования плана прямо на Ганте** (Итерация 14.2) — переключатель `🔒/✏️` в тулбаре
 
 ## 🎯 Ключевые возможности
 
@@ -487,7 +488,7 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 - ✅ **Архитектура 2 транзакций:**
   - Транзакция №1 (rollback): применяем изменения + запускаем scheduler → откат
   - Транзакция №2 (commit): сохраняем результат через `ScheduleSaver` → commit
-- ✅ **7 эндпоинтов API `/api/v1/whatif`:** (создать, список, один, обновить, удалить, запустить, сравнить)
+- ✅ **7 эндпоинтов API `/api/v1/whatif`** (создать, список, один, обновить, удалить, запустить, сравнить)
 - ✅ **Async запуск:**
   - `POST /run` возвращает `202 Accepted` сразу
   - Расчёт в `BackgroundTasks` (отдельная сессия БД)
@@ -688,6 +689,104 @@ Solver работает 30–120 секунд. Пользователь мог �
 - ✅ **Разархивация возможна** через UI-кнопку или API.
 - ✅ **Обратная совместимость.**
 
+### Итерация 14.1 — Режимы отображения Ганта
+
+**Проблема:**
+Диаграмма Ганта отображала партии «плоско» — операции одной партии разбросаны по разным строкам (по оборудованию). Пользователь не видел партию как целое.
+
+**Решение:**
+
+- ✅ **Переключатель режима группировки** в тулбаре Ганта:
+  - `'equipment'` — по оборудованию (по умолчанию).
+  - `'batch'` — по партиям.
+- ✅ **Фантомные скобки партий** — SVG-прямоугольники, охватывающие все операции одной партии. Рисуются поверх диаграммы.
+- ✅ **Подсветка партии по клику** — при клике на скобку остальные задачи затемняются.
+- ✅ **Детерминированные цвета партий** — хеш от `batch_id` → индекс в палитре.
+- ✅ **Цвета по оборудованию** в режиме `'batch'` — каждая операция окрашена по своему оборудованию.
+- ✅ **Чип с количеством партий** в тулбаре.
+- ✅ Файлы:
+  - `frontend/src/utils/ganttBatchColors.ts` — хеш → цвет, контрастный текст.
+  - `frontend/src/utils/ganttBrackets.ts` — `buildBatchBrackets`, поиск скобки.
+  - `frontend/src/components/gantt/constants.ts` — палитра, размеры, константы.
+  - `useGanttTimeline.ts` — `drawBatchBrackets` в SVG.
+
+### Итерация 14.2 — Редактирование плана прямо на Ганте
+
+**Проблема:**
+Если план был **открыт** (через кнопку 👁️ на странице «Планирование»), диаграмма Ганта переходила в режим **readonly** (`🔒 Просмотр`). Задачи **не перетаскивались**, длительность **не менялась**. Чтобы что-то поправить — приходилось закрывать план, терять контекст и пересчитывать заново.
+
+Дополнительная проблема: в шапке `MainLayout` всегда горел `🔒`, даже когда пользователь **находился в режиме редактирования** — это путало.
+
+**Решение:**
+
+**1. Глобальный режим редактирования (Итерация 14.2):**
+- ✅ Новый стейт `localEditMode` в `PlanContext`:
+  - `false` — readonly (план открыт, но не редактируется).
+  - `true` — редактирование разрешено.
+- ✅ Синхронизация с `currentVersionId`:
+  - план открыт → `localEditMode = false` (безопасный режим);
+  - план закрыт → `localEditMode = true`.
+- ✅ `isReadOnly = !localEditMode` в `GanttPage` — единый источник правды.
+
+**2. Переключатель режима в тулбаре Ганта:**
+- ✅ Компактный `ToggleButtonGroup` `🔒 / ✏️` (только иконки, текст в tooltip).
+- ✅ Клик по `✏️` — переключение в редактирование.
+- ✅ Клик по `🔒` — возврат в readonly.
+- ✅ Активная кнопка — синяя (`#3498db`).
+
+**3. Синхронизация иконки в шапке приложения:**
+- ✅ `MainLayout` берёт `localEditMode` из `usePlan()`.
+- ✅ Условный рендер чипа:
+  - `🔒 План от ...` (синий) — readonly.
+  - `✏️ План от ...` (зелёный) — редактирование.
+  - `✏️ Режим редактирования` (прозрачный) — план не открыт.
+
+**4. Кнопка «Пересчитать» — доступна всегда:**
+- ✅ В `<GanttToolbar>` рендерится, если передан `onRecalculate`.
+- ✅ `GanttPage` передаёт `onRecalculate` **всегда**, если есть `currentVersionId` (не только в readonly).
+- ✅ Активна только при `planDirty === true`.
+- ✅ Tooltip объясняет, что нужно изменить справочники/задачи.
+
+**5. Удалён дублирующий Chip с названием плана:**
+- ✅ Название плана видно в шапке `MainLayout` — Chip в тулбаре Ганта был избыточен.
+- ✅ Убраны неиспользуемые пропсы `isReadOnly`, `currentPlanName` из `GanttToolbarProps`.
+
+**6. Фикс рендера скобок партий:**
+- ✅ В `drawBatchBrackets` добавлена защита от отрицательной ширины:
+  - `const w = Math.max(0, rawW)`.
+  - `const h = Math.max(0, rawH)`.
+  - Пропуск невалидных `rect`, если `w <= 0 || h <= 0`.
+- ✅ Устранена ошибка `<rect> attribute width: A negative value is not valid` при zoom/pan.
+
+**7. `useGanttTimeline` учитывает `localEditMode`:**
+- ✅ `editable.updateTime: localEditMode` — включает/выключает drag.
+- ✅ `attachNativeDragListeners` использует `if (!localEditMode) return`.
+- ✅ `localEditMode` добавлен в зависимости `useCallback`.
+
+**8. `GanttPage` — ре-рендер Timeline при смене режима:**
+- ✅ `localEditMode` добавлен в `key` внутри `useEffect`, который вызывает `renderTimeline`.
+- ✅ `localEditMode` добавлен в зависимости `useEffect`.
+- ✅ Отдельный `useEffect` для принудительного ре-рендера при смене `localEditMode` / `groupByMode` / `showBatchBrackets` / `highlightedBatchId`.
+
+**Затронутые файлы:**
+- `frontend/src/context/PlainContext.tsx` — глобальный `localEditMode`.
+- `frontend/src/components/layout/MainLayout.tsx` — условная иконка.
+- `frontend/src/components/gantt/GanttToolbar.tsx` — компактный переключатель, удалены устаревшие пропсы.
+- `frontend/src/pages/GanttPage.tsx` — берёт `localEditMode` из контекста, `onRecalculate` всегда.
+- `frontend/src/hooks/useGanttTimeline.ts` — `editable.updateTime: localEditMode`, защита от отрицательной ширины.
+
+**Тесты:** 563 passed (0 failed). Итерация не добавила новых тестов — фича покрыта UI-тестами и ручной проверкой.
+
+**Ключевые гарантии:**
+- ✅ **Редактирование без закрытия плана** — переключатель в один клик.
+- ✅ **Единый источник правды** — `localEditMode` в `PlanContext`.
+- ✅ **Синхронизация UI** — шапка и тулбар показывают одно состояние.
+- ✅ **Безопасность** — при открытии плана по умолчанию readonly.
+- ✅ **Кнопка «Пересчитать»** доступна в обоих режимах.
+- ✅ **Фикс рендера** — скобки партий больше не ломают SVG.
+
+---
+
 ## 🛠️ Стек технологий
 
 ### Backend
@@ -760,10 +859,10 @@ household-aps/
 │ │ │ ├── feasibility.py
 │ │ │ ├── shifts.py
 │ │ │ ├── rescheduler.py
-│ │ │ ├── reschedule_cascade.py # ← НОВЫЙ (13.17)
+│ │ │ ├── reschedule_cascade.py
 │ │ │ ├── cz.py
 │ │ │ ├── saver.py
-│ │ │ ├── snapshot.py # ← (13.15)
+│ │ │ ├── snapshot.py
 │ │ │ ├── feature_flags.py
 │ │ │ ├── settings.py
 │ │ │ ├── settings_reader.py
@@ -779,7 +878,7 @@ household-aps/
 │ │ ├── add_history_0_2.sql
 │ │ ├── add_06.sql … add_16.sql
 │ │ ├── add_21.sql       # plan_settings
-│ │ ├── add_23.sql       # ← НОВЫЙ (13.21): is_archived
+│ │ ├── add_23.sql       # is_archived (13.21)
 │ │ ├── fix_versions_hotfix.sql
 │ │ └── fix_shift_names.sql
 │ ├── .env
@@ -795,12 +894,37 @@ household-aps/
 │ ├── src/
 │ │ ├── components/
 │ │ │ ├── common/DraggableDialog.tsx
+│ │ │ ├── common/AppAgGrid.tsx
 │ │ │ ├── layout/MainLayout.tsx
-│ │ │ └── gantt/                    # ← НОВОЕ (13.17)
+│ │ │ └── gantt/
+│ │ │ ├── constants.ts
+│ │ │ ├── types.ts
+│ │ │ ├── DragTooltip.tsx
+│ │ │ ├── GanttFiltersBar.tsx
+│ │ │ ├── GanttFiltersPopover.tsx
+│ │ │ ├── GanttTaskDialog.tsx
+│ │ │ ├── GanttToolbar.tsx
+│ │ │ ├── MoveValidationDialog.tsx
+│ │ │ ├── RecalcProgressDialog.tsx
+│ │ │ ├── RecalcSettingsDialog.tsx
+│ │ │ └── TaskContextMenu.tsx
 │ │ ├── context/
 │ │ │ ├── AuthContext.tsx
 │ │ │ └── PlainContext.tsx
-│ │ ├── hooks/                    # ← НОВОЕ (13.17)
+│ │ ├── hooks/
+│ │ │ ├── useCascadeMove.ts
+│ │ │ ├── useDoubleClick.ts
+│ │ │ ├── useDragTooltip.ts
+│ │ │ ├── useExpandedGroups.ts
+│ │ │ ├── useExpandedRoots.ts
+│ │ │ ├── useGanttActions.ts
+│ │ │ ├── useGanttData.ts
+│ │ │ ├── useGanttDependencies.ts
+│ │ │ ├── useGanttFilters.ts
+│ │ │ ├── useGanttTimeline.ts
+│ │ │ ├── useGanttViewport.ts
+│ │ │ ├── useRecalculate.ts
+│ │ │ └── useTaskResize.ts
 │ │ ├── pages/
 │ │ │ ├── LoginPage.tsx
 │ │ │ ├── EquipmentPage.tsx
@@ -819,8 +943,20 @@ household-aps/
 │ │ │ ├── SettingsPage.tsx
 │ │ │ └── PlanSettingsWizard.tsx
 │ │ ├── services/api.ts
+│ │ ├── theme/
+│ │ │ ├── agGridLocale.ts
+│ │ │ └── agGridTheme.ts
 │ │ ├── types/index.ts
-│ │ ├── utils/                    # ← НОВОЕ (13.17)
+│ │ ├── utils/
+│ │ │ ├── ganttBatchColors.ts
+│ │ │ ├── ganttBrackets.ts
+│ │ │ ├── ganttDowntimes.ts
+│ │ │ ├── ganttGroups.ts
+│ │ │ ├── ganttHelpers.ts
+│ │ │ ├── ganttRenderItems.ts
+│ │ │ ├── ganttSetups.ts
+│ │ │ ├── ganttTimelineOptions.ts
+│ │ │ └── ganttValidators.ts
 │ │ ├── App.tsx
 │ │ ├── main.tsx
 │ │ └── index.css
@@ -1030,6 +1166,7 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT sv.name, (SELECT
 - **Режимы смен:** при смене `shift_mode` все задачи теряют привязку к сменам.
 - **What-if RUNNING:** нельзя удалить сценарий во время расчёта.
 - **Multi-objective:** если все веса = 0 (кроме makespan), работает как single-objective.
+- **Редактирование (14.2):** при открытии плана режим по умолчанию — readonly; для редактирования нужно кликнуть `✏️`.
 
 ## 🐛 Troubleshooting
 
@@ -1041,6 +1178,7 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT sv.name, (SELECT
 - **Advisor «дёргается»** → `useCallback` в `PlainContext.tsx`.
 - **План пуст (⚠)** → снапшоты не заполнены, пересоздать план.
 - **Старая версия не архивируется** → используется в what-if сценарии, снекбар покажет детали.
+- **Задачи не перетаскиваются на Ганте (14.2)** → проверьте, что режим `✏️ Редактирование`, а не `🔒 Просмотр`.
 
 ## 🗺️ Roadmap
 
@@ -1069,8 +1207,10 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT sv.name, (SELECT
 | 13.18 | Улучшения Ганта | 3 дня | 🟡 | ✅ |
 | 13.19 | Флаг planDirty | 2 дня | 🟡 | ✅ |
 | 13.20 | Прогресс-диалог пересчёта | 1 день | 🔥🔥 | ✅ |
-| **13.21** | **Архивация версий планов** | **3 дня** | **🟡** | **✅** |
-| 14 | Встроенная справка пользователя | 1 нед | 🟡 | ⏳ |
+| 13.21 | Архивация версий планов | 3 дня | 🟡 | ✅ |
+| 14.1 | Режимы отображения Ганта | 3 дня | 🟡 | ✅ |
+| **14.2** | **Редактирование плана прямо на Ганте** | **3 дня** | **🔥🔥** | **✅** |
+| 15 | Встроенная справка пользователя | 1 нед | 🟡 | ⏳ |
 
 Полный Roadmap — в [docs/ROADMAP.md](docs/ROADMAP.md).
 
@@ -1080,4 +1220,4 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT sv.name, (SELECT
 
 ---
 
-Итерации 0–13.21 завершены. Следующая — Итерация 14: Встроенная справка пользователя (⏳).
+Итерации 0–14.2 завершены. Следующая — Итерация 15: Встроенная справка пользователя (⏳).

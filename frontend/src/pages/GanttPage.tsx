@@ -18,6 +18,27 @@
 //   если старая версия не была архивирована (replace_blocked=true).
 //   Также сбрасываем planDirty, даже если архивация не удалась —
 //   пользователь уже увидел актуальный результат.
+//
+// Итерация 14.1: РЕЖИМЫ ОТОБРАЖЕНИЯ ДИАГРАММЫ.
+//   - groupByMode: 'equipment' | 'batch' — переключатель в Toolbar.
+//   - showBatchBrackets: показывать ли фантомные скобки партий
+//     (только в режиме 'equipment').
+//   - highlightedBatchId: ID подсвеченной партии (клик на скобку).
+//   - batchCount: количество партий для чипа в Toolbar.
+//   - Всё это сохраняется в localStorage через useGanttViewport.
+//   - Скобки партий рисуются в useGanttTimeline через drawBatchBrackets.
+//
+// Итерация 14.2 (НОВОЕ): ГЛОБАЛЬНЫЙ РЕЖИМ РЕДАКТИРОВАНИЯ.
+//   - localEditMode: boolean — можно ли двигать задачи.
+//   - Позволяет редактировать план прямо на Ганте, не закрывая его.
+//   - ЛОКАЛЬНЫЙ стейт перенесён в PlanContext (глобально), чтобы
+//     MainLayout мог показывать актуальную иконку в шапке.
+//   - isReadOnly теперь вычисляется из !localEditMode.
+//   - onRecalculate передаётся всегда, когда есть currentVersionId
+//     (а не только в readonly), чтобы кнопка «Пересчитать» была
+//     доступна и в режиме редактирования.
+//   - Кнопка «Пересчитать» появляется всегда при onRecalculate,
+//     активна только при planDirty === true.
 
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useNavigate, useSearchParams} from 'react-router-dom';
@@ -28,7 +49,7 @@ import type {Timeline} from 'vis-timeline/standalone';
 import 'vis-timeline/styles/vis-timeline-graph2d.min.css';
 import {API_BASE_URL} from '../config';
 import {usePlan} from '../context/PlainContext';
-import type {RescheduleResponse, TaskData, ValidationErrorState,} from '../types';
+import type {GroupByMode, RescheduleResponse, TaskData, ValidationErrorState,} from '../types';
 import GanttToolbar from '../components/gantt/GanttToolbar';
 import GanttFiltersBar from '../components/gantt/GanttFiltersBar';
 import GanttFiltersPopover from '../components/gantt/GanttFiltersPopover';
@@ -45,7 +66,13 @@ import {useGanttData} from '../hooks/useGanttData';
 import {useGanttDependencies} from '../hooks/useGanttDependencies';
 import {useGanttFilters} from '../hooks/useGanttFilters';
 import {useGanttTimeline} from '../hooks/useGanttTimeline';
-import {useGanttViewport} from '../hooks/useGanttViewport';
+import {
+    readGroupByModeFromStorage,
+    readShowBatchBracketsFromStorage,
+    saveGroupByModeToStorage,
+    saveShowBatchBracketsToStorage,
+    useGanttViewport,
+} from '../hooks/useGanttViewport';
 import {useExpandedGroups} from '../hooks/useExpandedGroups';
 import {useGanttActions} from '../hooks/useGanttActions';
 
@@ -89,6 +116,11 @@ const GanttPage: React.FC = () => {
         clearPlanDirty,
         clearPlan,
         setPlan,
+        // ==========================================
+        // Итерация 14.2: глобальный режим редактирования
+        // ==========================================
+        localEditMode,
+        setLocalEditMode,
     } = usePlan();
 
     const currentVersionId = urlVersionId || contextVersionId;
@@ -100,12 +132,12 @@ const GanttPage: React.FC = () => {
         : contextHasSnapshot;
 
     // ==========================================
-    // Итерация 13.19: readonly включается, если план открыт
-    // (через URL или через контекст).
+    // Итерация 14.2: РЕЖИМ РЕДАКТИРОВАНИЯ
     // ==========================================
-    const isReadOnly =
-        urlVersionId !== null ||
-        contextVersionId !== null;
+    // localEditMode и setLocalEditMode теперь берутся из usePlan() —
+    // чтобы MainLayout мог показывать актуальную иконку в шапке.
+    // Синхронизация с currentVersionId происходит в PlanProvider.
+    const isReadOnly = !localEditMode;
 
     const isEmptyPlan =
         currentVersionId !== null && !currentPlanHasSnapshot;
@@ -170,7 +202,6 @@ const GanttPage: React.FC = () => {
 
     // ==========================================
     // Итерация 13.20: операция пересчёта (для прогресс-диалога)
-    // null — прогресс не показывается.
     // ==========================================
     const [recalcOperation, setRecalcOperation] = useState<RecalcOperation | null>(null);
 
@@ -189,7 +220,69 @@ const GanttPage: React.FC = () => {
         whatifIds: [],
     });
 
+    // ==========================================
+    // ИТЕРАЦИЯ 14.1: РЕЖИМЫ ОТОБРАЖЕНИЯ
+    // ==========================================
+    const [groupByMode, setGroupByMode] = useState<GroupByMode>(() =>
+        readGroupByModeFromStorage(),
+    );
+
+    const [showBatchBrackets, setShowBatchBrackets] = useState<boolean>(() =>
+        readShowBatchBracketsFromStorage(),
+    );
+
+    const [highlightedBatchId, setHighlightedBatchId] = useState<string | null>(null);
+
+    // Сохраняем groupByMode в localStorage при каждом изменении
+    useEffect(() => {
+        saveGroupByModeToStorage(groupByMode);
+    }, [groupByMode]);
+
+    // Сохраняем showBatchBrackets в localStorage
+    useEffect(() => {
+        saveShowBatchBracketsToStorage(showBatchBrackets);
+    }, [showBatchBrackets]);
+
     const expandedGroups = useExpandedGroups(currentVersionId);
+
+    // ==========================================
+    // ИТЕРАЦИЯ 14.1: количество партий на диаграмме
+    // ==========================================
+    const batchCount = useMemo(() => {
+        const set = new Set<string>();
+        for (const t of tasks) {
+            if (t.item_type && t.item_type !== 'task') continue;
+            if (!t.batch_id) continue;
+            if (NON_BATCH_VALUES.has(t.batch_id)) continue;
+            set.add(t.batch_id);
+        }
+        return set.size;
+    }, [tasks]);
+
+    // ==========================================
+    // ИТЕРАЦИЯ 14.1: обработчики режимов
+    // ==========================================
+    const handleGroupByModeChange = useCallback((mode: GroupByMode) => {
+        setGroupByMode(mode);
+        setHighlightedBatchId(null);
+    }, []);
+
+    const handleToggleBatchBrackets = useCallback(() => {
+        setShowBatchBrackets((v) => !v);
+    }, []);
+
+    const handleResetGroupByMode = useCallback(() => {
+        setGroupByMode('equipment');
+        setHighlightedBatchId(null);
+    }, []);
+
+    const handleEnableBatchBrackets = useCallback(() => {
+        setShowBatchBrackets(true);
+    }, []);
+
+    const handleBracketClick = useCallback((batchId: string) => {
+        setHighlightedBatchId((prev) => (prev === batchId ? null : batchId));
+    }, []);
 
     // ==========================================
     // Связи, фильтры, viewport
@@ -201,6 +294,7 @@ const GanttPage: React.FC = () => {
         tasks,
         showDependencies,
         showAllDependencies,
+        groupByMode,
     });
 
     const filters = useGanttFilters(tasks, {
@@ -233,9 +327,7 @@ const GanttPage: React.FC = () => {
             setEditFormData({start: task.start, end: task.end});
             setEditDialogOpen(true);
         },
-        // Итерация 13.21: onRecalcSuccess получает полный Response
         onRecalcSuccess: (newVersionId, response: RescheduleResponse) => {
-            // Итерация 13.19: сбрасываем флаг «грязный»
             clearPlanDirty();
             setPlan(
                 newVersionId,
@@ -243,7 +335,6 @@ const GanttPage: React.FC = () => {
                 true,
             );
 
-            // Итерация 13.21: показываем снекбар о результате архивации
             if (response.replace_archived) {
                 setArchiveSnackbar({
                     open: true,
@@ -261,7 +352,6 @@ const GanttPage: React.FC = () => {
                 });
             }
 
-            // Итерация 13.20: закрываем прогресс-диалог
             setRecalcOperation(null);
 
             if (urlVersionId) {
@@ -286,8 +376,6 @@ const GanttPage: React.FC = () => {
         try {
             await actions.recalculate();
         } finally {
-            // Если onRecalcSuccess не сработал (ошибка или отмена) —
-            // всё равно закрыть прогресс-диалог
             setRecalcOperation(null);
         }
     }, [actions]);
@@ -559,6 +647,7 @@ const GanttPage: React.FC = () => {
         minimapRef,
         tasks,
         isReadOnly,
+        localEditMode,
         showMinimap,
         showDependencies,
         showAllDependencies,
@@ -580,6 +669,10 @@ const GanttPage: React.FC = () => {
         onError: setError,
         setFilteredCount,
         onItemChange: actions.handleItemChange,
+        groupByMode,
+        showBatchBrackets,
+        highlightedBatchId,
+        onBracketClick: handleBracketClick,
     });
 
     // ==========================================
@@ -616,6 +709,14 @@ const GanttPage: React.FC = () => {
             showSetups ? '1' : '0',
             showDowntimes ? '1' : '0',
             showAllDependencies ? '1' : '0',
+            groupByMode,
+            showBatchBrackets ? '1' : '0',
+            highlightedBatchId || '',
+            // ==========================================
+            // ИТЕРАЦИЯ 14.2: при смене режима редактирования
+            // нужно пересоздать Timeline с новыми опциями.
+            // ==========================================
+            localEditMode ? 'edit' : 'view',
         ].join('|');
 
         if (renderedRef.current === key) {
@@ -640,6 +741,35 @@ const GanttPage: React.FC = () => {
         showSetups,
         showDowntimes,
         showAllDependencies,
+        groupByMode,
+        showBatchBrackets,
+        highlightedBatchId,
+        // ==========================================
+        // ИТЕРАЦИЯ 14.2: добавлен localEditMode
+        // ==========================================
+        localEditMode,
+    ]);
+
+    // ==========================================
+    // ИТЕРАЦИЯ 14.1 + 14.2: при смене groupByMode / showBatchBrackets /
+    // highlightedBatchId / localEditMode — принудительный перерендер Timeline.
+    // ==========================================
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            if (renderTimelineRef.current && tasks.length > 0 && equipmentList.length > 0) {
+                renderedRef.current = '';
+                renderTimelineRef.current(tasks, equipmentList);
+            }
+        }, 50);
+
+        return () => clearTimeout(timer);
+    }, [
+        groupByMode,
+        showBatchBrackets,
+        highlightedBatchId,
+        localEditMode,
+        tasks,
+        equipmentList,
     ]);
 
     if (loading) {
@@ -726,8 +856,7 @@ const GanttPage: React.FC = () => {
                 makespanHours={stats.makespanHours}
                 equipmentCount={stats.equipmentCount}
                 hasActiveFilters={filters.hasActiveFilters}
-                isReadOnly={isReadOnly}
-                currentPlanName={currentPlanName}
+                batchCount={batchCount}
                 searchQuery={searchQuery}
                 onSearchChange={setSearchQuery}
                 onToggleFilters={handleToggleFilters}
@@ -746,13 +875,26 @@ const GanttPage: React.FC = () => {
                 onOpenAudit={handleOpenAudit}
                 onRefresh={() => void loadGanttData()}
                 onExport={handleExport}
+                // ==========================================
+                // ИТЕРАЦИЯ 14.2: кнопка «Пересчитать» доступна
+                // всегда, когда есть currentVersionId.
+                // ==========================================
                 onRecalculate={
-                    isReadOnly
+                    currentVersionId
                         ? () => void handleRecalculate()
                         : undefined
                 }
                 recalculating={actions.recalculating}
                 planDirty={planDirty}
+                groupByMode={groupByMode}
+                onGroupByModeChange={handleGroupByModeChange}
+                showBatchBrackets={showBatchBrackets}
+                onToggleBatchBrackets={handleToggleBatchBrackets}
+                // ==========================================
+                // ИТЕРАЦИЯ 14.2: переключатель режима
+                // ==========================================
+                localEditMode={localEditMode}
+                onLocalEditModeChange={setLocalEditMode}
             />
 
             {error && (
@@ -778,6 +920,10 @@ const GanttPage: React.FC = () => {
                 onClearOnlyCzIncomplete={() => setShowOnlyCzIncomplete(false)}
                 onClearOnlyPinned={() => setShowOnlyPinned(false)}
                 onResetAll={handleResetFilters}
+                groupByMode={groupByMode}
+                showBatchBrackets={showBatchBrackets}
+                onResetGroupByMode={handleResetGroupByMode}
+                onEnableBatchBrackets={handleEnableBatchBrackets}
             />
 
             <Box
@@ -892,6 +1038,9 @@ const GanttPage: React.FC = () => {
                 onShowOnlyCzIncompleteChange={setShowOnlyCzIncomplete}
                 onShowOnlyPinnedChange={setShowOnlyPinned}
                 onResetAll={handleResetFilters}
+                groupByMode={groupByMode}
+                showBatchBrackets={showBatchBrackets}
+                onToggleBatchBrackets={handleToggleBatchBrackets}
             />
 
             <GanttTaskDialog
@@ -947,13 +1096,6 @@ const GanttPage: React.FC = () => {
                 recalculating={actions.recalculating}
             />
 
-            {/* ==========================================
-                Итерация 13.20: прогресс-диалог пересчёта.
-                Показывается, пока recalcOperation !== null.
-                Автоматически закрывается:
-                  - при успехе (onRecalcSuccess → setRecalcOperation(null));
-                  - при ошибке (finally в handleRecalculate).
-            ========================================== */}
             <RecalcProgressDialog
                 open={recalcOperation !== null}
                 operationLabel={
@@ -969,12 +1111,6 @@ const GanttPage: React.FC = () => {
                 timeoutSeconds={600}
             />
 
-            {/* ==========================================
-                Итерация 13.21: снекбар о результате архивации.
-                - info: старая версия успешно архивирована;
-                - warning: старая версия не архивирована, потому что
-                  используется в what-if сценарии.
-            ========================================== */}
             <Snackbar
                 open={archiveSnackbar.open}
                 autoHideDuration={8000}

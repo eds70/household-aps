@@ -31,7 +31,7 @@
 1. Форкните репозиторий.
 2. Создайте ветку от `main`:
    ```
-   git checkout -b feature/iteration-14-help
+   git checkout -b feature/iteration-15-help
    ```
 3. Убедитесь, что локально всё работает:
    ```
@@ -52,7 +52,7 @@
 ```
 feat(scheduler): add plan_settings support to DataLoader
 fix(shift): correct timezone comparison for by-date endpoint
-docs(readme): update version to 4.2.0
+docs(readme): update version to 4.3.0
 test(plan_settings): add integration tests for trigger
 ```
 
@@ -60,7 +60,7 @@ test(plan_settings): add integration tests for trigger
 
 1. Запушьте ветку:
    ```
-   git push origin feature/iteration-14-help
+   git push origin feature/iteration-15-help
    ```
 2. Откройте PR против `main`.
 3. Заполните шаблон PR:
@@ -101,25 +101,25 @@ from typing import Optional
 from uuid import UUID
 
 async def read_setting(
-    db: AsyncSession,
-    org_id: UUID,
-    key: str,
-    default: Optional[str] = None,
-    version_id: Optional[UUID] = None,
+        db: AsyncSession,
+        org_id: UUID,
+        key: str,
+        default: Optional[str] = None,
+        version_id: Optional[UUID] = None,
 ) -> Optional[str]:
-    """Читает настройку из plan_settings или app_settings.
+   """Читает настройку из plan_settings или app_settings.
 
-    Args:
-        db: Async-сессия SQLAlchemy.
-        org_id: ID организации.
-        key: Ключ настройки.
-        default: Значение по умолчанию.
-        version_id: ID плана (если None — читает из app_settings).
+   Args:
+       db: Async-сессия SQLAlchemy.
+       org_id: ID организации.
+       key: Ключ настройки.
+       default: Значение по умолчанию.
+       version_id: ID плана (если None — читает из app_settings).
 
-    Returns:
-        Значение настройки или default.
-    """
-    ...
+   Returns:
+       Значение настройки или default.
+   """
+   ...
 ```
 
 ### TypeScript / React (frontend)
@@ -141,18 +141,18 @@ async def read_setting(
 **Пример:**
 ```tsx
 interface PlanSettingsWizardProps {
-  versionId: string;
-  onSave: (settings: Record<string, unknown>) => void;
-  onClose: () => void;
+   versionId: string;
+   onSave: (settings: Record<string, unknown>) => void;
+   onClose: () => void;
 }
 
 export const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
-  versionId,
-  onSave,
-  onClose,
-}) => {
-  const [settings, setSettings] = useState<Record<string, unknown>>({});
-  // ...
+                                                                         versionId,
+                                                                         onSave,
+                                                                         onClose,
+                                                                      }) => {
+   const [settings, setSettings] = useState<Record<string, unknown>>({});
+   // ...
 };
 ```
 
@@ -169,27 +169,27 @@ export const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
 BEGIN;
 
 CREATE TABLE IF NOT EXISTS plan_settings (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    organization_id UUID NOT NULL,
-    schedule_version_id UUID NOT NULL REFERENCES schedule_version(id) ON DELETE CASCADE,
-    setting_key TEXT NOT NULL,
-    setting_value JSONB,
-    value_type TEXT NOT NULL DEFAULT 'str',
-    category TEXT NOT NULL DEFAULT 'general',
-    label TEXT,
-    description TEXT,
-    min_value NUMERIC,
-    max_value NUMERIC,
-    options JSONB,
-    display_order INT NOT NULL DEFAULT 0,
-    is_system BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (schedule_version_id, setting_key)
-);
+                                            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+   organization_id UUID NOT NULL,
+   schedule_version_id UUID NOT NULL REFERENCES schedule_version(id) ON DELETE CASCADE,
+   setting_key TEXT NOT NULL,
+   setting_value JSONB,
+   value_type TEXT NOT NULL DEFAULT 'str',
+   category TEXT NOT NULL DEFAULT 'general',
+   label TEXT,
+   description TEXT,
+   min_value NUMERIC,
+   max_value NUMERIC,
+   options JSONB,
+   display_order INT NOT NULL DEFAULT 0,
+   is_system BOOLEAN NOT NULL DEFAULT FALSE,
+   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+   UNIQUE (schedule_version_id, setting_key)
+   );
 
 CREATE INDEX IF NOT EXISTS idx_plan_settings_version
-    ON plan_settings (schedule_version_id);
+   ON plan_settings (schedule_version_id);
 
 COMMIT;
 ```
@@ -270,6 +270,17 @@ fix(scheduler): fill snapshots on plan creation (iteration 13.15)
 - UI: ⚠ и предупреждение для пустых планов
 - +43 теста, всего 535 passed
 - Исправлен устаревший test_update_request_requires_settings
+```
+
+```
+feat(gantt): add local edit mode toggle (iteration 14.2)
+
+- Компактный ToggleButtonGroup 🔒/✏️ в тулбаре
+- Глобальный localEditMode в PlanContext
+- Синхронизация иконки в шапке MainLayout
+- Кнопка «Пересчитать» доступна в обоих режимах
+- Удалён Chip с названием плана (дублировал шапку)
+- Фикс: защита от отрицательной ширины в drawBatchBrackets
 ```
 
 ---
@@ -415,7 +426,7 @@ npm run lint
    ```
 3. При релизе — перенесите `[Unreleased]` в новую версию:
    ```
-   ## [4.2.0] — 2026-10-01
+   ## [4.3.0] — 2026-10-02
    ```
 
 ---

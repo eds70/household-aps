@@ -1,6 +1,7 @@
 // frontend/src/components/gantt/GanttFiltersBar.tsx
 /**
- * Панель активных фильтров на Ганте (Итерация 13.17 + 13.18).
+ * Панель активных фильтров на Ганте
+ * (Итерация 13.17 + 13.18 + 14.1).
  *
  * Показывает чипы со всеми активными фильтрами:
  *  - 📌 Партия
@@ -13,11 +14,22 @@
  *
  * Плюс кнопка «Сбросить».
  *
- * Рендерится только если hasActiveFilters === true.
+ * Итерация 14.1:
+ *  - Добавлен чип активного режима группировки
+ *    («По оборудованию» / «По партиям»), если он отличается
+ *    от режима по умолчанию.
+ *  - Добавлен чип «Скобки партий скрыты», если режим 'equipment',
+ *    но showBatchBrackets = false.
+ *  - Эти чипы помогают пользователю быстро понять, что
+ *    диаграмма отображается не в «классическом» виде.
+ *
+ * Рендерится только если hasActiveFilters === true
+ * ИЛИ активен нестандартный режим отображения.
  */
 import React from 'react';
 import {Button, Chip, Paper, Typography} from '@mui/material';
-import {FilterAltOff as FilterAltOffIcon} from '@mui/icons-material';
+import {FilterAltOff as FilterAltOffIcon, ViewStream as ViewStreamIcon,} from '@mui/icons-material';
+import type {GroupByMode} from '../../types';
 
 export interface GanttFiltersBarProps {
     // Активен ли хотя бы один фильтр
@@ -45,6 +57,35 @@ export interface GanttFiltersBarProps {
 
     // Сброс всех фильтров
     onResetAll: () => void;
+
+    // ==========================================
+    // ИТЕРАЦИЯ 14.1: РЕЖИМЫ ОТОБРАЖЕНИЯ
+    // ==========================================
+
+    /**
+     * Текущий режим группировки.
+     * Чип показывается, если режим отличается от 'equipment'.
+     */
+    groupByMode: GroupByMode;
+
+    /**
+     * Показывать ли скобки партий.
+     * Чип «Скобки партий скрыты» показывается, если
+     * groupByMode === 'equipment' и showBatchBrackets = false.
+     */
+    showBatchBrackets: boolean;
+
+    /**
+     * Колбэк сброса режима группировки к 'equipment'.
+     * Вызывается при клике на чип «По партиям».
+     */
+    onResetGroupByMode: () => void;
+
+    /**
+     * Колбэк включения скобок партий.
+     * Вызывается при клике на чип «Скобки партий скрыты».
+     */
+    onEnableBatchBrackets: () => void;
 }
 
 const GanttFiltersBar: React.FC<GanttFiltersBarProps> = ({
@@ -64,8 +105,22 @@ const GanttFiltersBar: React.FC<GanttFiltersBarProps> = ({
                                                              onClearOnlyCzIncomplete,
                                                              onClearOnlyPinned,
                                                              onResetAll,
+                                                             groupByMode,
+                                                             showBatchBrackets,
+                                                             onResetGroupByMode,
+                                                             onEnableBatchBrackets,
                                                          }) => {
-    if (!hasActiveFilters) return null;
+    // ==========================================
+    // ИТЕРАЦИЯ 14.1: есть ли нестандартный режим отображения
+    // ==========================================
+    const isBatchMode = groupByMode === 'batch';
+    const isBracketsHidden =
+        groupByMode === 'equipment' && !showBatchBrackets;
+
+    const hasModeBadges = isBatchMode || isBracketsHidden;
+
+    // Если нет ни фильтров, ни нестандартного режима — не показываем панель
+    if (!hasActiveFilters && !hasModeBadges) return null;
 
     return (
         <Paper
@@ -77,6 +132,7 @@ const GanttFiltersBar: React.FC<GanttFiltersBarProps> = ({
                 p: 0.5,
                 flexShrink: 0,
                 flexWrap: 'wrap',
+                alignItems: 'center',
                 bgcolor: '#fff8e1',
             }}
         >
@@ -84,8 +140,45 @@ const GanttFiltersBar: React.FC<GanttFiltersBarProps> = ({
                 variant="caption"
                 sx={{alignSelf: 'center', mr: 1, fontWeight: 600}}
             >
-                Фильтры:
+                {hasActiveFilters ? 'Фильтры:' : 'Отображение:'}
             </Typography>
+
+            {/* ==========================================
+                ИТЕРАЦИЯ 14.1: чип активного режима группировки
+                (показывается только в режиме 'batch')
+            ========================================== */}
+            {isBatchMode && (
+                <Chip
+                    icon={<ViewStreamIcon fontSize="small" />}
+                    label="Группировка: По партиям"
+                    size="small"
+                    color="secondary"
+                    onDelete={onResetGroupByMode}
+                    deleteIcon={<FilterAltOffIcon />}
+                    title="Вернуть группировку по оборудованию"
+                />
+            )}
+
+            {/* ==========================================
+                ИТЕРАЦИЯ 14.1: чип «Скобки партий скрыты»
+                (только в режиме 'equipment')
+            ========================================== */}
+            {isBracketsHidden && (
+                <Chip
+                    icon={<ViewStreamIcon fontSize="small" />}
+                    label="Скобки партий скрыты"
+                    size="small"
+                    variant="outlined"
+                    color="default"
+                    onClick={onEnableBatchBrackets}
+                    title="Показать цветные рамки вокруг партий"
+                    sx={{cursor: 'pointer'}}
+                />
+            )}
+
+            {/* ==========================================
+                Фильтры (без изменений с 13.17 / 13.18)
+            ========================================== */}
 
             {batchFilter && (
                 <Chip
@@ -149,13 +242,16 @@ const GanttFiltersBar: React.FC<GanttFiltersBarProps> = ({
                 />
             )}
 
-            <Button
-                size="small"
-                onClick={onResetAll}
-                startIcon={<FilterAltOffIcon/>}
-            >
-                Сбросить
-            </Button>
+            {/* Кнопка сброса — только если есть активные фильтры */}
+            {hasActiveFilters && (
+                <Button
+                    size="small"
+                    onClick={onResetAll}
+                    startIcon={<FilterAltOffIcon/>}
+                >
+                    Сбросить
+                </Button>
+            )}
         </Paper>
     );
 };

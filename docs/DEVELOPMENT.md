@@ -287,10 +287,10 @@ def test_migration_wrapped_in_transaction():
 BEGIN;
 
 CREATE TABLE IF NOT EXISTS plan_settings (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                                             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id UUID NOT NULL,
     schedule_version_id UUID NOT NULL
-        REFERENCES schedule_version(id) ON DELETE CASCADE,
+    REFERENCES schedule_version(id) ON DELETE CASCADE,
     setting_key TEXT NOT NULL,
     setting_value JSONB,
     value_type TEXT NOT NULL DEFAULT 'str',
@@ -305,7 +305,7 @@ CREATE TABLE IF NOT EXISTS plan_settings (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (schedule_version_id, setting_key)
-);
+    );
 
 CREATE INDEX IF NOT EXISTS idx_plan_settings_version
     ON plan_settings (schedule_version_id);
@@ -317,21 +317,21 @@ CREATE INDEX IF NOT EXISTS idx_plan_settings_org_category
 CREATE OR REPLACE FUNCTION copy_app_settings_to_plan()
 RETURNS TRIGGER AS $$
 BEGIN
-    INSERT INTO plan_settings (
-        organization_id, schedule_version_id,
-        setting_key, setting_value,
-        value_type, category, label, description,
-        min_value, max_value, options, display_order, is_system
-    )
-    SELECT
-        NEW.organization_id, NEW.id,
-        setting_key, setting_value,
-        value_type, category, label, description,
-        min_value, max_value, options, display_order, is_system
-    FROM app_settings
-    WHERE organization_id = NEW.organization_id
+INSERT INTO plan_settings (
+    organization_id, schedule_version_id,
+    setting_key, setting_value,
+    value_type, category, label, description,
+    min_value, max_value, options, display_order, is_system
+)
+SELECT
+    NEW.organization_id, NEW.id,
+    setting_key, setting_value,
+    value_type, category, label, description,
+    min_value, max_value, options, display_order, is_system
+FROM app_settings
+WHERE organization_id = NEW.organization_id
     ON CONFLICT (schedule_version_id, setting_key) DO NOTHING;
-    RETURN NEW;
+RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -346,11 +346,7 @@ COMMIT;
 
 **Итерация 13.15 не требует миграции** — используются уже существующие снапшот-таблицы.
 
-**Итерация 13.21 использует миграцию `add_23.sql`:**
-- Добавляет колонку `schedule_version.is_archived`.
-- Создаёт partial-индекс `idx_schedule_version_archived`.
-- Добавляет настройку `auto_archive_on_recalc`.
-- Архивирует все неактивные версии (одноразово).
+**Итерация 13.21 использует миграцию `add_23.sql`:** добавлена колонка `is_archived`, partial-индекс, настройка `auto_archive_on_recalc`.
 
 ---
 
@@ -677,6 +673,17 @@ fix(scheduler): fill snapshots on plan creation (iteration 13.15)
 - Исправлен устаревший test_update_request_requires_settings
 ```
 
+```
+feat(gantt): add local edit mode toggle (iteration 14.2)
+
+- Компактный ToggleButtonGroup 🔒/✏️ в тулбаре
+- Глобальный localEditMode в PlanContext
+- Синхронизация иконки в шапке MainLayout
+- Кнопка «Пересчитать» доступна в обоих режимах
+- Удалён Chip с названием плана (дублировал шапку)
+- Фикс: защита от отрицательной ширины в drawBatchBrackets
+```
+
 ---
 
 ## Как обновлять CHANGELOG
@@ -701,7 +708,7 @@ fix(scheduler): fill snapshots on plan creation (iteration 13.15)
 ### 3. При релизе — перенести в новую версию
 
 ```markdown
-## [4.2.0] — 2026-10-01
+## [4.3.0] — 2026-10-02
 
 ### Added
 - ...
@@ -824,19 +831,19 @@ docker exec aps_postgres psql -U aps -d household -c "DROP SCHEMA public CASCADE
 
 ```bash
 # Создать ветку
-git checkout -b feature/iteration-14-help
+git checkout -b feature/iteration-15-help
 
 # Коммит
 git add .
 git commit -m "feat(scheduler): add plan_settings support"
 
 # Пуш
-git push origin feature/iteration-14-help
+git push origin feature/iteration-15-help
 
 # Обновить от main
 git checkout main
 git pull
-git checkout feature/iteration-14-help
+git checkout feature/iteration-15-help
 git rebase main
 ```
 
@@ -910,6 +917,10 @@ console.error('Error:', value);
 **Отладка `planDirty` (Итерация 13.19):**
 
 В React DevTools выберите `PlanProvider` — увидите `planDirty`. Если `true` — кнопка «Пересчитать» активна.
+
+**Отладка `localEditMode` (Итерация 14.2):**
+
+В React DevTools выберите `PlanProvider` — увидите `localEditMode`. Если `false` — readonly-режим, задачи не таскаются.
 
 ### Solver
 

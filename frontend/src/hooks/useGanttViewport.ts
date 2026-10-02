@@ -1,7 +1,8 @@
 // frontend/src/hooks/useGanttViewport.ts
 import type {MutableRefObject, RefObject} from 'react';
 /**
- * Хук для управления viewport диаграммы Ганта (Итерация 13.17).
+ * Хук для управления viewport диаграммы Ганта
+ * (Итерация 13.17 + 14.1).
  *
  * Отвечает за:
  *  - Pan (влево/вправо).
@@ -13,11 +14,27 @@ import type {MutableRefObject, RefObject} from 'react';
  *
  * Итерация 13.17 (9i): readViewportFromStorage (экспорт).
  * Итерация 13.17 (9l): убраны отладочные логи.
+ *
+ * Итерация 14.1:
+ *  - Добавлены функции loadGroupByMode / saveGroupByMode.
+ *  - groupByMode хранится ГЛОБАЛЬНО (не per-version),
+ *    так как пользователь обычно не переключает режим
+ *    при каждой смене плана.
+ *  - Аналогично для showBatchBrackets.
  */
 import {useCallback, useEffect, useRef} from 'react';
 import type {Timeline} from 'vis-timeline/standalone';
 import type {ViewportState} from '../components/gantt/types';
-import {getViewportStorageKey, PAN_FACTOR, ZOOM_IN_FACTOR, ZOOM_OUT_FACTOR,} from '../components/gantt/constants';
+import type {GroupByMode} from '../types';
+import {
+    DEFAULT_GROUP_BY_MODE,
+    DEFAULT_SHOW_BATCH_BRACKETS,
+    getViewportStorageKey,
+    PAN_FACTOR,
+    STORAGE_KEYS,
+    ZOOM_IN_FACTOR,
+    ZOOM_OUT_FACTOR,
+} from '../components/gantt/constants';
 
 export interface UseGanttViewportParams {
     timelineRef: RefObject<Timeline | null>;
@@ -38,6 +55,10 @@ export interface UseGanttViewportResult {
     saveViewportToStorage: (view: ViewportState) => void;
     persistCurrentViewport: () => void;
 }
+
+// ==========================================
+// УТИЛИТЫ: viewport в localStorage (per version)
+// ==========================================
 
 /**
  * Читает сохранённый viewport из localStorage синхронно.
@@ -63,6 +84,78 @@ export const readViewportFromStorage = (
     }
     return null;
 };
+
+// ==========================================
+// ИТЕРАЦИЯ 14.1: groupByMode в localStorage (глобально)
+// ==========================================
+
+/**
+ * Читает сохранённый режим группировки из localStorage.
+ *
+ * Если значение отсутствует или невалидно — возвращает
+ * DEFAULT_GROUP_BY_MODE ('equipment').
+ */
+export const readGroupByModeFromStorage = (): GroupByMode => {
+    try {
+        const raw = localStorage.getItem(STORAGE_KEYS.groupByMode);
+        if (raw === 'equipment' || raw === 'batch') {
+            return raw;
+        }
+    } catch {
+        // ignore
+    }
+    return DEFAULT_GROUP_BY_MODE;
+};
+
+/**
+ * Сохраняет режим группировки в localStorage.
+ */
+export const saveGroupByModeToStorage = (mode: GroupByMode): void => {
+    try {
+        localStorage.setItem(STORAGE_KEYS.groupByMode, mode);
+    } catch {
+        // ignore
+    }
+};
+
+// ==========================================
+// ИТЕРАЦИЯ 14.1: showBatchBrackets в localStorage (глобально)
+// ==========================================
+
+/**
+ * Читает настройку «Показывать скобки партий».
+ *
+ * Если значение отсутствует — возвращает
+ * DEFAULT_SHOW_BATCH_BRACKETS (true).
+ */
+export const readShowBatchBracketsFromStorage = (): boolean => {
+    try {
+        const raw = localStorage.getItem(STORAGE_KEYS.showBatchBrackets);
+        if (raw === '1') return true;
+        if (raw === '0') return false;
+    } catch {
+        // ignore
+    }
+    return DEFAULT_SHOW_BATCH_BRACKETS;
+};
+
+/**
+ * Сохраняет настройку «Показывать скобки партий» в localStorage.
+ */
+export const saveShowBatchBracketsToStorage = (value: boolean): void => {
+    try {
+        localStorage.setItem(
+            STORAGE_KEYS.showBatchBrackets,
+            value ? '1' : '0',
+        );
+    } catch {
+        // ignore
+    }
+};
+
+// ==========================================
+// ОСНОВНОЙ ХУК
+// ==========================================
 
 export const useGanttViewport = (
     params: UseGanttViewportParams,
@@ -163,7 +256,7 @@ export const useGanttViewport = (
             const ids = itemsData ? itemsData.getIds() : [];
 
             if (ids.length === 0) {
-                timelineRef.current.fit({ animation: false });
+                timelineRef.current.fit({animation: false});
             } else {
                 const allItems = itemsData.get(ids) as any[];
                 let minStart = Infinity;
@@ -178,7 +271,7 @@ export const useGanttViewport = (
                 }
 
                 if (!isFinite(minStart) || !isFinite(maxEnd)) {
-                    timelineRef.current.fit({ animation: false });
+                    timelineRef.current.fit({animation: false});
                 } else {
                     let windowStart = minStart;
                     let windowEnd = maxEnd;
@@ -190,12 +283,12 @@ export const useGanttViewport = (
                     timelineRef.current.setWindow(
                         new Date(windowStart),
                         new Date(windowEnd),
-                        { animation: { duration: 300, easingFunction: 'easeInOutQuad' } },
+                        {animation: {duration: 300, easingFunction: 'easeInOutQuad'}},
                     );
                 }
             }
         } catch {
-            timelineRef.current.fit({ animation: false });
+            timelineRef.current.fit({animation: false});
         }
 
         setTimeout(() => {

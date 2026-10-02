@@ -8,7 +8,124 @@
 ## [Unreleased]
 
 ### Added
-- Заготовка для Итерации 14: встроенная справка пользователя.
+- Заготовка для Итерации 15: встроенная справка пользователя.
+
+---
+
+## [4.3.0] — 2026-10-02
+
+Итерация 14.2 — редактирование плана прямо на Ганте.
+
+### Added
+
+#### Итерация 14.2 — Редактирование плана прямо на Ганте
+
+**Проблема:**
+Если план был **открыт** (через кнопку 👁️ на странице «Планирование»),
+диаграмма Ганта переходила в режим **readonly** (`🔒 Просмотр`).
+Задачи **не перетаскивались**, длительность **не менялась**. Чтобы
+что-то поправить — приходилось закрывать план, терять контекст и
+пересчитывать заново.
+
+Дополнительная проблема: в шапке `MainLayout` всегда горел `🔒`, даже
+когда пользователь находился в режиме редактирования — это путало.
+
+**Решение:**
+
+**1. Глобальный режим редактирования:**
+- ✅ Новый стейт `localEditMode` в `PlanContext`:
+    - `false` — readonly (план открыт, но не редактируется).
+    - `true` — редактирование разрешено.
+- ✅ Синхронизация с `currentVersionId`:
+    - план открыт → `localEditMode = false` (безопасный режим);
+    - план закрыт → `localEditMode = true`.
+- ✅ `isReadOnly = !localEditMode` в `GanttPage` — единый источник правды.
+
+**2. Переключатель режима в тулбаре Ганта:**
+- ✅ Компактный `ToggleButtonGroup` `🔒 / ✏️` (только иконки, текст в tooltip).
+- ✅ Клик по `✏️` — переключение в редактирование.
+- ✅ Клик по `🔒` — возврат в readonly.
+- ✅ Активная кнопка — синяя (`#3498db`).
+
+**3. Синхронизация иконки в шапке приложения:**
+- ✅ `MainLayout` берёт `localEditMode` из `usePlan()`.
+- ✅ Условный рендер чипа:
+    - `🔒 План от ...` (синий) — readonly.
+    - `✏️ План от ...` (зелёный) — редактирование.
+    - `✏️ Режим редактирования` (прозрачный) — план не открыт.
+
+**4. Кнопка «Пересчитать» — доступна всегда:**
+- ✅ В `<GanttToolbar>` рендерится, если передан `onRecalculate`.
+- ✅ `GanttPage` передаёт `onRecalculate` **всегда**, если есть
+  `currentVersionId` (не только в readonly).
+- ✅ Активна только при `planDirty === true`.
+- ✅ Tooltip объясняет, что нужно изменить справочники/задачи.
+
+**5. Удалён дублирующий Chip с названием плана:**
+- ✅ Название плана видно в шапке `MainLayout` — Chip в тулбаре
+  Ганта был избыточен.
+- ✅ Убраны неиспользуемые пропсы `isReadOnly`, `currentPlanName`
+  из `GanttToolbarProps`.
+
+**6. Фикс рендера скобок партий:**
+- ✅ В `drawBatchBrackets` добавлена защита от отрицательной ширины:
+    - `const w = Math.max(0, rawW)`.
+    - `const h = Math.max(0, rawH)`.
+    - Пропуск невалидных `rect`, если `w <= 0 || h <= 0`.
+- ✅ Устранена ошибка `<rect> attribute width: A negative value is not valid`
+  при zoom/pan.
+
+**7. `useGanttTimeline` учитывает `localEditMode`:**
+- ✅ `editable.updateTime: localEditMode` — включает/выключает drag.
+- ✅ `attachNativeDragListeners` использует `if (!localEditMode) return`.
+- ✅ `localEditMode` добавлен в зависимости `useCallback`.
+
+**8. `GanttPage` — ре-рендер Timeline при смене режима:**
+- ✅ `localEditMode` добавлен в `key` внутри `useEffect`, который
+  вызывает `renderTimeline`.
+- ✅ `localEditMode` добавлен в зависимости `useEffect`.
+- ✅ Отдельный `useEffect` для принудительного ре-рендера при смене
+  `localEditMode` / `groupByMode` / `showBatchBrackets` / `highlightedBatchId`.
+
+**Затронутые файлы:**
+- `frontend/src/context/PlainContext.tsx` — глобальный `localEditMode`.
+- `frontend/src/components/layout/MainLayout.tsx` — условная иконка.
+- `frontend/src/components/gantt/GanttToolbar.tsx` — компактный
+  переключатель, удалены устаревшие пропсы.
+- `frontend/src/pages/GanttPage.tsx` — берёт `localEditMode` из контекста,
+  `onRecalculate` всегда.
+- `frontend/src/hooks/useGanttTimeline.ts` — `editable.updateTime: localEditMode`,
+  защита от отрицательной ширины.
+
+**Ключевые гарантии:**
+- ✅ **Редактирование без закрытия плана** — переключатель в один клик.
+- ✅ **Единый источник правды** — `localEditMode` в `PlanContext`.
+- ✅ **Синхронизация UI** — шапка и тулбар показывают одно состояние.
+- ✅ **Безопасность** — при открытии плана по умолчанию readonly.
+- ✅ **Кнопка «Пересчитать»** доступна в обоих режимах.
+- ✅ **Фикс рендера** — скобки партий больше не ломают SVG.
+
+### Changed
+
+- Версия проекта: `4.2.0` → `4.3.0`.
+- `PlainContext` — добавлены `localEditMode` и `setLocalEditMode`.
+- `MainLayout` — чип с названием плана меняет иконку и цвет по режиму.
+- `GanttToolbar` — компактный переключатель `🔒 / ✏️`, удалён Chip
+  с названием плана, удалены пропсы `isReadOnly`, `currentPlanName`.
+- `GanttPage` — `localEditMode` из контекста, `onRecalculate` всегда.
+- `useGanttTimeline` — `editable.updateTime: localEditMode`.
+
+### Fixed
+
+- **Проблема:** при открытии плана задачи не перетаскивались без
+  закрытия плана.
+- **Решение:** глобальный `localEditMode` + переключатель в тулбаре.
+- **Проблема:** в шапке приложения всегда горел `🔒`, даже в режиме
+  редактирования.
+- **Решение:** условный рендер иконки по `localEditMode`.
+- **Проблема:** `<rect> attribute width: A negative value is not valid`
+  при zoom/pan.
+- **Решение:** защита от отрицательной ширины в `drawBatchBrackets`.
 
 ---
 
