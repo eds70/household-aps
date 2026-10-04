@@ -12,6 +12,7 @@
 - [Как добавить эндпоинт](#как-добавить-эндпоинт)
 - [Как добавить настройку](#как-добавить-настройку)
 - [Как добавить статью справки](#как-добавить-статью-справки)
+- [Как добавить контекстную подсказку](#как-добавить-контекстную-подсказку)
 - [Как добавить ADR](#как-добавить-adr)
 - [Conventional Commits](#conventional-commits)
 - [Как обновлять CHANGELOG](#как-обновлять-changelog)
@@ -134,7 +135,7 @@ cd backend
 pytest tests/ -v
 ```
 
-**Текущее состояние:** **601 passed**, 13 warnings.
+**Текущее состояние:** **625 passed**, 13 warnings.
 
 ### Конкретный файл
 
@@ -208,7 +209,8 @@ pytest tests/ -v --log-cli-level=DEBUG
 | `test_saver_uses_snapshot.py` | saver → snapshot_all_catalogs (13.15) |
 | `test_schedule_versions_archive.py` | Архивация версий (13.21) |
 | `test_reschedule_cascade.py` | Каскадный сдвиг (13.17) |
-| **`test_help.py`** | **Встроенная справка (15.1)** |
+| `test_help.py` | Встроенная справка (15.1) |
+| **`test_help_hints.py`** | **Контекстные подсказки (15.2)** |
 
 ---
 
@@ -284,66 +286,72 @@ def test_migration_wrapped_in_transaction():
 
 См. [Как обновлять CHANGELOG](#как-обновлять-changelog).
 
-### Пример: миграция `add_21.sql` (plan_settings)
+### Пример: миграция `add_25.sql` (help_hint)
 
 ```sql
--- Итерация 13.14: plan_settings
+-- Итерация 15.2: help_hint
 BEGIN;
 
-CREATE TABLE IF NOT EXISTS plan_settings (
-                                             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    organization_id UUID NOT NULL,
-    schedule_version_id UUID NOT NULL
-    REFERENCES schedule_version(id) ON DELETE CASCADE,
-    setting_key TEXT NOT NULL,
-    setting_value JSONB,
-    value_type TEXT NOT NULL DEFAULT 'str',
-    category TEXT NOT NULL DEFAULT 'general',
-    label TEXT,
-    description TEXT,
-    min_value NUMERIC,
-    max_value NUMERIC,
-    options JSONB,
+CREATE TABLE IF NOT EXISTS help_hint (
+                                         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID REFERENCES organization(id) ON DELETE CASCADE,
+    hint_key VARCHAR(100) NOT NULL,
+    title VARCHAR(200) NOT NULL,
+    body_md TEXT NOT NULL,
+    article_slug VARCHAR(100),
     display_order INT NOT NULL DEFAULT 0,
-    is_system BOOLEAN NOT NULL DEFAULT FALSE,
+    is_published BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (schedule_version_id, setting_key)
+    UNIQUE (hint_key)
     );
 
-CREATE INDEX IF NOT EXISTS idx_plan_settings_version
-    ON plan_settings (schedule_version_id);
+CREATE INDEX IF NOT EXISTS idx_help_hint_published
+    ON help_hint(is_published, display_order);
 
-CREATE INDEX IF NOT EXISTS idx_plan_settings_org_category
-    ON plan_settings (organization_id, category);
-
--- Триггер: копирование app_settings в plan_settings при создании плана
-CREATE OR REPLACE FUNCTION copy_app_settings_to_plan()
+CREATE OR REPLACE FUNCTION help_hint_set_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN
-INSERT INTO plan_settings (
-    organization_id, schedule_version_id,
-    setting_key, setting_value,
-    value_type, category, label, description,
-    min_value, max_value, options, display_order, is_system
-)
-SELECT
-    NEW.organization_id, NEW.id,
-    setting_key, setting_value,
-    value_type, category, label, description,
-    min_value, max_value, options, display_order, is_system
-FROM app_settings
-WHERE organization_id = NEW.organization_id
-    ON CONFLICT (schedule_version_id, setting_key) DO NOTHING;
+    NEW.updated_at = NOW();
 RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS trg_copy_app_settings_to_plan ON schedule_version;
-CREATE TRIGGER trg_copy_app_settings_to_plan
-    AFTER INSERT ON schedule_version
+DROP TRIGGER IF EXISTS trg_help_hint_updated_at ON help_hint;
+CREATE TRIGGER trg_help_hint_updated_at
+    BEFORE UPDATE ON help_hint
     FOR EACH ROW
-    EXECUTE FUNCTION copy_app_settings_to_plan();
+    EXECUTE FUNCTION help_hint_set_updated_at();
+
+COMMIT;
+```
+
+**Пример: миграция `add_24.sql` (help_article)**
+
+```sql
+-- Итерация 15.1: help_article
+BEGIN;
+
+CREATE TABLE IF NOT EXISTS help_article (
+                                            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID REFERENCES organization(id) ON DELETE CASCADE,
+    slug VARCHAR(100) NOT NULL,
+    title VARCHAR(200) NOT NULL,
+    category VARCHAR(50) NOT NULL,
+    content_md TEXT NOT NULL,
+    tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+    display_order INT NOT NULL DEFAULT 0,
+    is_published BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (slug)
+    );
+
+CREATE INDEX IF NOT EXISTS idx_help_article_category
+    ON help_article(category, display_order);
+
+CREATE INDEX IF NOT EXISTS idx_help_article_tags
+    ON help_article USING GIN (tags);
 
 COMMIT;
 ```
@@ -353,6 +361,8 @@ COMMIT;
 **Итерация 13.21 использует миграцию `add_23.sql`:** добавлена колонка `is_archived`, partial-индекс, настройка `auto_archive_on_recalc`.
 
 **Итерация 15.1 использует миграцию `add_24.sql`:** таблица `help_article`, индексы, триггер. Плюс 3 seed-файла `add_24_seed_1/2/3.sql`.
+
+**Итерация 15.2 использует миграцию `add_25.sql`:** таблица `help_hint`, индексы, триггер. Плюс seed-файл `add_25_seed.sql`.
 
 ---
 
@@ -633,6 +643,98 @@ def test_seed_contains_slug():
 
 ---
 
+## Как добавить контекстную подсказку
+
+**Итерация 15.2.**
+
+### 1. Создать seed-файл
+
+`backend/migrations/add_NN_seed_M.sql`, где `NN` — номер миграции, `M` — номер seed-пакета.
+
+### 2. Структура
+
+```sql
+-- ==========================================
+-- SEED M/N: КОНТЕКСТНЫЕ ПОДСКАЗКИ
+-- ==========================================
+-- Добавляет новые подсказки в таблицу help_hint.
+--
+-- Идемпотентна: ON CONFLICT (hint_key) DO NOTHING.
+-- ==========================================
+
+BEGIN;
+
+INSERT INTO help_hint
+    (organization_id, hint_key, title, body_md, article_slug,
+     display_order, is_published)
+VALUES
+    (NULL, 'my_module.my_action', 'Заголовок подсказки',
+     $md$Короткое описание **2-3 предложения**. Не отвлекает пользователя.$md$,
+     'my-article-slug',
+     100, TRUE)
+    ON CONFLICT (hint_key) DO NOTHING;
+
+COMMIT;
+
+SELECT COUNT(*) AS seeded FROM help_hint
+WHERE hint_key = 'my_module.my_action';
+-- Ожидаемо: 1
+```
+
+### 3. Формат `hint_key`
+
+- Строго `<module>.<action>` в lowercase: `planning.recalc`, `gantt.edit_mode`.
+- Точка — разделитель. Не использовать подчёркивания в `module` и `action`.
+
+### 4. `article_slug`
+
+Опционально. Если задан — в Popover появится кнопка «Читать подробнее», ведущая на `/help/{slug}`. Убедитесь, что slug существует в `help_article`.
+
+### 5. Применить
+
+```bash
+docker cp backend/migrations/add_NN_seed_M.sql aps_postgres:/tmp/add_NN_seed_M.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_NN_seed_M.sql
+```
+
+### 6. Использовать в коде (frontend)
+
+```tsx
+import Hint from '../components/help/Hint';
+
+<Box>
+    <Typography>
+        Пересчёт плана
+        <Hint id="planning.recalc" size="small"/>
+    </Typography>
+</Box>
+```
+
+**Правила:**
+- Если подсказки нет в БД — `<Hint/>` рендерит `null` (безопасно).
+- `<Hint/>` читает кэш из `HelpHintsContext` — перезагрузка страницы не нужна.
+- Размер: `small` (14px) или `medium` (18px).
+
+### 7. Добавить тест
+
+`tests/test_help_hints.py`:
+
+```python
+def test_seed_file_exists():
+    path = Path("migrations/add_NN_seed_M.sql")
+    assert path.exists()
+
+def test_seed_contains_hint_key():
+    sql = Path("migrations/add_NN_seed_M.sql").read_text()
+    assert "'my_module.my_action'" in sql
+
+def test_seed_links_to_existing_article():
+    # Проверяем, что article_slug существует в add_24_seed_*
+    ...
+```
+
+---
+
 ## Как добавить ADR
 
 ### 1. Создать файл
@@ -787,6 +889,17 @@ feat(help): add markdown-based help system (iteration 15.1)
 - +38 тестов, всего 601 passed
 ```
 
+```
+feat(help): add contextual hints (iteration 15.2)
+
+- Миграция add_25.sql: таблица help_hint
+- Seed-миграция add_25_seed.sql: 8 подсказок
+- API /api/v1/help/hints
+- Frontend: HelpHintsContext, Hint.tsx
+- Интеграция в 5 страниц (8 подсказок)
+- +24 теста, всего 625 passed
+```
+
 ---
 
 ## Как обновлять CHANGELOG
@@ -811,7 +924,7 @@ feat(help): add markdown-based help system (iteration 15.1)
 ### 3. При релизе — перенести в новую версию
 
 ```markdown
-## [4.4.0] — 2026-10-02
+## [4.5.0] — 2026-10-02
 
 ### Added
 - ...
@@ -840,7 +953,7 @@ feat(help): add markdown-based help system (iteration 15.1)
 ```markdown
 ### Added
 
-#### Итерация 13.15 — Снапшоты при создании плана
+#### Итерация 15.2 — Контекстные подсказки
 
 - ...
 ```
@@ -930,6 +1043,30 @@ docker exec -i aps_postgres psql -U aps -d household < backup.sql
 docker exec aps_postgres psql -U aps -d household -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
 ```
 
+**Проверка справки (Итерация 15.1):**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT COUNT(*) AS help_articles FROM help_article;"
+```
+
+Ожидаемо: 15.
+
+**Проверка подсказок (Итерация 15.2):**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT hint_key, title FROM help_hint WHERE is_published = TRUE ORDER BY display_order;"
+```
+
+Ожидаемо: 8 подсказок.
+
+**Проверка связи hint → article:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT h.hint_key, h.article_slug, CASE WHEN a.slug IS NULL THEN '❌ NOT FOUND' ELSE '✅ OK' END AS status FROM help_hint h LEFT JOIN help_article a ON a.slug = h.article_slug WHERE h.article_slug IS NOT NULL ORDER BY h.hint_key;"
+```
+
+Все должны быть `✅ OK`.
+
 ### Git
 
 ```bash
@@ -1009,6 +1146,23 @@ LOG_LEVEL=DEBUG
 
 Если статей 0 — проверьте seed-миграции.
 
+**Отладка подсказок (Итерация 15.2):**
+
+Проверьте эндпоинт:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/v1/help/hints
+```
+
+В ответе должен быть словарь `hints` с 8 ключами (`planning.recalc`, `planning.advisor`, и т.д.).
+
+В логах backend при загрузке приложения:
+```
+[HelpHints] Не удалось загрузить подсказки: ...
+```
+
+(Эта ошибка — «тихая», не ломает UI.)
+
 ### Frontend
 
 **React DevTools** — расширение браузера.
@@ -1033,6 +1187,24 @@ console.error('Error:', value);
 **Отладка `localEditMode` (Итерация 14.2):**
 
 В React DevTools выберите `PlanProvider` — увидите `localEditMode`. Если `false` — readonly-режим, задачи не таскаются.
+
+**Отладка подсказок (Итерация 15.2):**
+
+1. В React DevTools выберите `HelpHintsProvider` — увидите поле `hints` (словарь) и `loading`.
+2. Если `hints` пуст — проверьте в Network-вкладке запрос `GET /api/v1/help/hints`.
+3. Если статус 200, но `hints` пуст — значит, в БД нет подсказок.
+4. Если статус 404 — не подключён `help_router` в `main.py`.
+5. Если компонент `<Hint/>` возвращает `null` — проверьте, что `hint_key` в JSX совпадает с `hint_key` в БД.
+
+**Проверка подсказки в консоли:**
+
+```tsx
+// В любом компоненте внутри HelpHintsProvider
+import { useHelpHints } from '../context/HelpHintsContext';
+
+const { hints } = useHelpHints();
+console.log('Все подсказки:', Object.keys(hints));
+```
 
 ### Solver
 

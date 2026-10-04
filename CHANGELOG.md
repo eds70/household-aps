@@ -7,8 +7,111 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Итерация 15.2 (fix):** контекстные подсказки не отображались в нескольких местах UI.
+  - `frontend/src/pages/SchedulePage.tsx` — добавлены 3 подсказки:
+    `planning.recalc` (рядом с кнопкой «Построить план»),
+    `planning.advisor` (рядом с заголовком «Подсказки Advisor»),
+    `planning.plan_dirty` (рядом с заголовком «История планов»).
+  - `frontend/src/components/gantt/GanttToolbar.tsx` — добавлена подсказка
+    `planning.recalc` рядом с кнопкой «Пересчитать» (🔄).
+  - Проверено: все 8 подсказок (`planning.recalc`, `planning.advisor`,
+    `planning.plan_dirty`, `gantt.edit_mode`, `gantt.brackets`,
+    `shift.lab_block`, `whatif.json`, `settings.system`) корректно
+    рендерятся в UI.
+
 ### Added
-- Заготовка для Итерации 15.2: контекстные подсказки.
+- Заготовка для Итерации 15.3: интерактивный туториал.
+
+---
+
+## [4.5.0] — 2026-10-02
+
+Итерация 15.2 — контекстные подсказки.
+
+### Added
+
+#### Итерация 15.2 — Контекстные подсказки
+
+**Проблема:**
+Даже с встроенной справкой (Итерация 15.1) пользователь не всегда знает,
+что делает конкретная кнопка или флаг. Приходится уходить в раздел «Помощь»,
+искать статью, читать её — теряя контекст.
+
+**Решение:**
+
+**1. База данных (миграция `add_25.sql`):**
+- ✅ Таблица `help_hint`:
+  - `hint_key` (UNIQUE) — идентификатор вида `planning.recalc`.
+  - `title`, `body_md` (TEXT) — заголовок и короткое markdown-тело.
+  - `article_slug` (nullable) — ссылка на полную статью справки.
+  - `display_order`, `is_published`.
+  - `organization_id` (nullable — глобальные подсказки).
+- ✅ Триггер `help_hint_set_updated_at`.
+- ✅ Индексы: `idx_help_hint_published`, `idx_help_hint_org`.
+
+**2. Seed-миграция (`add_25_seed.sql`):**
+- ✅ 8 стартовых подсказок:
+  - `planning.recalc`, `planning.advisor`, `planning.plan_dirty`
+  - `gantt.edit_mode`, `gantt.brackets`
+  - `shift.lab_block`
+  - `whatif.json`
+  - `settings.system`
+- ✅ Все привязаны к статьям справки из `add_24_seed_*`.
+- ✅ Идемпотентна (`ON CONFLICT (hint_key) DO NOTHING`).
+
+**3. Backend:**
+- ✅ Модуль `help_models.py` — новые Pydantic-модели:
+  - `HelpHint`, `HelpHintsResponse`.
+- ✅ Модуль `help.py` — новый эндпоинт:
+  - `GET /api/v1/help/hints` — возвращает словарь `{hint_key: HelpHint}`.
+
+**4. Frontend:**
+- ✅ `HelpHintsContext.tsx` — глобальный кэш подсказок:
+  - Загрузка один раз при монтировании приложения.
+  - Методы `getHint()`, `useHint()`.
+  - Тихий fail: если запрос упал — подсказки не блокируют UI.
+- ✅ `Hint.tsx` — компонент иконки `?` с Popover:
+  - Иконка `HelpOutlineIcon` 14/18px.
+  - Markdown-рендер (react-markdown + remark-gfm).
+  - Кнопка «Читать подробнее» — переход на `/help/{slug}`.
+  - Возвращает `null`, если подсказки нет.
+- ✅ `App.tsx` — провайдер `HelpHintsProvider` обёрнут вокруг `BrowserRouter`.
+- ✅ `types/index.ts` — типы `HelpHint`, `HelpHintsResponse`.
+- ✅ `api.ts` — `helpApi.getHints()`.
+- ✅ Интеграция в 5 страниц (8 подсказок):
+  - `SchedulePage.tsx`: planning.recalc, planning.advisor, planning.plan_dirty.
+  - `GanttPage.tsx`: gantt.edit_mode, gantt.brackets.
+  - `ShiftPage.tsx`: shift.lab_block.
+  - `WhatIfPage.tsx`: whatif.json.
+  - `PlanSettingsWizard.tsx`: settings.system.
+
+**5. Тесты (+27, всего 654):**
+- ✅ `test_help_hints.py` (27):
+  - Pydantic-модели (8).
+  - Эндпоинт `/hints` (5).
+  - Миграция `add_25.sql` (7).
+  - Seed-файл (3).
+  - Sanity (1).
+
+**Ключевые гарантии:**
+- ✅ **Не уходя со страницы** — подсказка открывается в Popover.
+- ✅ **Короткий текст** — 2-3 предложения, чтобы не отвлекать.
+- ✅ **Ссылка на статью** — для тех, кому нужно подробнее.
+- ✅ **Обратная совместимость** — если подсказки нет в БД, `<Hint/>` рендерит null.
+- ✅ **Кэширование** — 1 запрос при загрузке приложения на все подсказки.
+- ✅ **Не критично** — ошибка загрузки подсказок не ломает UI.
+
+### Changed
+
+- Версия проекта: `4.4.0` → `4.5.0`.
+- `help_models.py` — добавлены модели `HelpHint`, `HelpHintsResponse`.
+- `help.py` — добавлен эндпоинт `GET /hints`.
+- `App.tsx` — обёрнут в `HelpHintsProvider`.
+- `types/index.ts` — типы для подсказок.
+- `api.ts` — метод `helpApi.getHints()`.
+- 5 страниц получили встроенные `<Hint/>`.
 
 ---
 
@@ -29,11 +132,11 @@
 
 **1. База данных (миграция `add_24.sql`):**
 - ✅ Таблица `help_article`:
-    - `slug` (UNIQUE) — идентификатор для URL.
-    - `title`, `category`, `content_md` (TEXT).
-    - `tags` (JSONB-массив).
-    - `display_order`, `is_published`.
-    - `organization_id` (nullable — глобальные статьи).
+  - `slug` (UNIQUE) — идентификатор для URL.
+  - `title`, `category`, `content_md` (TEXT).
+  - `tags` (JSONB-массив).
+  - `display_order`, `is_published`.
+  - `organization_id` (nullable — глобальные статьи).
 - ✅ Триггер `help_article_set_updated_at`.
 - ✅ Индексы: `idx_help_article_category`, `idx_help_article_tags` (GIN).
 
@@ -46,61 +149,61 @@
 
 **3. Backend:**
 - ✅ Модуль `help_models.py` — Pydantic-модели:
-    - `HelpArticleListItem`, `HelpArticleResponse`.
-    - `HelpCategoriesResponse`, `HelpCategoryResponse`.
-    - `HelpArticlesListResponse`.
-    - `HelpSearchHit`, `HelpSearchResponse`.
+  - `HelpArticleListItem`, `HelpArticleResponse`.
+  - `HelpCategoriesResponse`, `HelpCategoryResponse`.
+  - `HelpArticlesListResponse`.
+  - `HelpSearchHit`, `HelpSearchResponse`.
 - ✅ Модуль `help.py` — 4 эндпоинта:
-    - `GET /api/v1/help/articles` — список статей (с фильтром по категории).
-    - `GET /api/v1/help/articles/{slug}` — одна статья.
-    - `GET /api/v1/help/categories` — список категорий с количеством.
-    - `GET /api/v1/help/search?q=...` — поиск по title / content / tags.
+  - `GET /api/v1/help/articles` — список статей (с фильтром по категории).
+  - `GET /api/v1/help/articles/{slug}` — одна статья.
+  - `GET /api/v1/help/categories` — список категорий с количеством.
+  - `GET /api/v1/help/search?q=...` — поиск по title / content / tags.
 - ✅ Модуль `help_docs.py` — отдача `docs/*.md`:
-    - `GET /api/v1/help/docs/{filename}`.
-    - Защита от path traversal (`/`, `\`, `..`).
-    - Ограничение размера 1 МБ.
-    - Только `.md`.
+  - `GET /api/v1/help/docs/{filename}`.
+  - Защита от path traversal (`/`, `\`, `..`).
+  - Ограничение размера 1 МБ.
+  - Только `.md`.
 - ✅ Подключение в `main.py`:
-    - `from app.api.v1.help import router as help_router`
-    - `from app.api.v1.help_docs import router as help_docs_router`
-    - `{"name": "Справка"}` в `tags_metadata`.
-    - `app.include_router(help_router)`
-    - `app.include_router(help_docs_router)`
+  - `from app.api.v1.help import router as help_router`
+  - `from app.api.v1.help_docs import router as help_docs_router`
+  - `{"name": "Справка"}` в `tags_metadata`.
+  - `app.include_router(help_router)`
+  - `app.include_router(help_docs_router)`
 
 **4. Frontend:**
 - ✅ `npm install react-markdown@^9.0.1 remark-gfm@^4.0.0`.
 - ✅ `helpApi` в `api.ts` — 5 методов:
-    - `listArticles(category?)`, `getArticle(slug)`, `listCategories()`,
-      `search(q, limit)`, `getDocFile(filename)`.
+  - `listArticles(category?)`, `getArticle(slug)`, `listCategories()`,
+    `search(q, limit)`, `getDocFile(filename)`.
 - ✅ Типы `HelpArticle`, `HelpArticleListItem`, `HelpCategory`,
   `HelpCategoriesResponse`, `HelpArticlesListResponse`,
   `HelpSearchHit`, `HelpSearchResponse`, `HelpDocFileResponse`.
 - ✅ `HelpSidebar.tsx` — левая панель:
-    - Поиск с debounce 300 мс.
-    - Категории в аккордеонах.
-    - При активном поиске — список найденных статей с сниппетами.
+  - Поиск с debounce 300 мс.
+  - Категории в аккордеонах.
+  - При активном поиске — список найденных статей с сниппетами.
 - ✅ `HelpArticleView.tsx` — markdown-рендер:
-    - `react-markdown` + `remark-gfm`.
-    - Кастомные компоненты для таблиц, кода, цитат.
-    - Внутренние ссылки `/help/slug` перехватываются и открывают
-      статьи внутри приложения.
+  - `react-markdown` + `remark-gfm`.
+  - Кастомные компоненты для таблиц, кода, цитат.
+  - Внутренние ссылки `/help/slug` перехватываются и открывают
+    статьи внутри приложения.
 - ✅ `HelpPage.tsx` — страница:
-    - Двухпанельный layout через `Allotment`.
-    - Роуты `/help` (редирект на `/help/intro-overview`) и `/help/:slug`.
+  - Двухпанельный layout через `Allotment`.
+  - Роуты `/help` (редирект на `/help/intro-overview`) и `/help/:slug`.
 - ✅ `MainLayout.tsx` — пункт меню «Помощь» с иконкой `HelpOutlined`.
 - ✅ `App.tsx` — 2 роута для `/help` и `/help/:slug`.
 
 **5. Тесты (+38, всего 601):**
 - ✅ `test_help.py` (38):
-    - Pydantic-модели (7).
-    - Константы категорий (3).
-    - Хелперы `_parse_tags`, `_make_snippet` (8).
-    - Структура модулей (4).
-    - Безопасность `help_docs` (3).
-    - Миграция `add_24.sql` (6).
-    - Seed-файлы (3).
-    - Регистрация в `main.py` (2).
-    - Sanity (2).
+  - Pydantic-модели (7).
+  - Константы категорий (3).
+  - Хелперы `_parse_tags`, `_make_snippet` (8).
+  - Структура модулей (4).
+  - Безопасность `help_docs` (3).
+  - Миграция `add_24.sql` (6).
+  - Seed-файлы (3).
+  - Регистрация в `main.py` (2).
+  - Sanity (2).
 
 **6. ADR:**
 - ✅ `docs/adr/0005-help-system.md` — обоснование выбора
@@ -147,11 +250,11 @@
 
 **1. Глобальный режим редактирования:**
 - ✅ Новый стейт `localEditMode` в `PlanContext`:
-    - `false` — readonly (план открыт, но не редактируется).
-    - `true` — редактирование разрешено.
+  - `false` — readonly (план открыт, но не редактируется).
+  - `true` — редактирование разрешено.
 - ✅ Синхронизация с `currentVersionId`:
-    - план открыт → `localEditMode = false` (безопасный режим);
-    - план закрыт → `localEditMode = true`.
+  - план открыт → `localEditMode = false` (безопасный режим);
+  - план закрыт → `localEditMode = true`.
 - ✅ `isReadOnly = !localEditMode` в `GanttPage` — единый источник правды.
 
 **2. Переключатель режима в тулбаре Ганта:**
@@ -163,9 +266,9 @@
 **3. Синхронизация иконки в шапке приложения:**
 - ✅ `MainLayout` берёт `localEditMode` из `usePlan()`.
 - ✅ Условный рендер чипа:
-    - `🔒 План от ...` (синий) — readonly.
-    - `✏️ План от ...` (зелёный) — редактирование.
-    - `✏️ Режим редактирования` (прозрачный) — план не открыт.
+  - `🔒 План от ...` (синий) — readonly.
+  - `✏️ План от ...` (зелёный) — редактирование.
+  - `✏️ Режим редактирования` (прозрачный) — план не открыт.
 
 **4. Кнопка «Пересчитать» — доступна всегда:**
 - ✅ В `<GanttToolbar>` рендерится, если передан `onRecalculate`.
@@ -182,9 +285,9 @@
 
 **6. Фикс рендера скобок партий:**
 - ✅ В `drawBatchBrackets` добавлена защита от отрицательной ширины:
-    - `const w = Math.max(0, rawW)`.
-    - `const h = Math.max(0, rawH)`.
-    - Пропуск невалидных `rect`, если `w <= 0 || h <= 0`.
+  - `const w = Math.max(0, rawW)`.
+  - `const h = Math.max(0, rawH)`.
+  - Пропуск невалидных `rect`, если `w <= 0 || h <= 0`.
 - ✅ Устранена ошибка `<rect> attribute width: A negative value is not valid`
   при zoom/pan.
 
@@ -303,36 +406,36 @@
 - ✅ `scheduleApi.getVersions(includeArchived)` принимает параметр.
 - ✅ `scheduleApi.reschedule()` отправляет `replace_version_id`.
 - ✅ `PlainContext`:
-    - `includeArchived: boolean` (сохраняется в localStorage).
-    - `setIncludeArchived(value)`.
-    - `unarchiveVersion(versionId)`.
-    - `loadVersions()` учитывает `includeArchived`.
+  - `includeArchived: boolean` (сохраняется в localStorage).
+  - `setIncludeArchived(value)`.
+  - `unarchiveVersion(versionId)`.
+  - `loadVersions()` учитывает `includeArchived`.
 - ✅ `useRecalculate.ts`:
-    - Читает `auto_archive_on_recalc` из `app_settings`.
-    - Передаёт `replace_version_id` при пересчёте.
-    - `onSuccess(newVersionId, response)` — второй аргумент для UI.
+  - Читает `auto_archive_on_recalc` из `app_settings`.
+  - Передаёт `replace_version_id` при пересчёте.
+  - `onSuccess(newVersionId, response)` — второй аргумент для UI.
 - ✅ `SchedulePage.tsx`:
-    - Tree Data для «Истории планов» (по `parent_version_id`).
-    - Чекбокс «Показать архивные».
-    - Кнопка «↩ Разархивировать» для архивных версий.
-    - Иконка 📦 для архивных, «активный» чип для активного.
-    - Alert с предупреждением, если архивация не удалась.
+  - Tree Data для «Истории планов» (по `parent_version_id`).
+  - Чекбокс «Показать архивные».
+  - Кнопка «↩ Разархивировать» для архивных версий.
+  - Иконка 📦 для архивных, «активный» чип для активного.
+  - Alert с предупреждением, если архивация не удалась.
 - ✅ `GanttPage.tsx`:
-    - Снекбар после успешного пересчёта:
-        - info — старая версия архивирована;
-        - warning — не архивирована (используется в what-if).
-    - `onRecalcSuccess` принимает `RescheduleResponse` (второй аргумент).
+  - Снекбар после успешного пересчёта:
+    - info — старая версия архивирована;
+    - warning — не архивирована (используется в what-if).
+  - `onRecalcSuccess` принимает `RescheduleResponse` (второй аргумент).
 - ✅ `PlanSettingsWizard.tsx`:
-    - Чекбокс `auto_archive_on_recalc` на шаге «Основные».
+  - Чекбокс `auto_archive_on_recalc` на шаге «Основные».
 
 **4. Тесты (+28, всего 563):**
 - ✅ `test_schedule_versions_archive.py` (28):
-    - Pydantic-модели (4).
-    - Настройка `auto_archive_on_recalc` (3).
-    - Структурные тесты `saver.py` (7).
-    - Структурные тесты API (7).
-    - Миграция `add_23.sql` (7).
-    - Интеграционные тесты (с БД): архивация, разархивация, блокировка.
+  - Pydantic-модели (4).
+  - Настройка `auto_archive_on_recalc` (3).
+  - Структурные тесты `saver.py` (7).
+  - Структурные тесты API (7).
+  - Миграция `add_23.sql` (7).
+  - Интеграционные тесты (с БД): архивация, разархивация, блокировка.
 
 **5. Документация:**
 - ✅ `README.md` — версия 4.2.0, обновлена секция «История планов».
@@ -389,15 +492,15 @@ Solver работает 30–120 секунд. Пользователь не п�
 
 **Решение:**
 - Новый компонент `RecalcProgressDialog.tsx`:
-    - Спиннер + иконка песочных часов.
-    - Таймер «MM:SS» (тик каждую секунду).
-    - Прогресс-бар до timeout.
-    - Предупреждение «Не закрывайте страницу».
-    - Блокировка Esc/backdrop.
+  - Спиннер + иконка песочных часов.
+  - Таймер «MM:SS» (тик каждую секунду).
+  - Прогресс-бар до timeout.
+  - Предупреждение «Не закрывайте страницу».
+  - Блокировка Esc/backdrop.
 - `GanttPage`:
-    - `RecalcOperation` type ('recalc' | 'force-recalc').
-    - Открытие диалога при старте пересчёта.
-    - Закрытие — при успехе / ошибке.
+  - `RecalcOperation` type ('recalc' | 'force-recalc').
+  - Открытие диалога при старте пересчёта.
+  - Закрытие — при успехе / ошибке.
 - `handleRecalculate` и `handleForceRecalculate` — обёртки над
   `actions.recalculate`, которые управляют `RecalcOperation`.
 
@@ -427,50 +530,50 @@ Solver работает 30–120 секунд. Пользователь не п�
 **Решение:**
 
 - **Новый модуль `backend/app/scheduler/snapshot.py`:**
-    - `snapshot_all_catalogs(session, org_id, version_id)` — заполняет все
-      4 снапшот-таблицы из актуальных справочников.
-    - `snapshot_exists(session, version_id)` — проверяет, есть ли снапшоты.
-    - `_has_column(session, table, column)` — graceful-проверка схемы
-      (для совместимости со старыми БД без `operator_pool`).
-    - Идемпотентен (`ON CONFLICT (id, version_id) DO NOTHING`).
+  - `snapshot_all_catalogs(session, org_id, version_id)` — заполняет все
+    4 снапшот-таблицы из актуальных справочников.
+  - `snapshot_exists(session, version_id)` — проверяет, есть ли снапшоты.
+  - `_has_column(session, table, column)` — graceful-проверка схемы
+    (для совместимости со старыми БД без `operator_pool`).
+  - Идемпотентен (`ON CONFLICT (id, version_id) DO NOTHING`).
 
 - **API `schedule.py`:**
-    - `POST /versions` вызывает `snapshot_all_catalogs` — при создании
-      плана снапшоты заполняются сразу.
-    - `GET /versions` возвращает поле `has_snapshot` — UI использует
-      для индикации пустых планов.
-    - Ответ `POST /versions` содержит `snapshot_stats` — статистика
-      по каждой таблице.
+  - `POST /versions` вызывает `snapshot_all_catalogs` — при создании
+    плана снапшоты заполняются сразу.
+  - `GET /versions` возвращает поле `has_snapshot` — UI использует
+    для индикации пустых планов.
+  - Ответ `POST /versions` содержит `snapshot_stats` — статистика
+    по каждой таблице.
 
 - **`saver.py`:**
-    - `_do_save` делегирует снапшоты в `snapshot_all_catalogs`.
-    - Удалён inline SQL (4 INSERT'а) — теперь один вызов.
-    - `save_stats` возвращает `snapshot_stats`.
+  - `_do_save` делегирует снапшоты в `snapshot_all_catalogs`.
+  - Удалён inline SQL (4 INSERT'а) — теперь один вызов.
+  - `save_stats` возвращает `snapshot_stats`.
 
 - **Frontend `PlainContext.tsx`:**
-    - `PlanVersion.has_snapshot?: boolean`.
-    - `CurrentPlan.has_snapshot: boolean` (обязательное).
-    - `setPlan(id, name, hasSnapshot?)` — третий опциональный параметр.
-    - `currentPlanHasSnapshot` — новое поле в контексте.
-    - `loadVersions()` синхронизирует `has_snapshot` из БД.
+  - `PlanVersion.has_snapshot?: boolean`.
+  - `CurrentPlan.has_snapshot: boolean` (обязательное).
+  - `setPlan(id, name, hasSnapshot?)` — третий опциональный параметр.
+  - `currentPlanHasSnapshot` — новое поле в контексте.
+  - `loadVersions()` синхронизирует `has_snapshot` из БД.
 
 - **Frontend `SchedulePage.tsx`:**
-    - `handleOpenPlan` передаёт `has_snapshot` в `setPlan`.
-    - Список планов: иконка ⚠ рядом с планами без снапшотов.
-    - Строки без снапшотов подсвечены жёлтым (`#fff8e1`).
+  - `handleOpenPlan` передаёт `has_snapshot` в `setPlan`.
+  - Список планов: иконка ⚠ рядом с планами без снапшотов.
+  - Строки без снапшотов подсвечены жёлтым (`#fff8e1`).
 
 - **Frontend `GanttPage.tsx`:**
-    - Если у плана нет снапшотов — показывается предупреждение вместо
-      диаграммы.
-    - Кнопки «Перейти к планированию» и «Закрыть план».
+  - Если у плана нет снапшотов — показывается предупреждение вместо
+    диаграммы.
+  - Кнопки «Перейти к планированию» и «Закрыть план».
 
 - **Тесты (+43, всего 535):**
-    - `test_snapshot.py` (18).
-    - `test_schedule_create_version.py` (10).
-    - `test_saver_uses_snapshot.py` (10).
-    - Обновлён `test_plan_settings_models.py`: `test_update_request_requires_settings`
-      → `test_update_request_no_args_is_valid` (устаревший тест, сломанный
-      ещё до 13.15).
+  - `test_snapshot.py` (18).
+  - `test_schedule_create_version.py` (10).
+  - `test_saver_uses_snapshot.py` (10).
+  - Обновлён `test_plan_settings_models.py`: `test_update_request_requires_settings`
+    → `test_update_request_no_args_is_valid` (устаревший тест, сломанный
+    ещё до 13.15).
 
 **Ключевые гарантии:**
 - ✅ **Новые планы** сразу имеют снапшоты → справочники видны.
@@ -478,9 +581,7 @@ Solver работает 30–120 секунд. Пользователь не п�
 - ✅ **Единый источник правды** для снапшотов — модуль `snapshot.py`.
 - ✅ **Обратная совместимость:** старые планы всё ещё открываются.
 
-### Changed
-
-- Версия проекта: `4.1.0` → `4.1.1`.
+### Changed- Версия проекта: `4.1.0` → `4.1.1`.
 - `POST /api/v1/schedule/versions` теперь заполняет снапшоты.
 - `GET /api/v1/schedule/versions` возвращает `has_snapshot`.
 - `ScheduleSaver._do_save` делегирует снапшоты в `snapshot_all_catalogs`.
@@ -512,68 +613,68 @@ Solver работает 30–120 секунд. Пользователь не п�
 #### Итерация 13.14 — Настройки, привязанные к плану (`plan_settings`)
 
 - **БД: миграция `add_21.sql`.**
-    - Таблица `plan_settings`:
-        - `organization_id`, `schedule_version_id` — привязка к плану.
-        - `setting_key`, `setting_value` (JSONB) — ключ-значение.
-        - `value_type`, `category`, `label`, `description` — метаданные (снапшот).
-        - `min_value`, `max_value`, `options`, `display_order`, `is_system`.
-        - `UNIQUE (schedule_version_id, setting_key)` — защита от дублей.
-        - `FOREIGN KEY ... ON DELETE CASCADE` — при удалении плана настройки удаляются.
-    - Триггер `copy_app_settings_to_plan`:
-        - `AFTER INSERT ON schedule_version` — автоматически копирует все `app_settings` в `plan_settings` нового плана.
-        - Идемпотентен (`ON CONFLICT DO NOTHING`).
-        - Работает на уровне БД — не нужен ни Python, ни API.
-    - Индексы:
-        - `idx_plan_settings_version` — по `schedule_version_id`.
-        - `idx_plan_settings_org_category` — по `(organization_id, category)`.
+  - Таблица `plan_settings`:
+    - `organization_id`, `schedule_version_id` — привязка к плану.
+    - `setting_key`, `setting_value` (JSONB) — ключ-значение.
+    - `value_type`, `category`, `label`, `description` — метаданные (снапшот).
+    - `min_value`, `max_value`, `options`, `display_order`, `is_system`.
+    - `UNIQUE (schedule_version_id, setting_key)` — защита от дублей.
+    - `FOREIGN KEY ... ON DELETE CASCADE` — при удалении плана настройки удаляются.
+  - Триггер `copy_app_settings_to_plan`:
+    - `AFTER INSERT ON schedule_version` — автоматически копирует все `app_settings` в `plan_settings` нового плана.
+    - Идемпотентен (`ON CONFLICT DO NOTHING`).
+    - Работает на уровне БД — не нужен ни Python, ни API.
+  - Индексы:
+    - `idx_plan_settings_version` — по `schedule_version_id`.
+    - `idx_plan_settings_org_category` — по `(organization_id, category)`.
 
 - **Backend.**
-    - `DataLoader(version_id=...)` — читает настройки из `plan_settings` этого плана. Если `version_id=None` или `plan_settings` пуст → fallback на `app_settings`.
-    - `ProductionScheduler(version_id=...)` — принимает `version_id`, прокидывает в `DataLoader`.
-    - `settings_reader.py` — 3 функции получили параметр `version_id`:
-        - `read_feature_flags(db, org_id, version_id=None)`.
-        - `read_setting(db, org_id, key, default, version_id=None)`.
-        - `read_settings_dict(db, org_id, keys, version_id=None)`.
-    - `rescheduler.py` — `version_id=from_version_id` в основном и fallback вызовах `ProductionScheduler`.
-    - `whatif.py` — `version_id=base_version_id` при запуске сценария.
-    - **API `/api/v1/plan-settings`** — 3 эндпоинта:
-        - `GET    /version/{version_id}` — настройки плана + метаданные.
-        - `PUT    /version/{version_id}` — массовое обновление (валидация через `validate_setting`).
-        - `POST   /version/{version_id}/reset` — сброс к глобальным `app_settings`.
-    - **6 API-модулей** обновлены — все получили опциональный `version_id`:
-        - `advisor.py` — `?version_id=...` в `/advice`, `/feasibility`.
-        - `lab.py` — 7 эндпоинтов с `version_id`.
-        - `cz.py` — 7 эндпоинтов с `version_id`.
-        - `personnel.py` — 4 эндпоинта с `version_id`.
-        - `reschedule.py` — 3 эндпоинта с `version_id`.
-        - `shift.py` — 5 эндпоинтов с `version_id`.
+  - `DataLoader(version_id=...)` — читает настройки из `plan_settings` этого плана. Если `version_id=None` или `plan_settings` пуст → fallback на `app_settings`.
+  - `ProductionScheduler(version_id=...)` — принимает `version_id`, прокидывает в `DataLoader`.
+  - `settings_reader.py` — 3 функции получили параметр `version_id`:
+    - `read_feature_flags(db, org_id, version_id=None)`.
+    - `read_setting(db, org_id, key, default, version_id=None)`.
+    - `read_settings_dict(db, org_id, keys, version_id=None)`.
+  - `rescheduler.py` — `version_id=from_version_id` в основном и fallback вызовах `ProductionScheduler`.
+  - `whatif.py` — `version_id=base_version_id` при запуске сценария.
+  - **API `/api/v1/plan-settings`** — 3 эндпоинта:
+    - `GET    /version/{version_id}` — настройки плана + метаданные.
+    - `PUT    /version/{version_id}` — массовое обновление (валидация через `validate_setting`).
+    - `POST   /version/{version_id}/reset` — сброс к глобальным `app_settings`.
+  - **6 API-модулей** обновлены — все получили опциональный `version_id`:
+    - `advisor.py` — `?version_id=...` в `/advice`, `/feasibility`.
+    - `lab.py` — 7 эндпоинтов с `version_id`.
+    - `cz.py` — 7 эндпоинтов с `version_id`.
+    - `personnel.py` — 4 эндпоинта с `version_id`.
+    - `reschedule.py` — 3 эндпоинта с `version_id`.
+    - `shift.py` — 5 эндпоинтов с `version_id`.
 
 - **Frontend.**
-    - `planSettingsApi` в `api.ts` — 3 метода (`getForVersion`, `updateForVersion`, `resetForVersion`).
-    - `api.ts` — все API-модули получили опциональный `versionId?`.
-    - `PlanSettingsWizard.tsx` — мастер настроек плана (9 шагов):
-        1. Основные (`planning`).
-        2. Режим смен (`shifts`).
-        3. Календарь (`calendar`).
-        4. Охлаждение (`cooling`).
-        5. Ресурсы (`resources`).
-        6. Материалы и лаборатория (`materials` + `lab`).
-        7. Маршруты и функции (`features`).
-        8. Честный Знак (`cz`).
-        9. Оптимизация (`optimization`).
-    - `SchedulePage.tsx` — кнопка «Настройки плана» (⚙) в действиях таблицы планов.
-    - `MainLayout.tsx` — активный план на верхней плашке.
-    - `SchedulePage.tsx` — усиленное визуальное выделение текущего плана.
-    - Иконка «Открыть план» меняется на «Закрыть план» (✕) для текущего.
+  - `planSettingsApi` в `api.ts` — 3 метода (`getForVersion`, `updateForVersion`, `resetForVersion`).
+  - `api.ts` — все API-модули получили опциональный `versionId?`.
+  - `PlanSettingsWizard.tsx` — мастер настроек плана (9 шагов):
+    1. Основные (`planning`).
+    2. Режим смен (`shifts`).
+    3. Календарь (`calendar`).
+    4. Охлаждение (`cooling`).
+    5. Ресурсы (`resources`).
+    6. Материалы и лаборатория (`materials` + `lab`).
+    7. Маршруты и функции (`features`).
+    8. Честный Знак (`cz`).
+    9. Оптимизация (`optimization`).
+  - `SchedulePage.tsx` — кнопка «Настройки плана» (⚙) в действиях таблицы планов.
+  - `MainLayout.tsx` — активный план на верхней плашке.
+  - `SchedulePage.tsx` — усиленное визуальное выделение текущего плана.
+  - Иконка «Открыть план» меняется на «Закрыть план» (✕) для текущего.
 
 - **Тесты (+171, всего 492).**
-    - `test_plan_settings_models.py` (8).
-    - `test_plan_settings_api.py` (23).
-    - `test_plan_settings_migration.py` (16).
-    - `test_plan_settings_data_loader.py` (14).
-    - `test_plan_settings_integration.py` (11).
-    - `test_rescheduler_uses_plan_settings.py` (11).
-    - `test_whatif_uses_plan_settings.py` (15).
+  - `test_plan_settings_models.py` (8).
+  - `test_plan_settings_api.py` (23).
+  - `test_plan_settings_migration.py` (16).
+  - `test_plan_settings_data_loader.py` (14).
+  - `test_plan_settings_integration.py` (11).
+  - `test_rescheduler_uses_plan_settings.py` (11).
+  - `test_whatif_uses_plan_settings.py` (15).
 
 #### Итерация 13.14.1 — Документация
 
@@ -606,73 +707,73 @@ Solver работает 30–120 секунд. Пользователь не п�
 #### Итерация 12 — Multi-objective и what-if сценарии
 
 - **Multi-objective оптимизация.**
-    - Новый модуль `backend/app/scheduler/optimization.py`:
-        - `OptimizationWeights` — dataclass с 5 весами `[0, 1]`.
-        - `from_settings()` — читает из `app_settings`.
-        - `validate()` — проверка корректности.
-        - `to_int()` — приведение к fixed-point (`PRECISION = 10000`).
-        - `build_multi_objective()` — строит взвешенную сумму с нормализацией.
-        - 4 аккумулятора: `setup_sum`, `underload_sum`, `cooling_slow_count`, `tardiness_sum`.
-    - 5 компонентов целевой функции:
-        - `makespan` — общее время (мин).
-        - `setup` — сумма переналадок (мин).
-        - `underload` — сумма недогрузки реакторов (кг).
-        - `cooling_slow` — число замедленных охлаждений (шт).
-        - `tardiness` — сумма просрочек `due_date` (мин).
-    - Нормализация каждого компонента в `[0, PRECISION]` через `AddDivisionEquality`.
-    - Обратная совместимость: если только `weight_makespan = 1.0`, остальные = 0 — работает как single-objective.
-    - `SettingsPage.tsx` — новая категория «Оптимизация» с 5 слайдерами.
-    - Миграция `add_15.sql` — 5 настроек в категории `optimization`.
+  - Новый модуль `backend/app/scheduler/optimization.py`:
+    - `OptimizationWeights` — dataclass с 5 весами `[0, 1]`.
+    - `from_settings()` — читает из `app_settings`.
+    - `validate()` — проверка корректности.
+    - `to_int()` — приведение к fixed-point (`PRECISION = 10000`).
+    - `build_multi_objective()` — строит взвешенную сумму с нормализацией.
+    - 4 аккумулятора: `setup_sum`, `underload_sum`, `cooling_slow_count`, `tardiness_sum`.
+  - 5 компонентов целевой функции:
+    - `makespan` — общее время (мин).
+    - `setup` — сумма переналадок (мин).
+    - `underload` — сумма недогрузки реакторов (кг).
+    - `cooling_slow` — число замедленных охлаждений (шт).
+    - `tardiness` — сумма просрочек `due_date` (мин).
+  - Нормализация каждого компонента в `[0, PRECISION]` через `AddDivisionEquality`.
+  - Обратная совместимость: если только `weight_makespan = 1.0`, остальные = 0 — работает как single-objective.
+  - `SettingsPage.tsx` — новая категория «Оптимизация» с 5 слайдерами.
+  - Миграция `add_15.sql` — 5 настроек в категории `optimization`.
 
 - **What-if сценарии.**
-    - Таблица `whatif_scenario` (миграция `add_16.sql`).
-    - Новый модуль `backend/app/scheduler/whatif.py` — `WhatIfRunner`:
-        - `create_scenario`, `get_scenario`, `list_scenarios`, `update_scenario`, `delete_scenario`.
-        - `run_scenario` — запуск (async через BackgroundTasks).
-        - `compare` — сравнение base vs result.
-        - `_apply_changes` — оркестрация применения изменений.
-        - `_apply_shift_mode`, `_apply_capacity_changes`, `_apply_order_changes`, `_apply_calendar_changes`.
-        - `_compute_metrics` — 6 метрик для сравнения.
-    - Архитектура 2 транзакций:
-        - Транзакция №1 (rollback): применяем изменения + запускаем scheduler → откат.
-        - Транзакция №2 (commit): сохраняем результат через `ScheduleSaver` → commit.
-    - 7 эндпоинтов API `/api/v1/whatif` (создать, список, один, обновить, удалить, запустить, сравнить).
-    - Async запуск: `POST /run` возвращает `202 Accepted` сразу, расчёт в `BackgroundTasks`.
-    - 7 типов изменений: `add_order`, `cancel_order`, `change_qty`, `change_due_date`, `shift_mode`, `resource_capacity`, `calendar_events` (add/remove).
-    - UI `/whatif` (`WhatIfPage.tsx`):
-        - AgGrid со списком сценариев.
-        - Диалог создания/редактирования с JSON-редактором.
-        - 5 кнопок-шаблонов (Режим смен, +Заказ, +Capacity, Авария Р4, Полный пример).
-        - Polling статуса `RUNNING` каждые 3 секунды.
-        - Диалог результата с таблицей метрик и Δ.
-        - Кнопка «Открыть план» → переход на `/gantt?version_id=...`.
-        - Кнопка удаления (🗑) для всех статусов кроме `RUNNING`.
-    - Rollback гарантирован: `shift_mode`, `capacity`, `orders`, `calendar_events` не меняются в БД после what-if.
+  - Таблица `whatif_scenario` (миграция `add_16.sql`).
+  - Новый модуль `backend/app/scheduler/whatif.py` — `WhatIfRunner`:
+    - `create_scenario`, `get_scenario`, `list_scenarios`, `update_scenario`, `delete_scenario`.
+    - `run_scenario` — запуск (async через BackgroundTasks).
+    - `compare` — сравнение base vs result.
+    - `_apply_changes` — оркестрация применения изменений.
+    - `_apply_shift_mode`, `_apply_capacity_changes`, `_apply_order_changes`, `_apply_calendar_changes`.
+    - `_compute_metrics` — 6 метрик для сравнения.
+  - Архитектура 2 транзакций:
+    - Транзакция №1 (rollback): применяем изменения + запускаем scheduler → откат.
+    - Транзакция №2 (commit): сохраняем результат через `ScheduleSaver` → commit.
+  - 7 эндпоинтов API `/api/v1/whatif` (создать, список, один, обновить, удалить, запустить, сравнить).
+  - Async запуск: `POST /run` возвращает `202 Accepted` сразу, расчёт в `BackgroundTasks`.
+  - 7 типов изменений: `add_order`, `cancel_order`, `change_qty`, `change_due_date`, `shift_mode`, `resource_capacity`, `calendar_events` (add/remove).
+  - UI `/whatif` (`WhatIfPage.tsx`):
+    - AgGrid со списком сценариев.
+    - Диалог создания/редактирования с JSON-редактором.
+    - 5 кнопок-шаблонов (Режим смен, +Заказ, +Capacity, Авария Р4, Полный пример).
+    - Polling статуса `RUNNING` каждые 3 секунды.
+    - Диалог результата с таблицей метрик и Δ.
+    - Кнопка «Открыть план» → переход на `/gantt?version_id=...`.
+    - Кнопка удаления (🗑) для всех статусов кроме `RUNNING`.
+  - Rollback гарантирован: `shift_mode`, `capacity`, `orders`, `calendar_events` не меняются в БД после what-if.
 
 - **Архитектурные патчи Итерации 12.**
-    - `DataLoader` + `ProductionScheduler` принимают `session` извне.
-    - `ScheduleSaver` принимает `session` (не делает commit при `_owns_session=False`).
-    - `shift_regenerator` — `flush()` вместо `commit()` + `AT TIME ZONE 'Europe/Moscow'`.
-    - `settings.py` — явный `commit()` после `regenerate_shifts`.
-    - `whatif.py` — 2 транзакции без явного `begin()`.
+  - `DataLoader` + `ProductionScheduler` принимают `session` извне.
+  - `ScheduleSaver` принимает `session` (не делает commit при `_owns_session=False`).
+  - `shift_regenerator` — `flush()` вместо `commit()` + `AT TIME ZONE 'Europe/Moscow'`.
+  - `settings.py` — явный `commit()` после `regenerate_shifts`.
+  - `whatif.py` — 2 транзакции без явного `begin()`.
 
 - **Тесты.**
-    - 45 новых тестов в `test_whatif.py`.
-    - Всего 321 тестов зелёные.
+  - 45 новых тестов в `test_whatif.py`.
+  - Всего 321 тестов зелёные.
 
 #### Итерация 13.3 — Аудит (объединённый журнал событий)
 
 - Объединённый журнал событий для аудита действий пользователей.
 - Единая точка входа для истории изменений планов, справочников, настроек.
 - 4 источника:
-    - `material_stock_log` — изменения остатков материалов.
-    - `reschedule_log` — перепланирования.
-    - `lab_analysis_log` — лабораторные блокировки.
-    - `cz_scan_log` — сканы Честного Знака.
+  - `material_stock_log` — изменения остатков материалов.
+  - `reschedule_log` — перепланирования.
+  - `lab_analysis_log` — лабораторные блокировки.
+  - `cz_scan_log` — сканы Честного Знака.
 - API `/api/v1/audit`:
-    - `GET /log` — объединённый журнал с фильтрами.
-    - `GET /stats` — счётчики по источникам за период.
-    - `GET /sources` — список источников.
+  - `GET /log` — объединённый журнал с фильтрами.
+  - `GET /stats` — счётчики по источникам за период.
+  - `GET /sources` — список источников.
 - UI `AuditPage.tsx` — страница аудита с группировкой по дням.
 - Фильтры синхронизируются с URL.
 
@@ -694,13 +795,13 @@ Solver работает 30–120 секунд. Пользователь не п�
 - Поля в `batch`: `is_lab_blocked`, `lab_status`, `lab_block_reason`, `lab_blocked_at`, `lab_blocked_by`.
 - Таблица `lab_analysis_log` — журнал всех проверок лаборатории.
 - Модуль `lab.py` — 7 эндпоинтов API:
-    - `GET  /api/v1/lab/pending`.
-    - `GET  /api/v1/lab/batch/{id}`.
-    - `GET  /api/v1/lab/batch/{id}/log`.
-    - `POST /api/v1/lab/batch/{id}/block`.
-    - `POST /api/v1/lab/batch/{id}/unblock`.
-    - `POST /api/v1/lab/batch/{id}/approve`.
-    - `POST /api/v1/lab/batch/{id}/request`.
+  - `GET  /api/v1/lab/pending`.
+  - `GET  /api/v1/lab/batch/{id}`.
+  - `GET  /api/v1/lab/batch/{id}/log`.
+  - `POST /api/v1/lab/batch/{id}/block`.
+  - `POST /api/v1/lab/batch/{id}/unblock`.
+  - `POST /api/v1/lab/batch/{id}/approve`.
+  - `POST /api/v1/lab/batch/{id}/request`.
 - Планировщик исключает заблокированные партии из расписания.
 - `build_routing(truncate_after_lab=True)` — обрезка цепочки после lab-операции.
 - UI `ShiftPage.tsx`: индикатор блокировки, кнопки блокировки/разблокировки.
@@ -718,10 +819,10 @@ Solver работает 30–120 секунд. Пользователь не п�
 #### Итерация 6 — Люди как ресурс
 
 - 4 пула операторов в `resource_pool`:
-    - `REACTOR_OPERATOR` — 3 аппаратчика на 4 реактора.
-    - `LINE_OPERATOR` — 2 оператора на 3 линии розлива.
-    - `MANUAL_OPERATOR` — 1 оператор ручной станции (LINE_3).
-    - `LAB` — 1 лаборант.
+  - `REACTOR_OPERATOR` — 3 аппаратчика на 4 реактора.
+  - `LINE_OPERATOR` — 2 оператора на 3 линии розлива.
+  - `MANUAL_OPERATOR` — 1 оператор ручной станции (LINE_3).
+  - `LAB` — 1 лаборант.
 - Колонка `scheduled_task.operator_pool`.
 - Колонка `resource_pool.updated_at`.
 - UNIQUE-констрейнт `resource_pool (organization_id, type)`.
@@ -738,12 +839,12 @@ Solver работает 30–120 секунд. Пользователь не п�
 - Миграция `add_10.sql` — feature-флаг + коэффициент.
 - Миграция `add_10b.sql` — колонка `scheduled_task.cooling_mode`.
 - Настройки в `organization_settings`:
-    - `enable_cooling_degradation` = `true`.
-    - `cooling_degradation_factor` = `1.3`.
-    - `cooling_zone_capacity` = `2`.
+  - `enable_cooling_degradation` = `true`.
+  - `cooling_degradation_factor` = `1.3`.
+  - `cooling_zone_capacity` = `2`.
 - Модель деградации в `core.py`:
-    - Для каждой cooling-задачи создаются два взаимоисключающих интервала: `fast_interval` и `slow_interval`.
-    - `b_slow_i = 1 ⟺ ∃ j ≠ i: cooling_j пересекается с cooling_i`.
+  - Для каждой cooling-задачи создаются два взаимоисключающих интервала: `fast_interval` и `slow_interval`.
+  - `b_slow_i = 1 ⟺ ∃ j ≠ i: cooling_j пересекается с cooling_i`.
 - `CoolingDegradationConstraint` в `plugins.py`.
 - `scheduled_task.cooling_mode` сохраняется (`fast` | `slow` | `NULL`).
 - API `/api/v1/gantt/` возвращает `cooling_mode`.
@@ -761,15 +862,15 @@ Solver работает 30–120 секунд. Пользователь не п�
 #### Итерация 8 — Честный Знак и интеграции
 
 - Миграция `add_11.sql`:
-    - Поля в `batch`: `cz_marked_qty`, `cz_last_scan_at`, `cz_status`.
-    - Таблица `cz_scan_log`.
-    - Feature-флаг `enable_cz_integration = true`.
-    - Настройки: `cz_completion_threshold`, `cz_api_key`, `enable_cz_auto_close`.
+  - Поля в `batch`: `cz_marked_qty`, `cz_last_scan_at`, `cz_status`.
+  - Таблица `cz_scan_log`.
+  - Feature-флаг `enable_cz_integration = true`.
+  - Настройки: `cz_completion_threshold`, `cz_api_key`, `enable_cz_auto_close`.
 - Модуль `scheduler/cz.py`:
-    - `resolve_batch_for_scan()`.
-    - `compute_planned_qty()`.
-    - `recalc_batch_cz_status()`.
-    - `get_batch_progress()`.
+  - `resolve_batch_for_scan()`.
+  - `compute_planned_qty()`.
+  - `recalc_batch_cz_status()`.
+  - `get_batch_progress()`.
 - API `/api/v1/cz` — 7 эндпоинтов.
 - Идемпотентность: `UNIQUE (organization_id, cz_code)` + `ON CONFLICT DO NOTHING`.
 - Порог завершения: `cz_completion_threshold = 0.95`.
@@ -852,10 +953,10 @@ Solver работает 30–120 секунд. Пользователь не п�
 
 - Модуль `materials.py` — расчёт потребности в сырье по всем партиям.
 - Модуль `advisor.py` — типы подсказок:
-    - 🔴 `MATERIAL_SHORTAGE` — дефицит сырья.
-    - 🟡 `UNDERLOAD` — неполная загрузка реактора.
-    - 🔵 `ROUTE_MISMATCH` — VIA_TANK без танка.
-    - 🔵 `EQUIPMENT_GAP` — простои оборудования.
+  - 🔴 `MATERIAL_SHORTAGE` — дефицит сырья.
+  - 🟡 `UNDERLOAD` — неполная загрузка реактора.
+  - 🔵 `ROUTE_MISMATCH` — VIA_TANK без танка.
+  - 🔵 `EQUIPMENT_GAP` — простои оборудования.
 - Модуль `feasibility.py` — оценка исполнимости плана.
 - API: `GET /api/v1/schedule/advice`, `POST /api/v1/schedule/feasibility`.
 - UI: панель Advisor с фильтрацией по severity.
@@ -878,9 +979,9 @@ Solver работает 30–120 секунд. Пользователь не п�
 - Закрепление задач (`is_pinned`) и заморозка до `frozen_before`.
 - Журнал перепланирований `reschedule_log`.
 - API `reschedule.py`:
-    - `POST /api/v1/schedule/reschedule`.
-    - `GET /api/v1/schedule/compare`.
-    - `PUT /api/v1/schedule/task/{id}/pin`.
+  - `POST /api/v1/schedule/reschedule`.
+  - `GET /api/v1/schedule/compare`.
+  - `PUT /api/v1/schedule/task/{id}/pin`.
 - UI: диалог перепланирования в `SchedulePage.tsx`.
 - Сценарий «Аварийная остановка Р4 (25–28.09)».
 

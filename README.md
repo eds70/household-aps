@@ -2,7 +2,7 @@
 
 **Система автоматического планирования производства на базе OR-Tools CP-SAT**
 
-Версия: **4.4.0** (Итерации 0–15.1 завершены)
+Версия: **4.5.0** (Итерации 0–15.2 завершены)
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -62,6 +62,7 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 - **Архивации версий планов** (Итерация 13.21) — скрытие старых версий и иерархия
 - **Редактирования плана прямо на Ганте** (Итерация 14.2) — переключатель `🔒/✏️` в тулбаре
 - **Встроенной справки пользователя** (Итерация 15.1) — 15 markdown-статей в UI
+- **Контекстных подсказок** (Итерация 15.2) — 8 всплывающих подсказок в UI
 
 ## 📚 Документация
 
@@ -185,6 +186,8 @@ household-aps/
 │   │   ├── add_24_seed_1.sql   # 3 статьи
 │   │   ├── add_24_seed_2.sql   # 5 статей
 │   │   ├── add_24_seed_3.sql   # 7 статей
+│   │   ├── add_25.sql          # help_hint (15.2)
+│   │   ├── add_25_seed.sql     # 8 подсказок
 │   │   ├── fix_versions_hotfix.sql
 │   │   └── fix_shift_names.sql
 │   ├── .env
@@ -204,7 +207,8 @@ household-aps/
 │   │   │   ├── layout/MainLayout.tsx
 │   │   │   ├── help/
 │   │   │   │   ├── HelpSidebar.tsx
-│   │   │   │   └── HelpArticleView.tsx
+│   │   │   │   ├── HelpArticleView.tsx
+│   │   │   │   └── Hint.tsx
 │   │   │   └── gantt/
 │   │   │       ├── constants.ts
 │   │   │       ├── types.ts
@@ -219,7 +223,8 @@ household-aps/
 │   │   │       └── TaskContextMenu.tsx
 │   │   ├── context/
 │   │   │   ├── AuthContext.tsx
-│   │   │   └── PlainContext.tsx
+│   │   │   ├── PlainContext.tsx
+│   │   │   └── HelpHintsContext.tsx
 │   │   ├── hooks/
 │   │   │   ├── useCascadeMove.ts
 │   │   │   ├── useDoubleClick.ts
@@ -341,12 +346,16 @@ docker cp backend\migrations\add_24.sql aps_postgres:/tmp/add_24.sql
 docker cp backend\migrations\add_24_seed_1.sql aps_postgres:/tmp/add_24_seed_1.sql
 docker cp backend\migrations\add_24_seed_2.sql aps_postgres:/tmp/add_24_seed_2.sql
 docker cp backend\migrations\add_24_seed_3.sql aps_postgres:/tmp/add_24_seed_3.sql
+docker cp backend\migrations\add_25.sql aps_postgres:/tmp/add_25.sql
+docker cp backend\migrations\add_25_seed.sql aps_postgres:/tmp/add_25_seed.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_21.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_23.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_24.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_24_seed_1.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_24_seed_2.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_24_seed_3.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_25.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_25_seed.sql
 ```
 
 #### Шаг 3: Создание администратора
@@ -379,7 +388,7 @@ cd backend
 pytest tests/ -v
 ```
 
-**Текущее состояние:** **601 passed**, 13 warnings.
+**Текущее состояние:** **625 passed**, 13 warnings.
 
 Подробнее о тестировании — в [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#запуск-тестов).
 
@@ -406,8 +415,8 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/seed_demo_data.sql
 
 ### Применить SQL-миграцию (правильный способ)
 ```
-docker cp backend\migrations\add_24.sql aps_postgres:/tmp/add_24.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_24.sql
+docker cp backend\migrations\add_25.sql aps_postgres:/tmp/add_25.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_25.sql
 ```
 
 ### Проверить архивные версии (Итерация 13.21)
@@ -440,6 +449,16 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT sv.name, (SELECT
 docker exec -i aps_postgres psql -U aps -d household -c "SELECT category, COUNT(*) AS cnt FROM help_article GROUP BY category ORDER BY category;"
 ```
 
+### Проверить контекстные подсказки (Итерация 15.2)
+```
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT hint_key, title, article_slug FROM help_hint WHERE is_published = TRUE ORDER BY display_order;"
+```
+
+### Проверить связь подсказок со статьями (Итерация 15.2)
+```
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT h.hint_key, h.article_slug, CASE WHEN a.slug IS NULL THEN '❌ NOT FOUND' ELSE '✅ OK' END AS status FROM help_hint h LEFT JOIN help_article a ON a.slug = h.article_slug WHERE h.article_slug IS NOT NULL ORDER BY h.hint_key;"
+```
+
 ## ⚠️ Известные ограничения
 
 Полный список — в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#известные-ограничения).
@@ -453,6 +472,8 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT category, COUNT(
 - **Редактирование (14.2):** при открытии плана режим по умолчанию — readonly; для редактирования нужно кликнуть `✏️`.
 - **Справка (15.1):** поиск неполнотекстовый (`ILIKE`), для 100+ статей — миграция на `tsvector`.
 - **Справка (15.1):** нет редактирования статей через UI. Правки — через SQL или seed-миграции.
+- **Подсказки (15.2):** нет редактирования через UI. Правки — через SQL или seed-миграции.
+- **Подсказки (15.2):** обновление кэша только при перезагрузке страницы.
 
 ## 🐛 Troubleshooting
 
@@ -466,6 +487,9 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT category, COUNT(
 - **Старая версия не архивируется** → используется в what-if сценарии, снекбар покажет детали.
 - **Задачи не перетаскиваются на Ганте (14.2)** → проверьте, что режим `✏️ Редактирование`, а не `🔒 Просмотр`.
 - **Справка не открывается (15.1)** → проверить, что применены миграции `add_24.sql` и seed-файлы.
+- **Подсказки не показываются (15.2)** → проверить, что применены миграции `add_25.sql` и `add_25_seed.sql`, а также перезагрузить страницу (Ctrl+F5).
+- **Popover подсказки пустой (15.2)** → проверить `body_md` в `help_hint` для нужного `hint_key`.
+- **«Читать подробнее» ведёт на 404 (15.2)** → проверить связь `help_hint.article_slug` ↔ `help_article.slug`.
 
 ## 🗺️ Roadmap
 
@@ -497,8 +521,8 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT category, COUNT(
 | 13.21 | Архивация версий планов | 3 дня | 🟡 | ✅ |
 | 14.1 | Режимы отображения Ганта | 3 дня | 🟡 | ✅ |
 | 14.2 | Редактирование плана прямо на Ганте | 3 дня | 🔥🔥 | ✅ |
-| **15.1** | **Встроенная справка пользователя** | **3 дня** | **🟡** | **✅** |
-| 15.2 | Контекстные подсказки | 2 дня | 🟡 | ⏳ |
+| 15.1 | Встроенная справка пользователя | 3 дня | 🟡 | ✅ |
+| **15.2** | **Контекстные подсказки** | **2 дня** | **🟡** | **✅** |
 | 15.3 | Интерактивный туториал | 2 дня | 🟡 | ⏳ |
 | 15.4 | FAQ + расширение базы знаний | 2 дня | 🟡 | ⏳ |
 | 15.5 | Редактирование статей в UI | 3 дня | 🟢 | ⏳ |
@@ -511,4 +535,4 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT category, COUNT(
 
 ---
 
-Итерации 0–15.1 завершены. Следующая — Итерация 15.2: Контекстные подсказки (⏳).
+Итерации 0–15.2 завершены. Следующая — Итерация 15.3: Интерактивный туториал (⏳).

@@ -5,6 +5,7 @@ import {createTheme, ThemeProvider} from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
 import {AuthProvider, useAuth} from './context/AuthContext';
 import {PlanProvider} from './context/PlainContext';
+import {HelpHintsProvider} from './context/HelpHintsContext';
 import MainLayout from './components/layout/MainLayout';
 import LoginPage from './pages/LoginPage';
 import EquipmentPage from './pages/EquipmentPage';
@@ -115,9 +116,12 @@ const App: React.FC = () => {
             <CssBaseline />
             <AuthProvider>
                 <PlanProvider>
-                    <BrowserRouter>
-                        <AppRoutes />
-                    </BrowserRouter>
+                    {/* Итерация 15.2: глобальный кэш контекстных подсказок */}
+                    <HelpHintsProvider>
+                        <BrowserRouter>
+                            <AppRoutes />
+                        </BrowserRouter>
+                    </HelpHintsProvider>
                 </PlanProvider>
             </AuthProvider>
         </ThemeProvider>

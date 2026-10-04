@@ -1257,7 +1257,7 @@ REST API системы **APS Production Scheduler**.
 
 ## Справка
 
-**Итерация 15.1.**
+**Итерации 15.1 и 15.2.**
 
 ### `GET /api/v1/help/articles`
 
@@ -1392,6 +1392,47 @@ REST API системы **APS Production Scheduler**.
 
 ---
 
+### `GET /api/v1/help/hints`
+
+**Итерация 15.2:** контекстные подсказки для элементов UI.
+
+Возвращает словарь всех опубликованных подсказок. Фронт загружает
+один раз в `HelpHintsContext` и раздаёт через `useHint(hintKey)`.
+
+**Ответ:**
+```json
+{
+  "hints": {
+    "planning.recalc": {
+      "hint_key": "planning.recalc",
+      "title": "Пересчёт плана",
+      "body_md": "Кнопка **«Пересчитать»** активна только при наличии несохранённых изменений.",
+      "article_slug": "planning-recalculate",
+      "display_order": 10
+    },
+    "gantt.edit_mode": {
+      "hint_key": "gantt.edit_mode",
+      "title": "Режим редактирования",
+      "body_md": "По умолчанию план открывается в режиме **🔒 Просмотр**.",
+      "article_slug": "gantt-editing",
+      "display_order": 10
+    }
+  },
+  "total": 8
+}
+```
+
+**Права:** любой.
+
+**Формат `hint_key`:** `<module>.<action>` (например, `planning.recalc`,
+`gantt.edit_mode`, `shift.lab_block`, `whatif.json`, `settings.system`).
+
+**Примечание:** если в `article_slug` указан slug статьи справки — фронт
+показывает в Popover кнопку «Читать подробнее». Если `null` — подсказка
+самодостаточна.
+
+---
+
 ## Гант
 
 ### `GET /api/v1/gantt/`
@@ -1498,6 +1539,13 @@ Authorization: Bearer <token>
 - `GET /api/v1/help/search` — простой `ILIKE`, неполнотекстовый.
 - `GET /api/v1/help/docs/{filename}` — отдача `docs/*.md` без дублирования в БД.
 - Все эндпоинты `/help/*` — read-only, доступны любому авторизованному.
+
+### Контекстные подсказки (Итерация 15.2)
+
+- `GET /api/v1/help/hints` — словарь `{hint_key: HelpHint}`.
+- Формат `hint_key`: `<module>.<action>`.
+- Если `article_slug` задан — фронт показывает кнопку «Читать подробнее».
+- Фронт кэширует ответ в `HelpHintsContext` на время сессии.
 
 ### Идемпотентность
 

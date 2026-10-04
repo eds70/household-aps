@@ -1,32 +1,79 @@
-# Python / Backend
-backend/.venv/
-backend/venv/
-backend/env/
-backend/__pycache__/
-backend/*.py[cod]
-backend/*$py.class
-backend/.env
-backend/.env.local
-backend/.env.production
-backend/*.sqlite3
+# ==========================================
+# Python
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+*.egg-info/
+dist/
+build/
 
-# Node.js / Frontend
-frontend/node_modules/
-frontend/dist/
-frontend/.vite/
-frontend/.env
-frontend/.env.local
+# ==========================================
+# Backups и дампы БД
+# ==========================================
+*.sql.bak
+backup_*.sql
+backups/
+project_dump.txt
 
-# IDE и ОС
+# ==========================================
+# Логи
+# ==========================================
+*.log
+logs/
+
+# ==========================================
+# IDE
+# ==========================================
 .vscode/
 .idea/
 *.swp
 *.swo
-.DS_Store
-Thumbs.db
+*~
 
-# Логи и временные файлы
-*.log
+# ==========================================
+# Node / Frontend
+# ==========================================
+node_modules/
+frontend/dist/
+frontend/node_modules/
+frontend/node_modules/.vite/
+frontend/.vite/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# ==========================================
+# OS
+# ==========================================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ==========================================
+# Env-файлы (секреты)
+# ==========================================
+.env
+.env.local
+.env.*.local
+backend/.env
+backend/.env.local
+
+# ==========================================
+# Прочее
+# ==========================================
+*.tmp
+*.temp
+.cache/

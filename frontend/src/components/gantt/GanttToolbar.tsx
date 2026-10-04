@@ -1,7 +1,7 @@
 // frontend/src/components/gantt/GanttToolbar.tsx
 /**
  * Верхняя панель (тулбар) диаграммы Ганта
- * (Итерация 13.17 + 13.19 + 14.1 + 14.2).
+ * (Итерация 13.17 + 13.19 + 14.1 + 14.2 + 15.2).
  *
  * Итерация 13.19: кнопка «Пересчитать» становится активной ТОЛЬКО
  * если planDirty === true (есть несохранённые изменения,
@@ -13,12 +13,20 @@
  *   - Добавлен чекбокс «Скобки партий» (только в режиме 'equipment').
  *   - Добавлен чип с количеством партий на диаграмме.
  *
- * Итерация 14.2 (НОВОЕ):
+ * Итерация 14.2:
  *   - Добавлен ToggleButtonGroup «🔒 Просмотр / ✏️ Редактирование»,
  *     позволяющий переключать режим редактирования прямо на Ганте,
  *     не закрывая план.
  *   - Кнопка «Пересчитать» теперь рендерится всегда, когда передан
  *     onRecalculate (не только в readonly-режиме).
+ *
+ * Итерация 15.2 (НОВОЕ):
+ *   - Рядом с переключателем 🔒/✏️ добавлена контекстная подсказка
+ *     <Hint id="gantt.edit_mode"/> (Popover с markdown-телом).
+ *   - Рядом с селектом «Группировка» добавлена подсказка
+ *     <Hint id="gantt.brackets"/> — про скобки партий.
+ *   - Рядом с кнопкой «Пересчитать» добавлена подсказка
+ *     <Hint id="planning.recalc"/> — про условия активации кнопки.
  */
 import React from 'react';
 import {
@@ -59,6 +67,7 @@ import {
     ZoomOut as ZoomOutIcon,
 } from '@mui/icons-material';
 import type {GroupByMode} from '../../types';
+import Hint from '../help/Hint';
 
 export interface GanttToolbarProps {
     // Статистика
@@ -254,6 +263,12 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
                 </Tooltip>
             </ToggleButtonGroup>
 
+            {/* ==========================================
+                ИТЕРАЦИЯ 15.2: контекстная подсказка
+                про режим редактирования.
+            ========================================== */}
+            <Hint id="gantt.edit_mode" size="small" />
+
             <Divider orientation="vertical" flexItem sx={{mx: 0.5}} />
 
             {/* ==========================================
@@ -287,6 +302,12 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
                     </MenuItem>
                 </Select>
             </FormControl>
+
+            {/* ==========================================
+                ИТЕРАЦИЯ 15.2: контекстная подсказка
+                про скобки партий.
+            ========================================== */}
+            <Hint id="gantt.brackets" size="small" />
 
             {/* ==========================================
                 ИТЕРАЦИЯ 14.1: Чекбокс «Скобки партий»
@@ -402,26 +423,32 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
                 ИТЕРАЦИЯ 14.2: кнопка «Пересчитать»
                 Рендерится всегда, когда передан onRecalculate.
                 Активна, когда planDirty === true.
+
+                ИТЕРАЦИЯ 15.2: рядом с кнопкой — подсказка
+                <Hint id="planning.recalc"/>.
             ========================================== */}
             {onRecalculate && (
-                <Tooltip
-                    title={
-                        planDirty
-                            ? 'Пересчитать план с учётом изменений'
-                            : 'Нет изменений для пересчёта. Измените справочники, заказы, настройки или передвиньте задачу.'
-                    }
-                >
-                    <span>
-                        <IconButton
-                            size="small"
-                            onClick={onRecalculate}
-                            color={planDirty ? 'primary' : 'default'}
-                            disabled={recalculating || !planDirty}
-                        >
-                            <RecalcIcon/>
-                        </IconButton>
-                    </span>
-                </Tooltip>
+                <>
+                    <Tooltip
+                        title={
+                            planDirty
+                                ? 'Пересчитать план с учётом изменений'
+                                : 'Нет изменений для пересчёта. Измените справочники, заказы, настройки или передвиньте задачу.'
+                        }
+                    >
+                        <span>
+                            <IconButton
+                                size="small"
+                                onClick={onRecalculate}
+                                color={planDirty ? 'primary' : 'default'}
+                                disabled={recalculating || !planDirty}
+                            >
+                                <RecalcIcon/>
+                            </IconButton>
+                        </span>
+                    </Tooltip>
+                    <Hint id="planning.recalc" size="small" />
+                </>
             )}
 
             {/* Панель навигации */}

@@ -308,8 +308,6 @@ export interface RescheduleRequest {
     /**
      * Итерация 13.21: ID версии для архивации после пересчёта.
      * Обычно совпадает с from_version_id.
-     * Если версия используется в what-if — архивация пропускается,
-     * в ответе будет replace_blocked=true.
      */
     replace_version_id?: string | null;
 }
@@ -323,9 +321,6 @@ export interface RescheduleResponse {
     frozen_tasks: number;
     message: string;
     diff: Record<string, any>;
-    /**
-     * Итерация 13.21: результаты архивации старой версии.
-     */
     replace_archived: boolean;
     replace_blocked: boolean;
     replace_blocked_reason?: string | null;
@@ -364,13 +359,9 @@ export interface PinTaskResponse {
     message: string;
 }
 
-// ==========================================
-// MOVE TASK (Итерация 9, C2: drag-and-drop)
-// ==========================================
-
 export interface MoveTaskRequest {
-    new_start: string;   // ISO datetime (например "2026-09-07T08:00:00+03:00")
-    new_end: string;     // ISO datetime
+    new_start: string;
+    new_end: string;
 }
 
 export interface MoveTaskResponse {
@@ -379,19 +370,7 @@ export interface MoveTaskResponse {
     planned_end: string;
     is_pinned: boolean;
     message: string;
-    /** Итерация 13.17: задачи, сдвинутые каскадом. */
     moved_tasks: MovedTaskInfo[];
-}
-
-/**
- * Итерация 13.17: информация о сдвинутой задаче (для ответа каскада).
- */
-export interface MovedTaskInfo {
-    task_id: string;
-    operation_name: string;
-    equipment_id: string;
-    new_start: string;
-    new_end: string;
 }
 
 // ==========================================
@@ -745,8 +724,6 @@ export interface WhatIfRunResponse {
     compare?: WhatIfCompareResponse | null;
 }
 
-// --- Шаблоны изменений (для UI) ---
-
 export type WhatIfOrderAction =
     | 'add_order'
     | 'cancel_order'
@@ -893,9 +870,6 @@ export interface AuditSourceInfo {
 // Итерация 13.17: каскадный сдвиг и валидация
 // ==========================================
 
-/**
- * Ошибка валидации перемещения (возвращается с 400/409).
- */
 export interface MoveValidationError {
     reason: string;
     details?: string[];
@@ -906,9 +880,6 @@ export interface MoveValidationError {
     };
 }
 
-/**
- * Состояние диалога валидации на фронте.
- */
 export interface ValidationErrorState {
     open: boolean;
     reason: string;
@@ -920,14 +891,6 @@ export interface ValidationErrorState {
     };
 }
 
-/**
- * Состояние tooltip при перетаскивании / изменении длительности.
- *
- * Итерация 13.18 (fix #5):
- *  - Добавлен operationType ('move' | 'resize').
- *  - Добавлены originalStart / originalEnd — для отображения
- *    исходного времени рядом с новым.
- */
 export interface DragTooltipState {
     x: number;
     y: number;
@@ -936,15 +899,10 @@ export interface DragTooltipState {
     deltaMinutes?: number;
     affectedCount?: number;
 
-    /** Текущее время начала задачи (ISO). */
     startTime?: string;
-    /** Текущее время окончания задачи (ISO). */
     endTime?: string;
-    /** Исходное время начала задачи (ISO) — для сравнения. */
     originalStart?: string;
-    /** Исходное время окончания задачи (ISO). */
     originalEnd?: string;
-    /** Тип операции: перемещение или изменение длительности. */
     operationType?: 'move' | 'resize';
 }
 
@@ -952,20 +910,6 @@ export interface DragTooltipState {
 // Итерация 13.17: типы для диаграммы Ганта
 // ==========================================
 
-/**
- * Задача на диаграмме Ганта.
- *
- * Используется в:
- *  - GanttPage.tsx (основной потребитель);
- *  - TaskContextMenu.tsx;
- *  - MoveValidationDialog.tsx;
- *  - DragTooltip.tsx;
- *  - hooks/useTaskResize.ts;
- *  - hooks/useCascadeMove.ts.
- *
- * ПРИМЕЧАНИЕ: типы CoolingMode и CzStatus объявлены выше
- * (в блоках Batch и Честный Знак), здесь НЕ дублируются.
- */
 export interface TaskData {
     id: string;
     batch_id: string;
@@ -992,11 +936,6 @@ export interface TaskData {
 
     depends_on_task_ids?: string[];
 
-    /**
-     * Итерация 13.17: закреплена ли задача.
-     * Используется в контекстном меню (pin/unpin)
-     * и в визуальной индикации.
-     */
     is_pinned?: boolean;
 }
 
@@ -1004,11 +943,6 @@ export interface TaskData {
 // ИТЕРАЦИЯ 13.21: АРХИВАЦИЯ ВЕРСИЙ ПЛАНОВ
 // ==========================================
 
-/**
- * Ответ на разархивацию версии плана.
- *
- * Эндпоинт: PUT /api/v1/schedule/versions/{id}/unarchive
- */
 export interface UnarchiveVersionResponse {
     status: string;
     version_id: string;
@@ -1022,63 +956,18 @@ export interface UnarchiveVersionResponse {
 // ИТЕРАЦИЯ 14.1: РЕЖИМЫ ОТОБРАЖЕНИЯ ГАНТА
 // ==========================================
 
-/**
- * Режим группировки строк диаграммы Ганта.
- *
- *   - 'equipment' — группировка по оборудованию (по умолчанию).
- *     Это классический вид: каждый реактор, каждая линия — отдельная
- *     строка. Позволяет видеть загрузку оборудования.
- *
- *   - 'batch' — группировка по партиям.
- *     Каждая партия — отдельная строка (или несколько при пересечениях).
- *     Позволяет видеть полный цикл производства партии.
- *     Операции окрашены по equipment_id (цветовая легенда).
- */
 export type GroupByMode = 'equipment' | 'batch';
 
-/**
- * Скобка партии на диаграмме Ганта (фантомная обёртка).
- *
- * Рисуется как SVG-прямоугольник поверх диаграммы, охватывающий
- * все операции одной партии. Помогает видеть партию как целое,
- * не ломая группировку по оборудованию.
- *
- * Используется в режиме 'equipment' (когда включён showBatchBrackets).
- */
 export interface BatchBracket {
-    /** ID партии (batch_id). */
     batchId: string;
-
-    /** Название партии для отображения (например, "Партия a1b2c3d4"). */
     label: string;
-
-    /** Время начала первой операции партии (ISO). */
     start: string;
-
-    /** Время окончания последней операции партии (ISO). */
     end: string;
-
-    /** Цвет скобки (детерминированно сгенерирован от batch_id). */
     color: string;
-
-    /** ID всех задач этой партии (для подсветки при клике). */
     taskIds: string[];
-
-    /** Список ID оборудования, на котором выполняются операции партии. */
     equipmentIds: string[];
-
-    /** Общая длительность партии в минутах (от начала до конца). */
     durationMinutes: number;
-
-    /**
-     * Флаг: партия содержит хотя бы одну заблокированную задачу.
-     * Используется для визуального выделения (красная пунктирная рамка).
-     */
     hasBlockedTasks: boolean;
-
-    /**
-     * Флаг: партия содержит хотя бы одну задачу с замедленным охлаждением.
-     */
     hasSlowCooling: boolean;
 }
 
@@ -1086,9 +975,6 @@ export interface BatchBracket {
 // ИТЕРАЦИЯ 15.1: ВСТРОЕННАЯ СПРАВКА
 // ==========================================
 
-/**
- * Краткая информация о статье (для списка).
- */
 export interface HelpArticleListItem {
     slug: string;
     title: string;
@@ -1098,9 +984,6 @@ export interface HelpArticleListItem {
     updated_at: string;
 }
 
-/**
- * Полная статья с markdown-контентом.
- */
 export interface HelpArticle {
     slug: string;
     title: string;
@@ -1111,33 +994,21 @@ export interface HelpArticle {
     updated_at: string;
 }
 
-/**
- * Категория справки.
- */
 export interface HelpCategory {
     key: string;
     label: string;
     article_count: number;
 }
 
-/**
- * Список категорий.
- */
 export interface HelpCategoriesResponse {
     categories: HelpCategory[];
 }
 
-/**
- * Список статей.
- */
 export interface HelpArticlesListResponse {
     articles: HelpArticleListItem[];
     total: number;
 }
 
-/**
- * Результат поиска.
- */
 export interface HelpSearchHit {
     slug: string;
     title: string;
@@ -1151,11 +1022,35 @@ export interface HelpSearchResponse {
     total: number;
 }
 
-/**
- * Ответ от /api/v1/help/docs/{filename}.
- */
 export interface HelpDocFileResponse {
     filename: string;
     content_md: string;
     size: number;
+}
+
+// ==========================================
+// ИТЕРАЦИЯ 15.2: КОНТЕКСТНЫЕ ПОДСКАЗКИ
+// ==========================================
+
+/**
+ * Одна контекстная подсказка.
+ *
+ * Используется через <Hint id="hint_key"/>.
+ */
+export interface HelpHint {
+    hint_key: string;
+    title: string;
+    body_md: string;
+    article_slug?: string | null;
+    display_order: number;
+}
+
+/**
+ * Словарь всех подсказок, доступных пользователю.
+ *
+ * Формат: {hint_key: HelpHint}.
+ */
+export interface HelpHintsResponse {
+    hints: Record<string, HelpHint>;
+    total: number;
 }

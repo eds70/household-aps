@@ -340,8 +340,6 @@ export const scheduleApi = {
     },
     getVersions: async (_includeArchived: boolean = false) => {
         // Итерация 13.21 (Вариант B): всегда получаем ВСЕ версии.
-        // Фильтрация по архивным — на фронте (в SchedulePage),
-        // чтобы сохранить архивных родителей-контекст.
         const response = await api.get('/api/v1/schedule/versions', {
             params: { include_archived: true },
         });
@@ -355,10 +353,6 @@ export const scheduleApi = {
         const response = await api.delete(`/api/v1/schedule/versions/${versionId}`);
         return response.data;
     },
-    /**
-     * Итерация 13.21: разархивация версии плана.
-     * Возвращает версию в список «Истории планов».
-     */
     unarchiveVersion: async (versionId: string): Promise<import('../types').UnarchiveVersionResponse> => {
         const response = await api.put(`/api/v1/schedule/versions/${versionId}/unarchive`);
         return response.data;
@@ -500,21 +494,6 @@ export const rescheduleApi = {
         return response.data;
     },
 
-    // ==========================================
-    // Итерация 13.17: каскадный сдвиг
-    // ==========================================
-
-    /**
-     * Перемещает задачу с каскадным сдвигом соседей и последователей.
-     *
-     * Отличается от `moveTask`:
-     *  - не ставит `is_pinned = TRUE`;
-     *  - запускает каскад на сервере;
-     *  - возвращает список сдвинутых задач в `moved_tasks`.
-     *
-     * Может выбросить 409 Conflict, если каскад заблокирован
-     * (pinned/DONE/IN_PROGRESS задача мешает).
-     */
     moveTaskCascade: async (
         taskId: string,
         newStart: string,
@@ -533,11 +512,6 @@ export const rescheduleApi = {
         return response.data;
     },
 
-    /**
-     * Изменяет длительность задачи (перетаскивание за края).
-     *
-     * Может выбросить 400 с `detail.reason` и `detail.details`.
-     */
     resizeTask: async (
         taskId: string,
         newStart: string,
@@ -789,15 +763,6 @@ export const settingsApi = {
 // Plan Settings API (Итерация 13.14 + 13.14.1)
 // ==========================================
 export const planSettingsApi = {
-    /**
-     * Настройки конкретного плана (snapshot) + метаданные schedule_version.
-     *
-     * Возвращает:
-     *   - metadata: {name, comment, version_type} — из schedule_version
-     *   - settings: {key: value} — из plan_settings
-     *   - schema: полный реестр с метаданными
-     *   - categories: список категорий с label
-     */
     getForVersion: async (versionId: string): Promise<{
         version_id: string;
         metadata: {
@@ -813,11 +778,6 @@ export const planSettingsApi = {
         return response.data;
     },
 
-    /**
-     * Массовое обновление настроек плана + опционально метаданных.
-     *
-     * Все поля опциональны. Если ни одно не передано — no-op.
-     */
     updateForVersion: async (
         versionId: string,
         payload: {
@@ -846,7 +806,6 @@ export const planSettingsApi = {
         return response.data;
     },
 
-    /** Сброс настроек плана к глобальным app_settings (метаданные не трогает). */
     resetForVersion: async (versionId: string): Promise<any> => {
         const response = await api.post(
             `/api/v1/plan-settings/version/${versionId}/reset`,
@@ -943,7 +902,7 @@ export const auditApi = {
 };
 
 // ==========================================
-// Help API (Итерация 15.1)
+// Help API (Итерация 15.1 + 15.2)
 // ==========================================
 
 export const helpApi = {
@@ -981,14 +940,27 @@ export const helpApi = {
         return response.data;
     },
 
-    /**
-     * Получить содержимое файла docs/*.md.
-     * Используется для отображения технической документации.
-     */
+    /** Получить содержимое файла docs/*.md. */
     getDocFile: async (
         filename: string,
     ): Promise<import('../types').HelpDocFileResponse> => {
         const response = await api.get(`/api/v1/help/docs/${filename}`);
+        return response.data;
+    },
+
+    // ==========================================
+    // ИТЕРАЦИЯ 15.2: Контекстные подсказки
+    // ==========================================
+
+    /**
+     * Возвращает словарь всех опубликованных подсказок.
+     *
+     * Загружается один раз в HelpHintsContext и кэшируется
+     * на всё время сессии. Компонент <Hint/> читает через
+     * useHint(hintKey).
+     */
+    getHints: async (): Promise<import('../types').HelpHintsResponse> => {
+        const response = await api.get('/api/v1/help/hints');
         return response.data;
     },
 };

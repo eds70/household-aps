@@ -1,4 +1,8 @@
 // frontend/src/pages/WhatIfPage.tsx
+// Итерация 12: страница What-if сценариев.
+// Итерация 15.2: контекстная подсказка <Hint id="whatif.json"/>
+//   рядом с заголовком «Изменения (JSON)» в диалоге создания.
+
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
     Alert,
@@ -41,6 +45,7 @@ import type {ColDef, GridReadyEvent} from 'ag-grid-community';
 import {AllCommunityModule, ModuleRegistry} from 'ag-grid-community';
 import {usePlan} from '../context/PlainContext';
 import {whatifApi} from '../services/api';
+import Hint from '../components/help/Hint';
 import type {
     WhatIfChanges,
     WhatIfCompareResponse,
@@ -49,10 +54,9 @@ import type {
     WhatIfStatus,
 } from '../types';
 import DraggableDialog from '../components/common/DraggableDialog';
+import AppAgGrid from '../components/common/AppAgGrid';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
-
-import AppAgGrid from '../components/common/AppAgGrid';
 
 // ==========================================
 // КОНСТАНТЫ
@@ -157,9 +161,6 @@ const WhatIfPage: React.FC = () => {
     const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const pollingAttemptsRef = useRef<number>(0);
 
-    // ==========================================
-    // ЗАГРУЗКА СПИСКА
-    // ==========================================
     const loadScenarios = useCallback(async () => {
         setLoading(true);
         setError(null);
@@ -187,9 +188,6 @@ const WhatIfPage: React.FC = () => {
         };
     }, []);
 
-    // ==========================================
-    // СОЗДАНИЕ / РЕДАКТИРОВАНИЕ
-    // ==========================================
     const handleOpenCreate = () => {
         setEditingScenario(null);
         setFormName('');
@@ -271,9 +269,6 @@ const WhatIfPage: React.FC = () => {
         }
     };
 
-    // ==========================================
-    // УДАЛЕНИЕ
-    // ==========================================
     const handleDelete = async (scenarioId: string) => {
         const scenario = scenarios.find((s) => s.id === scenarioId);
         const hasResult = !!scenario?.result_version_id;
@@ -295,9 +290,6 @@ const WhatIfPage: React.FC = () => {
         }
     };
 
-    // ==========================================
-    // ЗАПУСК + POLLING
-    // ==========================================
     const stopPolling = () => {
         if (pollingRef.current) {
             clearInterval(pollingRef.current);
@@ -360,9 +352,6 @@ const WhatIfPage: React.FC = () => {
         }
     };
 
-    // ==========================================
-    // AGGrid COLUMNS
-    // ==========================================
     const columnDefs = useMemo<ColDef<WhatIfScenarioListItem>[]>(() => [
         {
             headerName: 'Название',
@@ -502,9 +491,6 @@ const WhatIfPage: React.FC = () => {
 
     const getRowId = useCallback((params: any) => params.data.id, []);
 
-    // ==========================================
-    // РЕНДЕР
-    // ==========================================
     if (loading && scenarios.length === 0) {
         return (
             <Box sx={{display: 'flex', justifyContent: 'center', mt: 8}}>
@@ -515,7 +501,6 @@ const WhatIfPage: React.FC = () => {
 
     return (
         <Box sx={{height: '100%', display: 'flex', flexDirection: 'column'}}>
-            {/* Заголовок */}
             <Box
                 sx={{
                     display: 'flex',
@@ -552,7 +537,6 @@ const WhatIfPage: React.FC = () => {
                 </Box>
             </Box>
 
-            {/* Подсказка */}
             <Alert severity="info" icon={<InfoIcon/>} sx={{mb: 2}}>
                 <Typography variant="body2">
                     <b>What-if</b> — сценарное планирование. Создайте сценарий с изменениями
@@ -568,7 +552,6 @@ const WhatIfPage: React.FC = () => {
                 </Alert>
             )}
 
-            {/* Таблица сценариев */}
             <Card
                 sx={{
                     flexGrow: 1,
@@ -602,7 +585,6 @@ const WhatIfPage: React.FC = () => {
                 </CardContent>
             </Card>
 
-            {/* Диалог создания/редактирования (DraggableDialog) */}
             <DraggableDialog
                 open={dialogOpen}
                 onClose={() => !saving && setDialogOpen(false)}
@@ -685,9 +667,14 @@ const WhatIfPage: React.FC = () => {
                         </Button>
                     </Box>
 
-                    <Typography variant="subtitle2" sx={{fontWeight: 600}}>
-                        Изменения (JSON)
-                    </Typography>
+                    {/* Итерация 15.2: подсказка про JSON */}
+                    <Box sx={{display: 'flex', alignItems: 'center', gap: 0.5}}>
+                        <Typography variant="subtitle2" sx={{fontWeight: 600}}>
+                            Изменения (JSON)
+                        </Typography>
+                        <Hint id="whatif.json" size="small"/>
+                    </Box>
+
                     <TextField
                         fullWidth
                         multiline
@@ -712,7 +699,6 @@ const WhatIfPage: React.FC = () => {
                 </Box>
             </DraggableDialog>
 
-            {/* Диалог результата (DraggableDialog) */}
             <DraggableDialog
                 open={resultDialogOpen}
                 onClose={() => setResultDialogOpen(false)}

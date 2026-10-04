@@ -22,6 +22,7 @@
 - [Гант](#гант)
 - [Редактирование плана (14.2)](#редактирование-плана-142)
 - [Встроенная справка (15.1)](#встроенная-справка-151)
+- [Контекстные подсказки (15.2)](#контекстные-подсказки-152)
 - [Диагностика](#диагностика)
 
 ---
@@ -114,6 +115,7 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_XX.sql
 | `plan_settings` (таблица) | `add_21.sql` |
 | **`is_archived`** | **`add_23.sql`** |
 | **`help_article` (таблица)** | **`add_24.sql`** |
+| **`help_hint` (таблица)** | **`add_25.sql`** |
 
 ---
 
@@ -158,7 +160,7 @@ curl http://localhost:8000/openapi.json | grep "unarchive"
 
 **Симптом:** запросы к справке возвращают `404`.
 
-**Причина:** эндпоинты не подключены или не применена миграция `add_24.sql`.
+**Причина:** эндпоинты не подключены или не применена миграция `add_24.sql` / `add_25.sql`.
 
 **Решение:**
 
@@ -175,13 +177,26 @@ curl http://localhost:8000/openapi.json | grep "unarchive"
    SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'help_article');
    "
    ```
-3. Проверить, что применены seed-миграции `add_24_seed_1/2/3.sql`:
+3. Проверить, что применена миграция `add_25.sql` (для подсказок):
+   ```bash
+   docker exec -i aps_postgres psql -U aps -d household -c "
+   SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'help_hint');
+   "
+   ```
+4. Проверить, что применены seed-миграции `add_24_seed_1/2/3.sql`:
    ```bash
    docker exec -i aps_postgres psql -U aps -d household -c "
    SELECT COUNT(*) FROM help_article;
    "
    ```
    Должно быть 15.
+5. Проверить, что применена seed-миграция `add_25_seed.sql`:
+   ```bash
+   docker exec -i aps_postgres psql -U aps -d household -c "
+   SELECT COUNT(*) FROM help_hint;
+   "
+   ```
+   Должно быть 8.
 
 ---
 
@@ -616,6 +631,7 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema.sql
 | `cz_scan_log (organization_id, cz_code)` | Повторный скан | Идемпотентно, `duplicate: true` |
 | `equipment_snapshot (id, version_id)` | Дубль снапшота | `ON CONFLICT DO NOTHING` (by design) |
 | `help_article (slug)` | Дубль статьи | `ON CONFLICT (slug) DO NOTHING` |
+| `help_hint (hint_key)` | Дубль подсказки | `ON CONFLICT (hint_key) DO NOTHING` |
 
 ---
 
@@ -1594,9 +1610,147 @@ import remarkGfm from 'remark-gfm';
 
 ---
 
+## Контекстные подсказки (15.2)
+
+### 91. Иконка `?` (подсказка) не отображается
+
+**Симптом:** рядом с элементом UI нет иконки `?`, хотя ожидается подсказка.
+
+**Причина:** возможные варианты:
+1. Не применена миграция `add_25.sql` (таблицы `help_hint` нет).
+2. Не применена seed-миграция `add_25_seed.sql` (8 подсказок не загружены).
+3. `HelpHintsProvider` не обёрнут вокруг приложения.
+4. `hint_key` в БД не совпадает с `id` в `<Hint id="..."/>`.
+5. Подсказка имеет `is_published = FALSE`.
+
+**Решение:**
+
+**Шаг 1. Проверить миграции:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'help_hint') AS has_table,
+       (SELECT COUNT(*) FROM help_hint WHERE is_published = TRUE) AS published_hints;
+"
+```
+
+Должно быть `has_table = t` и `published_hints = 8`.
+
+**Шаг 2. Применить миграции (если пусто):**
+
+```bash
+docker cp backend/migrations/add_25.sql aps_postgres:/tmp/add_25.sql
+docker cp backend/migrations/add_25_seed.sql aps_postgres:/tmp/add_25_seed.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_25.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_25_seed.sql
+```
+
+**Шаг 3. Проверить конкретный ключ:**
+
+Например, для подсказки в тулбаре Ганта (`gantt.edit_mode`):
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT hint_key, title, is_published
+FROM help_hint
+WHERE hint_key = 'gantt.edit_mode';
+"
+```
+
+Если пусто — либо ключ не совпадает с тем, что в `Hint.tsx`, либо не применён seed.
+
+**Шаг 4. Проверить провайдер в `App.tsx`:**
+
+```tsx
+<HelpHintsProvider>
+    <BrowserRouter>
+        <AppRoutes />
+    </BrowserRouter>
+</HelpHintsProvider>
+```
+
+Провайдер должен быть **внутри** `AuthProvider` (загрузка подсказок начинается только после аутентификации).
+
+**Шаг 5. Перезагрузить страницу** (`Ctrl+F5`) — кэш подсказок сбрасывается только при монтировании приложения.
+
+---
+
+### 92. Popover подсказки пустой (заголовок есть, тела нет)
+
+**Симптом:** клик на `?` открывает Popover, но текст пустой.
+
+**Причина:** в БД `body_md` пустая или `NULL` для этой подсказки.
+
+**Решение:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT hint_key, title, LENGTH(body_md) AS body_len
+FROM help_hint
+WHERE hint_key = '<ваш_ключ>';
+"
+```
+
+Если `body_len` = 0 или NULL — пересоздать seed-миграцию `add_25_seed.sql`.
+
+---
+
+### 93. Popover подсказки «дёргается» или не позиционируется
+
+**Симптом:** Popover появляется не там, где нужно, или мигает.
+
+**Причина:** MUI Popover позиционируется по `anchorEl`. Если иконка `?` внутри переиспользуемого компонента (например, в `TableCell`), `anchorEl` может терять ссылку при ре-рендере таблицы.
+
+**Решение:**
+
+1. Проверить, что в `Hint.tsx` `anchorEl` хранится в **локальном** `useState` (а не в общем контексте).
+2. Проверить, что `onClick` не вызывает `setState` родителя (иначе таблица перерисуется и `anchorEl` станет stale).
+3. Если проблема воспроизводится в AG Grid — использовать `event.currentTarget` (уже сделано в `Hint.tsx`).
+
+---
+
+### 94. Кнопка «Читать подробнее» ведёт на несуществующую статью
+
+**Симптом:** клик по «Читать подробнее» → `/help/xxx` → «Статья не найдена».
+
+**Причина:** `help_hint.article_slug` ссылается на slug, которого нет в `help_article`.
+
+**Решение:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT h.hint_key, h.article_slug,
+       CASE WHEN a.slug IS NULL THEN '❌ NOT FOUND' ELSE '✅ OK' END AS status
+FROM help_hint h
+LEFT JOIN help_article a ON a.slug = h.article_slug
+WHERE h.article_slug IS NOT NULL
+ORDER BY h.hint_key;
+"
+```
+
+Если есть `❌ NOT FOUND` — либо исправить slug в `help_hint` (SQL UPDATE), либо создать недостающую статью через seed.
+
+---
+
+### 95. Подсказки не обновляются после правки в БД
+
+**Симптом:** изменили `body_md` в `help_hint` через SQL, перезагрузили страницу, но текст подсказки старый.
+
+**Причина:** кэш `HelpHintsContext` сохраняется на время жизни страницы (загружается **один раз** при монтировании приложения).
+
+**Решение:**
+
+1. **Hard reload** (`Ctrl+Shift+R`).
+2. Если не помогло — проверить, что в `HelpHintsContext.tsx` есть `useEffect` на `[authLoading, isAuthenticated, loadHints]` (без `[]`).
+3. Если всё ещё не обновляется — возможно, браузер кэширует GET `/api/v1/help/hints`. Проверить в DevTools → Network → Headers → `Cache-Control`.
+
+**Долгосрочное решение:** в Итерации 15.5 (редактирование статей в UI) появится кнопка «Обновить кэш подсказок» — вызов `reload()` из `useHelpHints()`.
+
+---
+
 ## Диагностика
 
-### 91. Общая проверка системы
+### 96. Общая проверка системы
 
 ```bash
 # PostgreSQL
@@ -1643,11 +1797,25 @@ WHERE sv.is_active = true LIMIT 1;
 docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT COUNT(*) AS help_articles FROM help_article;
 "
+
+# Контекстные подсказки
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT COUNT(*) AS help_hints FROM help_hint WHERE is_published = TRUE;
+"
 ```
+
+**Ожидаемые значения:**
+
+| Проверка | Ожидание |
+|----------|----------|
+| `help_articles` | 15 |
+| `help_hints` | 8 |
+| `active` версия | 1 |
+| `plan_settings` активного плана | >0 |
 
 ---
 
-### 92. Полная очистка и пересоздание
+### 97. Полная очистка и пересоздание
 
 ```bash
 # 1. Снести контейнер
@@ -1676,6 +1844,7 @@ $migrations = @("add_06.sql", "add_06b.sql", "add_07.sql", "add_08.sql",
                 "add_17.sql", "add_18.sql", "add_19.sql", "add_20.sql",
                 "add_21.sql", "add_22.sql", "add_23.sql",
                 "add_24.sql", "add_24_seed_1.sql", "add_24_seed_2.sql", "add_24_seed_3.sql",
+                "add_25.sql", "add_25_seed.sql",
                 "fix_shift_names.sql", "fix_work_time.sql")
 foreach ($m in $migrations) {
     docker cp "backend/migrations/$m" "aps_postgres:/tmp/$m"
@@ -1693,7 +1862,7 @@ cd ../frontend; npm run dev
 
 ---
 
-### 93. Полезные ссылки
+### 98. Полезные ссылки
 
 - [README.md](../README.md) — основная документация.
 - [docs/OPERATIONS.md](OPERATIONS.md) — операции с БД.

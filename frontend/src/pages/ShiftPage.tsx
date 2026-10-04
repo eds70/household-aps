@@ -1,6 +1,8 @@
 // frontend/src/pages/ShiftPage.tsx
 // Итерация 13.19: markPlanDirty() при лабораторных блокировках,
 //   разблокировках и внесении факта выполнения задач.
+// Итерация 15.2: контекстная подсказка <Hint id="shift.lab_block"/>
+//   в шапке страницы (рядом с заголовком).
 
 import React, {useCallback, useEffect, useState} from 'react';
 import {
@@ -44,6 +46,7 @@ import {
 } from '@mui/icons-material';
 import {czApi, labApi, shiftApi} from '../services/api';
 import {usePlan} from '../context/PlainContext';
+import Hint from '../components/help/Hint';
 import type {
     CoolingMode,
     CzProgress,
@@ -112,12 +115,7 @@ const CZ_STATUS_COLORS: Record<CzStatus, 'default' | 'warning' | 'info' | 'succe
     COMPLETED: 'success',
 };
 
-// ==========================================
-// КОМПОНЕНТ
-// ==========================================
-
 const ShiftPage: React.FC = () => {
-    // Итерация 13.19: markPlanDirty для пометки плана «грязным»
     const {markPlanDirty} = usePlan();
 
     const [selectedDate, setSelectedDate] = useState<string>(
@@ -136,25 +134,19 @@ const ShiftPage: React.FC = () => {
     const [selectedTask, setSelectedTask] = useState<ShiftTask | null>(null);
     const [factForm, setFactForm] = useState<TaskFactRequest>({});
 
-    // Итерация 5: диалог блокировки
     const [blockDialogOpen, setBlockDialogOpen] = useState(false);
     const [blockingTask, setBlockingTask] = useState<ShiftTask | null>(null);
     const [blockReason, setBlockReason] = useState('');
     const [blockComment, setBlockComment] = useState('');
     const [blockBusy, setBlockBusy] = useState(false);
 
-    // Итерация 5: диалог разблокировки
     const [unblockDialogOpen, setUnblockDialogOpen] = useState(false);
     const [unblockingTask, setUnblockingTask] = useState<ShiftTask | null>(null);
     const [unblockComment, setUnblockComment] = useState('');
 
-    // Итерация 8: прогресс ЧЗ
     const [czProgress, setCzProgress] = useState<Record<string, CzProgress>>({});
     const [czLoading, setCzLoading] = useState(false);
 
-    // ==========================================
-    // Загрузка данных смены
-    // ==========================================
     const loadShift = useCallback(async (
         dateStr: string,
         shiftIdToSelect?: string | null,
@@ -202,9 +194,6 @@ const ShiftPage: React.FC = () => {
         }
     }, []);
 
-    // ==========================================
-    // Итерация 8: прогресс ЧЗ по задачам
-    // ==========================================
     const loadCzProgressForTasks = useCallback(async (tasks: ShiftTasksResponse) => {
         const batchIds = new Set<string>();
         tasks.groups.forEach((g) =>
@@ -276,7 +265,6 @@ const ShiftPage: React.FC = () => {
         if (!selectedTask) return;
         try {
             await shiftApi.updateTaskFact(selectedTask.id, factForm);
-            // Итерация 13.19: пометить план «грязным»
             markPlanDirty();
             setEditDialogOpen(false);
             if (currentShift) {
@@ -296,7 +284,6 @@ const ShiftPage: React.FC = () => {
                 material_load_at: new Date().toISOString(),
                 status: 'IN_PROGRESS',
             });
-            // Итерация 13.19: пометить план «грязным»
             markPlanDirty();
             if (currentShift) {
                 const tasks = await shiftApi.getTasks(currentShift.id);
@@ -313,7 +300,6 @@ const ShiftPage: React.FC = () => {
                 actual_end: new Date().toISOString(),
                 status: 'DONE',
             });
-            // Итерация 13.19: пометить план «грязным»
             markPlanDirty();
             if (currentShift) {
                 const tasks = await shiftApi.getTasks(currentShift.id);
@@ -349,7 +335,6 @@ const ShiftPage: React.FC = () => {
                 scheduled_task_id: blockingTask.id,
                 comment: blockComment || null,
             });
-            // Итерация 13.19: пометить план «грязным»
             markPlanDirty();
             setBlockDialogOpen(false);
             if (currentShift) {
@@ -377,7 +362,6 @@ const ShiftPage: React.FC = () => {
             await labApi.unblockBatch(unblockingTask.batch_id, {
                 comment: unblockComment || null,
             });
-            // Итерация 13.19: пометить план «грязным»
             markPlanDirty();
             setUnblockDialogOpen(false);
             if (currentShift) {
@@ -654,6 +638,8 @@ const ShiftPage: React.FC = () => {
                         <Typography variant="h4" component="h1" sx={{fontWeight: 600, color: '#2c3e50'}}>
                             Рабочее место мастера
                         </Typography>
+                        {/* Итерация 15.2: подсказка про лаб. блокировку */}
+                        <Hint id="shift.lab_block" size="medium"/>
                     </Box>
                     <Box sx={{display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap'}}>
                         {shiftsOfDay.length > 0 && (
@@ -822,7 +808,6 @@ const ShiftPage: React.FC = () => {
                 </Card>
             )}
 
-            {/* Диалог внесения факта (DraggableDialog) */}
             <DraggableDialog
                 open={editDialogOpen}
                 onClose={() => setEditDialogOpen(false)}
@@ -932,7 +917,6 @@ const ShiftPage: React.FC = () => {
                 )}
             </DraggableDialog>
 
-            {/* Диалог блокировки (DraggableDialog) */}
             <DraggableDialog
                 open={blockDialogOpen}
                 onClose={() => setBlockDialogOpen(false)}
@@ -987,7 +971,6 @@ const ShiftPage: React.FC = () => {
                 )}
             </DraggableDialog>
 
-            {/* Диалог разблокировки (DraggableDialog) */}
             <DraggableDialog
                 open={unblockDialogOpen}
                 onClose={() => setUnblockDialogOpen(false)}

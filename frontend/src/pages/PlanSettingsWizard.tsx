@@ -1,17 +1,10 @@
 // frontend/src/pages/PlanSettingsWizard.tsx
-// Итерация 13.19: markPlanDirty() после сохранения настроек плана
-//   (только если реально изменились какие-то настройки).
+// Итерация 13.19: markPlanDirty() после сохранения настроек плана.
 // Итерация 13.21: чекбокс auto_archive_on_recalc на шаге «Основные».
-//   Настройка управляет тем, будет ли старая версия архивироваться
-//   при пересчёте (см. useRecalculate.ts / saver.py).
-//
 // Итерация 13.22 (fix): исправлена невалидная вложенность HTML.
-//   <Box> (по умолчанию <div>) внутри <Typography variant="body2">
-//   (по умолчанию <p>) вызывал React-ошибку validateDOMNesting:
-//   "<div> cannot be a descendant of <p>".
-//   Решение: везде, где Box/Typography попадают в label у
-//   FormControlLabel или в InputLabel — использовать
-//   component="span" (или inline-flex) вместо дефолтных div/p.
+// Итерация 15.2: контекстные подсказки:
+//   - settings.system — рядом с системными настройками (🔒)
+//   - планирование: в заголовке шага «Основные» — ссылка на app vs plan
 
 import React, {useCallback, useEffect, useMemo, useState} from 'react';
 import {
@@ -46,6 +39,7 @@ import {
     Settings as SettingsIcon,
 } from '@mui/icons-material';
 import DraggableDialog from '../components/common/DraggableDialog';
+import Hint from '../components/help/Hint';
 import {planSettingsApi, scheduleApi, settingsApi} from '../services/api';
 import {usePlan} from '../context/PlainContext';
 import type {SettingSpec, SettingsSchema} from '../types';
@@ -155,22 +149,18 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
     const isCreateMode = mode === 'create';
     const isEditMode = !isCreateMode;
 
-    // Итерация 13.19: markPlanDirty для пометки плана «грязным»
     const {markPlanDirty} = usePlan();
 
-    // Метаданные плана
     const [planName, setPlanName] = useState('');
     const [planComment, setPlanComment] = useState('');
     const [planVersionType, setPlanVersionType] = useState('MONTHLY');
 
-    // Снапшот исходных метаданных для отслеживания изменений
     const [originalMeta, setOriginalMeta] = useState<{
         name: string;
         comment: string;
         version_type: string;
     }>({name: '', comment: '', version_type: 'MONTHLY'});
 
-    // Настройки
     const [schema, setSchema] = useState<SettingsSchema | null>(null);
     const [values, setValues] = useState<Record<string, any>>({});
     const [originalValues, setOriginalValues] = useState<Record<string, any>>({});
@@ -181,9 +171,6 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
 
     const [activeStep, setActiveStep] = useState(isCreateMode ? 0 : 1);
 
-    // ==========================================
-    // Загрузка
-    // ==========================================
     const loadData = useCallback(async () => {
         setLoading(true);
         setError(null);
@@ -196,7 +183,6 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                 setValues(planData.settings);
                 setOriginalValues(planData.settings);
 
-                // Метаданные
                 const meta = {
                     name: planData.metadata?.name || '',
                     comment: planData.metadata?.comment || '',
@@ -232,9 +218,6 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
         }
     }, [open, loadData, isCreateMode]);
 
-    // ==========================================
-    // Изменение настроек
-    // ==========================================
     const handleChange = (key: string, value: any) => {
         setValues((prev) => ({...prev, [key]: value}));
     };
@@ -249,9 +232,6 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
         return changed;
     }, [values, originalValues]);
 
-    // ==========================================
-    // Изменение метаданных
-    // ==========================================
     const metadataChanged = useMemo(() => {
         if (isCreateMode) return false;
         return (
@@ -260,9 +240,6 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
         );
     }, [isCreateMode, planName, planComment, originalMeta]);
 
-    // ==========================================
-    // Текущий шаг
-    // ==========================================
     const currentStepSettings = useMemo<SettingSpec[]>(() => {
         if (!schema) return [];
         const step = WIZARD_STEPS[activeStep];
@@ -272,9 +249,6 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
             .sort((a, b) => a.display_order - b.display_order);
     }, [schema, activeStep]);
 
-    // ==========================================
-    // Создание нового плана
-    // ==========================================
     const handleCreatePlan = async (): Promise<string | null> => {
         if (!planName.trim()) {
             setError('Введите название плана');
@@ -288,9 +262,6 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
         return newVersion.id;
     };
 
-    // ==========================================
-    // Сохранение настроек
-    // ==========================================
     const handleSaveSettings = async (targetVersionId: string) => {
         const updates: Record<string, any> = {};
         for (const key of changedKeys) {
@@ -303,9 +274,6 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
         return Object.keys(updates).length;
     };
 
-    // ==========================================
-    // Сохранение метаданных
-    // ==========================================
     const handleSaveMetadata = async (targetVersionId: string) => {
         if (!metadataChanged) return false;
         await planSettingsApi.updateForVersion(targetVersionId, {
@@ -320,9 +288,6 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
         return true;
     };
 
-    // ==========================================
-    // Главный обработчик
-    // ==========================================
     const handleSave = async (alsoBuild: boolean = false) => {
         setSaving(true);
         setError(null);
@@ -338,7 +303,6 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                 }
                 await handleSaveSettings(targetVersionId);
                 setSuccess(`План "${planName}" создан`);
-                // Новый план создаётся со снапшотами — planDirty не нужен.
             } else {
                 if (!versionId) {
                     setError('versionId не передан');
@@ -349,9 +313,6 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                 const settingsCount = await handleSaveSettings(versionId);
                 const metaSaved = await handleSaveMetadata(versionId);
 
-                // Итерация 13.19: пометить план «грязным»,
-                // только если реально изменились настройки.
-                // Метаданные (name/comment) на расчёт не влияют.
                 if (settingsCount > 0) {
                     markPlanDirty();
                 }
@@ -384,16 +345,12 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
         }
     };
 
-    // ==========================================
-    // Сброс к глобальным (только edit)
-    // ==========================================
     const handleReset = async () => {
         if (!versionId) return;
         if (!window.confirm('Сбросить все настройки плана к глобальным значениям?')) return;
         setSaving(true);
         try {
             await planSettingsApi.resetForVersion(versionId);
-            // Итерация 13.19: пометить план «грязным»
             markPlanDirty();
             await loadData();
             setSuccess('Настройки сброшены к глобальным');
@@ -405,23 +362,16 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
         }
     };
 
-    // ==========================================
-    // Навигация
-    // ==========================================
     const handleNext = () => setActiveStep((s) => Math.min(s + 1, WIZARD_STEPS.length - 1));
     const handleBack = () => setActiveStep((s) => Math.max(s - 1, 0));
 
-    // ==========================================
-    // Рендер поля настройки
-    // ==========================================
     const renderField = (spec: SettingSpec) => {
         const value = values[spec.key];
         const isChanged = changedKeys.includes(spec.key);
         const isDisabled = spec.is_system;
 
-        // ⚠️ ВАЖНО: labelNode вкладывается в <label> (FormControlLabel)
-        // или в <label> (InputLabel/TextField). Поэтому внутри не должно
-        // быть <div>/<p> — только <span>.
+        // ⚠️ labelNode вкладывается в <label> (FormControlLabel),
+        // поэтому внутри — только span, никаких div/p.
         const labelNode = (
             <Box
                 component="span"
@@ -444,6 +394,10 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                     <Tooltip title="Системная настройка — управляется режимом смен">
                         <InfoIcon fontSize="small" color="disabled"/>
                     </Tooltip>
+                )}
+                {/* Итерация 15.2: подсказка про системные настройки */}
+                {isDisabled && (
+                    <Hint id="settings.system" size="small" />
                 )}
             </Box>
         );
@@ -633,9 +587,6 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
         );
     };
 
-    // ==========================================
-    // Шаг «Метаданные»
-    // ==========================================
     const renderMetaStep = () => (
         <Box sx={{display: 'flex', flexDirection: 'column', gap: 2.5}}>
             <TextField
@@ -687,9 +638,6 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
         </Box>
     );
 
-    // ==========================================
-    // Кнопки
-    // ==========================================
     const currentStep = WIZARD_STEPS[activeStep];
     const isMetaStep = currentStep?.key === 'meta';
 
@@ -763,9 +711,6 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
         </Box>
     );
 
-    // ==========================================
-    // Рендер
-    // ==========================================
     return (
         <DraggableDialog
             open={open}
@@ -841,9 +786,15 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                     </Box>
 
                     <Box sx={{flexGrow: 1, p: 3, overflowY: 'auto', minWidth: 0}}>
-                        <Typography variant="h6" sx={{fontWeight: 600, mb: 0.5}}>
-                            {currentStep?.label}
-                        </Typography>
+                        <Box sx={{display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.5}}>
+                            <Typography variant="h6" sx={{fontWeight: 600}}>
+                                {currentStep?.label}
+                            </Typography>
+                            {/* Итерация 15.2: подсказка на шаге «Основные» */}
+                            {currentStep?.key === 'planning' && (
+                                <Hint id="settings.system" size="small"/>
+                            )}
+                        </Box>
                         <Typography
                             variant="caption"
                             color="text.secondary"

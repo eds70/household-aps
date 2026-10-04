@@ -1,20 +1,22 @@
 # backend/app/api/v1/help.py
 """
-API встроенной справки (Итерация 15.1).
+API встроенной справки (Итерация 15.1 + 15.2).
 
 Эндпоинты:
   GET /api/v1/help/articles                 — список статей
   GET /api/v1/help/articles/{slug}          — одна статья
   GET /api/v1/help/categories               — список категорий
   GET /api/v1/help/search?q=...             — поиск
+  GET /api/v1/help/hints                    — контекстные подсказки (15.2)
 
 Все эндпоинты доступны любому авторизованному пользователю.
 Глобальные статьи (organization_id IS NULL) видны всем.
 Статьи организации (organization_id = X) видны только ей.
 """
+import json
 import logging
 import re
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
@@ -27,6 +29,8 @@ from .help_models import (
     HelpArticlesListResponse,
     HelpCategoriesResponse,
     HelpCategoryResponse,
+    HelpHint,
+    HelpHintsResponse,
     HelpSearchHit,
     HelpSearchResponse,
 )
@@ -73,7 +77,6 @@ def _parse_tags(raw) -> List[str]:
     if isinstance(raw, list):
         return [str(t) for t in raw]
     if isinstance(raw, str):
-        import json
         try:
             parsed = json.loads(raw)
             if isinstance(parsed, list):
@@ -97,7 +100,6 @@ def _make_snippet(content: str, query: str, context_chars: int = 120) -> str:
     idx = lower_content.find(lower_query)
 
     if idx < 0:
-        # Не нашли — берём начало
         snippet = content[:context_chars].strip()
         if len(content) > context_chars:
             snippet += "…"
@@ -315,4 +317,62 @@ async def search_articles(
         query=q,
         hits=hits,
         total=len(hits),
+    )
+
+
+# ==========================================
+# ИТЕРАЦИЯ 15.2: GET /hints — контекстные подсказки
+# ==========================================
+
+@router.get("/hints", response_model=HelpHintsResponse)
+async def get_hints(
+        org_id=Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Возвращает словарь всех опубликованных подсказок.
+
+    Формат ответа:
+      {
+        "hints": {
+          "planning.recalc": {
+            "hint_key": "planning.recalc",
+            "title": "Пересчёт плана",
+            "body_md": "...",
+            "article_slug": "planning-recalculate",
+            "display_order": 10
+          },
+          ...
+        },
+        "total": 8
+      }
+
+    Фронт загружает один раз и кэширует в HelpHintsContext.
+    Используется через useHint(hintKey).
+    """
+    result = await db.execute(
+        text("""
+            SELECT hint_key, title, body_md, article_slug, display_order
+            FROM help_hint
+            WHERE is_published = TRUE
+              AND (organization_id IS NULL OR organization_id = :org_id)
+            ORDER BY display_order, hint_key
+        """),
+        {"org_id": org_id},
+    )
+
+    hints: Dict[str, HelpHint] = {}
+    for row in result.fetchall():
+        hint = HelpHint(
+            hint_key=row.hint_key,
+            title=row.title,
+            body_md=row.body_md,
+            article_slug=row.article_slug,
+            display_order=row.display_order,
+        )
+        hints[hint.hint_key] = hint
+
+    return HelpHintsResponse(
+        hints=hints,
+        total=len(hints),
     )
