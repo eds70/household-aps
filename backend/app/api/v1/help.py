@@ -1,6 +1,6 @@
 # backend/app/api/v1/help.py
 """
-API встроенной справки (Итерация 15.1 + 15.2).
+API встроенной справки (Итерация 15.1 + 15.2 + 15.4).
 
 Эндпоинты:
   GET /api/v1/help/articles                 — список статей
@@ -52,6 +52,8 @@ CATEGORY_LABELS = {
     "cz": "Честный Знак",
     "whatif": "What-if",
     "settings": "Настройки",
+    # Итерация 15.4: категория FAQ
+    "faq": "FAQ",
 }
 
 CATEGORY_ORDER = [
@@ -63,6 +65,8 @@ CATEGORY_ORDER = [
     "cz",
     "whatif",
     "settings",
+    # Итерация 15.4: FAQ — последняя категория
+    "faq",
 ]
 
 

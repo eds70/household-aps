@@ -1257,7 +1257,7 @@ REST API системы **APS Production Scheduler**.
 
 ## Справка
 
-**Итерации 15.1 и 15.2.**
+**Итерации 15.1, 15.2 и 15.4.**
 
 ### `GET /api/v1/help/articles`
 
@@ -1279,7 +1279,7 @@ REST API системы **APS Production Scheduler**.
       "updated_at": "2026-10-02T10:00:00Z"
     }
   ],
-  "total": 15
+  "total": 30
 }
 ```
 
@@ -1326,10 +1326,13 @@ REST API системы **APS Production Scheduler**.
     {"key": "lab", "label": "Лаборатория", "article_count": 1},
     {"key": "cz", "label": "Честный Знак", "article_count": 1},
     {"key": "whatif", "label": "What-if", "article_count": 1},
-    {"key": "settings", "label": "Настройки", "article_count": 1}
+    {"key": "settings", "label": "Настройки", "article_count": 1},
+    {"key": "faq", "label": "FAQ", "article_count": 15}
   ]
 }
 ```
+
+**Итерация 15.4:** категория `faq` — последняя. Возвращается как обычная категория, без изменений в API.
 
 **Права:** любой.
 
@@ -1361,32 +1364,7 @@ REST API системы **APS Production Scheduler**.
 
 **Логика:** поиск по `title ILIKE %q%` / `content_md ILIKE %q%` / `tags::text ILIKE %q%`.
 
-**Права:** любой.
-
----
-
-### `GET /api/v1/help/docs/{filename}`
-
-Отдача файлов `docs/*.md`.
-
-**Ограничения:**
-- Только файлы `.md`.
-- Имя файла не должно содержать `/`, `\`, `..`.
-- Размер файла — не более 1 МБ.
-
-**Ответ:**
-```json
-{
-  "filename": "API.md",
-  "content_md": "# API Reference\n\n...",
-  "size": 29045
-}
-```
-
-**Ошибки:**
-- `400` — не `.md`, или содержит path traversal.
-- `404` — файл не найден.
-- `413` — файл больше 1 МБ.
+**Примечание (15.4):** поиск работает и по FAQ-статьям — они хранятся в той же таблице `help_article`.
 
 **Права:** любой.
 
@@ -1430,6 +1408,33 @@ REST API системы **APS Production Scheduler**.
 **Примечание:** если в `article_slug` указан slug статьи справки — фронт
 показывает в Popover кнопку «Читать подробнее». Если `null` — подсказка
 самодостаточна.
+
+---
+
+### `GET /api/v1/help/docs/{filename}`
+
+Отдача файлов `docs/*.md`.
+
+**Ограничения:**
+- Только файлы `.md`.
+- Имя файла не должно содержать `/`, `\`, `..`.
+- Размер файла — не более 1 МБ.
+
+**Ответ:**
+```json
+{
+  "filename": "API.md",
+  "content_md": "# API Reference\n\n...",
+  "size": 29045
+}
+```
+
+**Ошибки:**
+- `400` — не `.md`, или содержит path traversal.
+- `404` — файл не найден.
+- `413` — файл больше 1 МБ.
+
+**Права:** любой.
 
 ---
 
@@ -1546,6 +1551,15 @@ Authorization: Bearer <token>
 - Формат `hint_key`: `<module>.<action>`.
 - Если `article_slug` задан — фронт показывает кнопку «Читать подробнее».
 - Фронт кэширует ответ в `HelpHintsContext` на время сессии.
+
+### FAQ (Итерация 15.4)
+
+- FAQ — **не отдельная сущность**, а **категория** в `help_article`.
+- `GET /api/v1/help/categories` возвращает `faq` как обычную категорию.
+- `GET /api/v1/help/articles?category=faq` возвращает 15 FAQ-статей.
+- `GET /api/v1/help/search` ищет и по FAQ — они в той же таблице.
+- Все FAQ-статьи глобальные (`organization_id IS NULL`).
+- Дополнительных эндпоинтов **не требуется**.
 
 ### Идемпотентность
 

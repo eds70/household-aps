@@ -294,6 +294,26 @@ feat(help): add markdown-based help system (iteration 15.1)
 - +38 тестов, всего 601 passed
 ```
 
+```
+feat(help): add contextual hints (iteration 15.2)
+
+- Миграция add_25.sql: таблица help_hint
+- Seed-миграция add_25_seed.sql: 8 подсказок
+- API /api/v1/help/hints
+- Frontend: HelpHintsContext, Hint.tsx
+- Интеграция в 5 страниц (8 подсказок)
+- +24 теста, всего 625 passed
+```
+
+```
+feat(help): add FAQ category (iteration 15.4)
+
+- Seed-миграции add_26_seed_1/2/3.sql: 15 FAQ-статей
+- Категория faq в CATEGORY_LABELS и CATEGORY_ORDER
+- Формат статей: Симптом → Причина → Что делать → Проверка
+- +24 теста, всего 678 passed
+```
+
 ---
 
 ## Тестирование
@@ -369,6 +389,8 @@ npm run lint
 | Команды БД | `docs/OPERATIONS.md`, `README.md` |
 | Troubleshooting | `docs/TROUBLESHOOTING.md`, `README.md` |
 | Статья справки | `backend/migrations/add_24_seed_*.sql` |
+| Контекстная подсказка | `backend/migrations/add_25_seed.sql` |
+| FAQ-статья | `backend/migrations/add_26_seed_*.sql` |
 
 ### Стиль документации
 
@@ -437,9 +459,17 @@ npm run lint
 1. Создайте новый seed-файл `backend/migrations/add_NN_seed_M.sql`.
 2. Используйте `INSERT INTO help_article ... ON CONFLICT (slug) DO NOTHING`.
 3. Категории: `getting-started`, `planning`, `gantt`, `shift`,
-   `lab`, `cz`, `whatif`, `settings`.
+   `lab`, `cz`, `whatif`, `settings`, `faq`.
 4. Примените миграцию через `docker cp` + `psql -f`.
-5. Добавьте тест в `tests/test_help.py`.
+5. Добавьте тест в `tests/test_help.py` (или `test_help_faq.py` для FAQ).
+
+### Как добавить контекстную подсказку
+
+1. Создайте новый seed-файл `backend/migrations/add_NN_seed_M.sql`.
+2. Используйте `INSERT INTO help_hint ... ON CONFLICT (hint_key) DO NOTHING`.
+3. Формат `hint_key`: `<module>.<action>` (например, `planning.recalc`).
+4. Примените миграцию через `docker cp` + `psql -f`.
+5. Добавьте тест в `tests/test_help_hints.py`.
 
 ### Как обновить CHANGELOG
 
@@ -454,7 +484,7 @@ npm run lint
    ```
 3. При релизе — перенесите `[Unreleased]` в новую версию:
    ```
-   ## [4.4.0] — 2026-10-02
+   ## [4.6.0] — 2026-10-04
    ```
 
 ---

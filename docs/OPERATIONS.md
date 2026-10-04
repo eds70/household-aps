@@ -13,6 +13,8 @@
 - [Проверка конкретных таблиц](#проверка-конкретных-таблиц)
 - [Архивация версий планов (Итерация 13.21)](#архивация-версий-планов-итерация-1321)
 - [Встроенная справка (Итерация 15.1)](#встроенная-справка-итерация-151)
+- [Контекстные подсказки (Итерация 15.2)](#контекстные-подсказки-итерация-152)
+- [FAQ (Итерация 15.4)](#faq-итерация-154)
 - [Диагностика](#диагностика)
 
 ---
@@ -98,15 +100,15 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT pg_terminate_bac
 ### Правильный способ
 
 ```bash
-docker cp backend/migrations/add_24.sql aps_postgres:/tmp/add_24.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_24.sql
+docker cp backend/migrations/add_26_seed_1.sql aps_postgres:/tmp/add_26_seed_1.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_1.sql
 ```
 
 ### Неправильный способ (НЕ ИСПОЛЬЗОВАТЬ)
 
 ```bash
 # ❌ PowerShell испортит кириллицу
-Get-Content backend/migrations/add_24.sql | docker exec -i aps_postgres psql -U aps -d household
+Get-Content backend/migrations/add_26_seed_1.sql | docker exec -i aps_postgres psql -U aps -d household
 ```
 
 ### История миграций
@@ -137,11 +139,16 @@ Get-Content backend/migrations/add_24.sql | docker exec -i aps_postgres psql -U 
 | `add_20.sql` | 13.6 | `depends_on_task_ids` |
 | `add_21.sql` | 13.14 | `plan_settings` |
 | `add_22.sql` | 13.17 | Индексы для каскадного сдвига |
-| `add_23.sql` | 13.21 | **Архивация версий планов** |
-| `add_24.sql` | 15.1 | **Таблица `help_article`** |
-| `add_24_seed_1.sql` | 15.1 | **3 статьи справки** |
-| `add_24_seed_2.sql` | 15.1 | **5 статей справки** |
-| `add_24_seed_3.sql` | 15.1 | **7 статей справки** |
+| `add_23.sql` | 13.21 | Архивация версий планов |
+| `add_24.sql` | 15.1 | Таблица `help_article` |
+| `add_24_seed_1.sql` | 15.1 | 3 статьи справки |
+| `add_24_seed_2.sql` | 15.1 | 5 статей справки |
+| `add_24_seed_3.sql` | 15.1 | 7 статей справки |
+| `add_25.sql` | 15.2 | Таблица `help_hint` |
+| `add_25_seed.sql` | 15.2 | 8 контекстных подсказок |
+| `add_26_seed_1.sql` | 15.4 | FAQ: планирование (5 статей) |
+| `add_26_seed_2.sql` | 15.4 | FAQ: гант, смены, what-if, ЧЗ (5 статей) |
+| `add_26_seed_3.sql` | 15.4 | FAQ: лаборатория, advisor (5 статей) |
 | `fix_shift_names.sql` | — | Исправление имён смен |
 | `fix_work_time.sql` | — | Исправление work_start/end_time |
 
@@ -157,6 +164,8 @@ $migrations = @(
     "add_17.sql", "add_18.sql", "add_19.sql", "add_20.sql",
     "add_21.sql", "add_22.sql", "add_23.sql",
     "add_24.sql", "add_24_seed_1.sql", "add_24_seed_2.sql", "add_24_seed_3.sql",
+    "add_25.sql", "add_25_seed.sql",
+    "add_26_seed_1.sql", "add_26_seed_2.sql", "add_26_seed_3.sql",
     "fix_shift_names.sql", "fix_work_time.sql"
 )
 
@@ -190,6 +199,17 @@ docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT EXISTS (
     SELECT 1 FROM information_schema.tables
     WHERE table_name = 'help_article'
+);
+"
+```
+
+Для `add_25.sql` (подсказки):
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT EXISTS (
+    SELECT 1 FROM information_schema.tables
+    WHERE table_name = 'help_hint'
 );
 "
 ```
@@ -925,11 +945,12 @@ ORDER BY category;
 "
 ```
 
-**Ожидаемый вывод:**
+**Ожидаемый вывод (после Итерации 15.4):**
 
 | category | cnt |
 |----------|-----|
 | `cz` | 1 |
+| `faq` | 15 |
 | `gantt` | 4 |
 | `getting-started` | 2 |
 | `lab` | 1 |
@@ -938,7 +959,7 @@ ORDER BY category;
 | `shift` | 1 |
 | `whatif` | 1 |
 
-Всего: **15 статей**.
+Всего: **30 статей** (15 базовых + 15 FAQ).
 
 ### Список статей
 
@@ -1002,6 +1023,183 @@ UPDATE help_article
 SET content_md = REPLACE(content_md, E'\r\n', E'\n')
 WHERE content_md LIKE E'%\r%';
 "
+```
+
+---
+
+## Контекстные подсказки (Итерация 15.2)
+
+### Проверить, что таблица создана
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT EXISTS (
+    SELECT 1 FROM information_schema.tables
+    WHERE table_name = 'help_hint'
+);
+"
+```
+
+Ожидаемо: `t`.
+
+### Список подсказок
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT hint_key, title, article_slug, display_order
+FROM help_hint
+WHERE is_published = TRUE
+ORDER BY display_order;
+"
+```
+
+**Ожидаемо:** 8 подсказок.
+
+### Проверить связь подсказок со статьями
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT
+    h.hint_key,
+    h.article_slug,
+    CASE WHEN a.slug IS NULL THEN '❌ NOT FOUND' ELSE '✅ OK' END AS status
+FROM help_hint h
+LEFT JOIN help_article a ON a.slug = h.article_slug
+WHERE h.article_slug IS NOT NULL
+ORDER BY h.hint_key;
+"
+```
+
+Все должны быть `✅ OK`.
+
+### Проверить триггер updated_at
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT tgname, tgenabled
+FROM pg_trigger
+WHERE tgname = 'trg_help_hint_updated_at';
+"
+```
+
+### Проверить индексы
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT indexname FROM pg_indexes WHERE tablename = 'help_hint';
+"
+```
+
+Ожидаемо: `idx_help_hint_published`, `idx_help_hint_org`.
+
+---
+
+## FAQ (Итерация 15.4)
+
+FAQ — это **категория** в существующей таблице `help_article`, поэтому
+отдельных таблиц/индексов/триггеров **не создаётся**. Все проверки — через
+`help_article` (см. раздел «Встроенная справка»).
+
+### Проверить, что все 15 FAQ-статей на месте
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT COUNT(*) AS faq_count
+FROM help_article
+WHERE category = 'faq';
+"
+```
+
+**Ожидаемо:** `faq_count = 15`.
+
+### Список FAQ-статей с заголовками
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT slug, title, display_order
+FROM help_article
+WHERE category = 'faq'
+ORDER BY display_order;
+"
+```
+
+**Ожидаемый вывод (15 строк):**
+
+| slug | title |
+|------|-------|
+| `faq-plan-feasible-not-optimal` | План получился FEASIBLE, а не OPTIMAL — что делать? |
+| `faq-task-not-movable` | Задача не двигается на Ганте |
+| `faq-plan-is-empty` | План пуст (⚠) — что делать? |
+| `faq-plan-settings-empty` | «Настройки плана не заполнены» при пересчёте |
+| `faq-material-shortage` | Не хватает сырья — что делать? |
+| `faq-move-pinned-task` | Закреплённая задача не двигается — как открепить? |
+| `faq-old-version-not-archived` | Старая версия плана не архивируется |
+| `faq-shift-mode-change` | После смены режима смен задачи потеряли привязку |
+| `faq-whatif-running` | What-if сценарий завис в статусе RUNNING |
+| `faq-cz-orphan-scan` | Скан ЧЗ попал в «сироты» — что делать? |
+| `faq-lab-blocked-batch` | Партия заблокирована лабораторией — как разблокировать? |
+| `faq-route-mismatch` | Advisor: ROUTE_MISMATCH — что это значит? |
+| `faq-cooling-degradation` | Advisor: COOLING_DEGRADATION — что это значит? |
+| `faq-cz-incomplete` | Advisor: CZ_INCOMPLETE — что это значит? |
+| `faq-underload` | Advisor: UNDERLOAD — неполная загрузка реактора |
+
+### Применить FAQ-миграции (если не применены)
+
+```bash
+docker cp backend/migrations/add_26_seed_1.sql aps_postgres:/tmp/add_26_seed_1.sql
+docker cp backend/migrations/add_26_seed_2.sql aps_postgres:/tmp/add_26_seed_2.sql
+docker cp backend/migrations/add_26_seed_3.sql aps_postgres:/tmp/add_26_seed_3.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_1.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_2.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_3.sql
+```
+
+**Идемпотентно** — повторное применение безопасно (`ON CONFLICT (slug) DO NOTHING`).
+
+### Проверить ссылки из FAQ-статей на другие статьи
+
+FAQ-статьи содержат внутренние ссылки `/help/{slug}`. Проверим, что все
+они ведут на существующие статьи:
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT
+    slug AS faq_slug,
+    LENGTH(content_md) AS content_length
+FROM help_article
+WHERE category = 'faq'
+ORDER BY display_order;
+"
+```
+
+Полная проверка ссылок — в тестах (`tests/test_help_faq.py`).
+
+### Проверить, что FAQ-статьи глобальные (organization_id IS NULL)
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT COUNT(*) AS global_faq
+FROM help_article
+WHERE category = 'faq' AND organization_id IS NULL;
+"
+```
+
+**Ожидаемо:** `global_faq = 15`.
+
+### Проверить, что API возвращает категорию faq
+
+```bash
+curl -s http://localhost:8000/api/v1/help/categories \
+  -H "Authorization: Bearer $TOKEN" | jq '.categories[] | select(.key=="faq")'
+```
+
+**Ожидаемо:**
+```json
+{
+  "key": "faq",
+  "label": "FAQ",
+  "article_count": 15
+}
 ```
 
 ---
@@ -1148,7 +1346,35 @@ SELECT
 "
 ```
 
-Все четыре `t`, `article_count` = 15.
+Все четыре `t`, `article_count` = 30.
+
+**add_25.sql (подсказки):**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT
+    EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'help_hint') AS has_table,
+    EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_help_hint_published') AS has_pub_idx,
+    EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_help_hint_org') AS has_org_idx,
+    EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_help_hint_updated_at') AS has_trigger,
+    (SELECT COUNT(*) FROM help_hint WHERE is_published = TRUE) AS hint_count;
+"
+```
+
+Все четыре `t`, `hint_count` = 8.
+
+**add_26_seed_1/2/3.sql (FAQ):**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT
+    (SELECT COUNT(*) FROM help_article WHERE category = 'faq') AS faq_count,
+    (SELECT COUNT(*) FROM help_article WHERE category = 'faq' AND organization_id IS NULL) AS global_faq,
+    (SELECT COUNT(*) FROM help_article WHERE slug LIKE 'faq-%') AS faq_slug_count;
+"
+```
+
+Ожидаемо: `faq_count = 15`, `global_faq = 15`, `faq_slug_count = 15`.
 
 ### Полная диагностика системы
 
@@ -1204,7 +1430,27 @@ WHERE organization_id = '00000000-0000-0000-0000-000000000001'
 docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT COUNT(*) AS help_articles FROM help_article;
 "
+
+# 10. Контекстные подсказки
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT COUNT(*) AS help_hints FROM help_hint WHERE is_published = TRUE;
+"
+
+# 11. FAQ-статьи
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT COUNT(*) AS faq_articles FROM help_article WHERE category = 'faq';
+"
 ```
+
+**Ожидаемые значения:**
+
+| Проверка | Ожидание |
+|----------|----------|
+| `help_articles` | 30 |
+| `help_hints` | 8 |
+| `faq_articles` | 15 |
+| `active` версия | 1 |
+| `plan_settings` активного плана | >0 |
 
 ---
 

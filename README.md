@@ -2,7 +2,7 @@
 
 **Система автоматического планирования производства на базе OR-Tools CP-SAT**
 
-Версия: **4.5.0** (Итерации 0–15.2 завершены)
+Версия: **4.6.0** (Итерации 0–15.4 завершены)
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -63,6 +63,7 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 - **Редактирования плана прямо на Ганте** (Итерация 14.2) — переключатель `🔒/✏️` в тулбаре
 - **Встроенной справки пользователя** (Итерация 15.1) — 15 markdown-статей в UI
 - **Контекстных подсказок** (Итерация 15.2) — 8 всплывающих подсказок в UI
+- **FAQ** (Итерация 15.4) — 15 статей «Симптом → Причина → Что делать»
 
 ## 📚 Документация
 
@@ -188,6 +189,9 @@ household-aps/
 │   │   ├── add_24_seed_3.sql   # 7 статей
 │   │   ├── add_25.sql          # help_hint (15.2)
 │   │   ├── add_25_seed.sql     # 8 подсказок
+│   │   ├── add_26_seed_1.sql   # FAQ: планирование (5)
+│   │   ├── add_26_seed_2.sql   # FAQ: гант, смены, what-if, ЧЗ (5)
+│   │   ├── add_26_seed_3.sql   # FAQ: лаборатория, advisor (5)
 │   │   ├── fix_versions_hotfix.sql
 │   │   └── fix_shift_names.sql
 │   ├── .env
@@ -348,6 +352,9 @@ docker cp backend\migrations\add_24_seed_2.sql aps_postgres:/tmp/add_24_seed_2.s
 docker cp backend\migrations\add_24_seed_3.sql aps_postgres:/tmp/add_24_seed_3.sql
 docker cp backend\migrations\add_25.sql aps_postgres:/tmp/add_25.sql
 docker cp backend\migrations\add_25_seed.sql aps_postgres:/tmp/add_25_seed.sql
+docker cp backend\migrations\add_26_seed_1.sql aps_postgres:/tmp/add_26_seed_1.sql
+docker cp backend\migrations\add_26_seed_2.sql aps_postgres:/tmp/add_26_seed_2.sql
+docker cp backend\migrations\add_26_seed_3.sql aps_postgres:/tmp/add_26_seed_3.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_21.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_23.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_24.sql
@@ -356,6 +363,9 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_24_seed_2.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_24_seed_3.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_25.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_25_seed.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_1.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_2.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_3.sql
 ```
 
 #### Шаг 3: Создание администратора
@@ -388,7 +398,7 @@ cd backend
 pytest tests/ -v
 ```
 
-**Текущее состояние:** **625 passed**, 13 warnings.
+**Текущее состояние:** **678 passed**, 0 warnings.
 
 Подробнее о тестировании — в [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#запуск-тестов).
 
@@ -415,8 +425,27 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/seed_demo_data.sql
 
 ### Применить SQL-миграцию (правильный способ)
 ```
-docker cp backend\migrations\add_25.sql aps_postgres:/tmp/add_25.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_25.sql
+docker cp backend\migrations\add_26_seed_1.sql aps_postgres:/tmp/add_26_seed_1.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_1.sql
+```
+
+### Проверить статьи справки по категориям (Итерация 15.1 + 15.4)
+```
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT category, COUNT(*) AS cnt FROM help_article GROUP BY category ORDER BY category;"
+```
+
+**Ожидаемо:** 9 категорий, **30 статей** (включая 15 FAQ).
+
+### Проверить FAQ-статьи (Итерация 15.4)
+```
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT slug, title FROM help_article WHERE category = 'faq' ORDER BY display_order;"
+```
+
+**Ожидаемо:** 15 статей с префиксом `faq-`.
+
+### Проверить контекстные подсказки (Итерация 15.2)
+```
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT hint_key, title, article_slug FROM help_hint WHERE is_published = TRUE ORDER BY display_order;"
 ```
 
 ### Проверить архивные версии (Итерация 13.21)
@@ -444,16 +473,6 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT setting_key, set
 docker exec -i aps_postgres psql -U aps -d household -c "SELECT sv.name, (SELECT COUNT(*) FROM product_snapshot WHERE version_id = sv.id) AS products, (SELECT COUNT(*) FROM equipment_snapshot WHERE version_id = sv.id) AS equipment FROM schedule_version sv ORDER BY sv.created_at DESC LIMIT 5;"
 ```
 
-### Проверить статьи справки (Итерация 15.1)
-```
-docker exec -i aps_postgres psql -U aps -d household -c "SELECT category, COUNT(*) AS cnt FROM help_article GROUP BY category ORDER BY category;"
-```
-
-### Проверить контекстные подсказки (Итерация 15.2)
-```
-docker exec -i aps_postgres psql -U aps -d household -c "SELECT hint_key, title, article_slug FROM help_hint WHERE is_published = TRUE ORDER BY display_order;"
-```
-
 ### Проверить связь подсказок со статьями (Итерация 15.2)
 ```
 docker exec -i aps_postgres psql -U aps -d household -c "SELECT h.hint_key, h.article_slug, CASE WHEN a.slug IS NULL THEN '❌ NOT FOUND' ELSE '✅ OK' END AS status FROM help_hint h LEFT JOIN help_article a ON a.slug = h.article_slug WHERE h.article_slug IS NOT NULL ORDER BY h.hint_key;"
@@ -474,10 +493,11 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT h.hint_key, h.ar
 - **Справка (15.1):** нет редактирования статей через UI. Правки — через SQL или seed-миграции.
 - **Подсказки (15.2):** нет редактирования через UI. Правки — через SQL или seed-миграции.
 - **Подсказки (15.2):** обновление кэша только при перезагрузке страницы.
+- **FAQ (15.4):** 15 статей покрывают топ-15 проблем. Дополнения — через seed-миграции.
 
 ## 🐛 Troubleshooting
 
-Краткий список — в [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+Краткий список — в [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). А также встроенный FAQ в UI: **http://localhost:5173/help/faq-plan-feasible-not-optimal**.
 
 Частые проблемы:
 - **`UndefinedColumnError`** → не применена миграция (см. таблицу в TROUBLESHOOTING).
@@ -490,6 +510,8 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT h.hint_key, h.ar
 - **Подсказки не показываются (15.2)** → проверить, что применены миграции `add_25.sql` и `add_25_seed.sql`, а также перезагрузить страницу (Ctrl+F5).
 - **Popover подсказки пустой (15.2)** → проверить `body_md` в `help_hint` для нужного `hint_key`.
 - **«Читать подробнее» ведёт на 404 (15.2)** → проверить связь `help_hint.article_slug` ↔ `help_article.slug`.
+- **FAQ-статьи не появились (15.4)** → проверить, что применены миграции `add_26_seed_1/2/3.sql`.
+- **FAQ-категория не отображается (15.4)** → перезапустить backend после правки `help.py`.
 
 ## 🗺️ Roadmap
 
@@ -522,9 +544,9 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT h.hint_key, h.ar
 | 14.1 | Режимы отображения Ганта | 3 дня | 🟡 | ✅ |
 | 14.2 | Редактирование плана прямо на Ганте | 3 дня | 🔥🔥 | ✅ |
 | 15.1 | Встроенная справка пользователя | 3 дня | 🟡 | ✅ |
-| **15.2** | **Контекстные подсказки** | **2 дня** | **🟡** | **✅** |
+| 15.2 | Контекстные подсказки | 2 дня | 🟡 | ✅ |
 | 15.3 | Интерактивный туториал | 2 дня | 🟡 | ⏳ |
-| 15.4 | FAQ + расширение базы знаний | 2 дня | 🟡 | ⏳ |
+| **15.4** | **FAQ + расширение базы знаний** | **2 дня** | **🟡** | **✅** |
 | 15.5 | Редактирование статей в UI | 3 дня | 🟢 | ⏳ |
 
 Полный Roadmap — в [docs/ROADMAP.md](docs/ROADMAP.md).
@@ -535,4 +557,4 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT h.hint_key, h.ar
 
 ---
 
-Итерации 0–15.2 завершены. Следующая — Итерация 15.3: Интерактивный туториал (⏳).
+Итерации 0–15.4 завершены. Следующая — Итерация 15.3: Интерактивный туториал (⏳).

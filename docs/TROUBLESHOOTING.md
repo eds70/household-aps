@@ -23,6 +23,7 @@
 - [Редактирование плана (14.2)](#редактирование-плана-142)
 - [Встроенная справка (15.1)](#встроенная-справка-151)
 - [Контекстные подсказки (15.2)](#контекстные-подсказки-152)
+- [FAQ (15.4)](#faq-154)
 - [Диагностика](#диагностика)
 
 ---
@@ -189,14 +190,21 @@ curl http://localhost:8000/openapi.json | grep "unarchive"
    SELECT COUNT(*) FROM help_article;
    "
    ```
-   Должно быть 15.
-5. Проверить, что применена seed-миграция `add_25_seed.sql`:
+   Должно быть **30** (после Итерации 15.4).
+5. Проверить, что применены FAQ-миграции `add_26_seed_1/2/3.sql`:
+   ```bash
+   docker exec -i aps_postgres psql -U aps -d household -c "
+   SELECT COUNT(*) FROM help_article WHERE category = 'faq';
+   "
+   ```
+   Должно быть **15**.
+6. Проверить, что применена seed-миграция `add_25_seed.sql`:
    ```bash
    docker exec -i aps_postgres psql -U aps -d household -c "
    SELECT COUNT(*) FROM help_hint;
    "
    ```
-   Должно быть 8.
+   Должно быть **8**.
 
 ---
 
@@ -1498,7 +1506,7 @@ SELECT COUNT(*) FROM help_article;
 "
 ```
 
-Должно быть **15**.
+Должно быть **30** (после Итерации 15.4).
 
 ---
 
@@ -1748,9 +1756,346 @@ ORDER BY h.hint_key;
 
 ---
 
+## FAQ (15.4)
+
+### 96. FAQ-статьи не появились в справке
+
+**Симптом:** в разделе «Помощь» (`/help`) нет категории «FAQ» и/или нет самих статей.
+
+**Причина:** не применены seed-миграции `add_26_seed_1/2/3.sql` (Итерация 15.4).
+
+**Решение:**
+
+**Шаг 1. Проверить, что миграции применены:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT COUNT(*) AS faq_count
+FROM help_article
+WHERE category = 'faq';
+"
+```
+
+**Ожидаемо:** `faq_count = 15`.
+
+Если `faq_count = 0` — применить:
+
+```bash
+docker cp backend/migrations/add_26_seed_1.sql aps_postgres:/tmp/add_26_seed_1.sql
+docker cp backend/migrations/add_26_seed_2.sql aps_postgres:/tmp/add_26_seed_2.sql
+docker cp backend/migrations/add_26_seed_3.sql aps_postgres:/tmp/add_26_seed_3.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_1.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_2.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_3.sql
+```
+
+**Шаг 2. Проверить, что 15 FAQ-статей действительно в БД:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT slug, title FROM help_article
+WHERE category = 'faq'
+ORDER BY display_order;
+"
+```
+
+Должно быть 15 строк с префиксом `faq-`.
+
+**Шаг 3. Перезагрузить страницу** (`Ctrl+F5`) — если FAQ-статьи добавлены
+уже после открытия страницы.
+
+**Шаг 4. Проверить через API:**
+
+```bash
+curl -s http://localhost:8000/api/v1/help/categories \
+  -H "Authorization: Bearer $TOKEN" | grep -i faq
+```
+
+Должно быть `"key": "faq"`.
+
+---
+
+### 97. Категория FAQ не отображается в сайдбаре `/help`
+
+**Симптом:** FAQ-статьи в БД есть, но в левой панели `/help` категории
+«FAQ» нет.
+
+**Причина:** возможные варианты:
+1. Backend не перезапущен после добавления `faq` в `CATEGORY_ORDER`.
+2. Frontend кэширует список категорий (загружается один раз).
+3. `help.py` содержит опечатку в `CATEGORY_LABELS` / `CATEGORY_ORDER`.
+
+**Решение:**
+
+**Шаг 1. Проверить `help.py`:**
+
+В `backend/app/api/v1/help.py` должно быть:
+
+```python
+CATEGORY_LABELS = {
+    ...
+    "faq": "FAQ",
+}
+
+CATEGORY_ORDER = [
+    ...
+    "settings",
+    "faq",
+]
+```
+
+**Шаг 2. Перезапустить backend:**
+
+```bash
+cd backend
+# Ctrl+C в терминале backend
+python run_server.py
+```
+
+**Шаг 3. Проверить API:**
+
+```bash
+curl -s http://localhost:8000/api/v1/help/categories \
+  -H "Authorization: Bearer $TOKEN" | jq '.categories[] | select(.key=="faq")'
+```
+
+**Ожидаемо:**
+```json
+{
+  "key": "faq",
+  "label": "FAQ",
+  "article_count": 15
+}
+```
+
+Если ответ пустой — backend не видит FAQ-статьи в БД (см. пункт 96).
+
+**Шаг 4. Hard reload на фронте** (`Ctrl+Shift+R`).
+
+---
+
+### 98. FAQ-статьи не находятся через поиск
+
+**Симптом:** вводишь в поиске «FEASIBLE» или «сирота» — результатов нет.
+
+**Причина:** возможные варианты:
+1. Поиск использует `ILIKE` — если слово короче 2 символов, поиск не срабатывает.
+2. В `title` / `content_md` / `tags` нет искомого слова.
+
+**Решение:**
+
+**Шаг 1. Проверить наличие слова в БД:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT slug, title
+FROM help_article
+WHERE category = 'faq'
+  AND (title ILIKE '%FEASIBLE%' OR content_md ILIKE '%FEASIBLE%');
+"
+```
+
+**Шаг 2. Проверить API:**
+
+```bash
+curl -s "http://localhost:8000/api/v1/help/search?q=FEASIBLE" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Ожидаемо:** `hits` содержит `faq-plan-feasible-not-optimal`.
+
+**Шаг 3. Если пусто** — проверить, что seed-миграция `add_26_seed_1.sql`
+действительно содержит эту статью:
+
+```bash
+grep "faq-plan-feasible" backend/migrations/add_26_seed_1.sql
+```
+
+---
+
+### 99. `ON CONFLICT DO NOTHING` в seed-миграции FAQ не работает
+
+**Симптом:** при повторном применении `add_26_seed_*.sql` появляется
+ошибка `ON CONFLICT (slug) DO NOTHING не срабатывает` или дубли.
+
+**Причина:** миграция применялась через `Get-Content | docker exec`,
+кириллица в `$md$...$md$` испортилась, slug-и не совпадают.
+
+**Решение:**
+
+1. Применять через `docker cp` + `psql -f` (не через pipe):
+
+```bash
+docker cp backend/migrations/add_26_seed_1.sql aps_postgres:/tmp/add_26_seed_1.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_1.sql
+```
+
+2. Проверить, что дублей нет:
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT slug, COUNT(*)
+FROM help_article
+WHERE category = 'faq'
+GROUP BY slug
+HAVING COUNT(*) > 1;
+"
+```
+
+Пусто — всё ок.
+
+3. Если дубли уже появились — удалить лишние:
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+DELETE FROM help_article a
+USING help_article b
+WHERE a.id > b.id AND a.slug = b.slug;
+"
+```
+
+---
+
+### 100. FAQ-статья отображается с «кракозябрами» вместо кириллицы
+
+**Симптом:** вместо «Что делать» отображается `Ð§Ñ‚Ð¾ Ð´ÐµÐ»Ð°Ñ‚ÑŒ`.
+
+**Причина:** миграция применена через `Get-Content | docker exec` (или другой
+pipe-способ) — PowerShell испортил UTF-8.
+
+**Решение:**
+
+1. **Удалить испорченные статьи:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+DELETE FROM help_article WHERE category = 'faq';
+"
+```
+
+2. **Применить заново через `docker cp`:**
+
+```bash
+docker cp backend/migrations/add_26_seed_1.sql aps_postgres:/tmp/add_26_seed_1.sql
+docker cp backend/migrations/add_26_seed_2.sql aps_postgres:/tmp/add_26_seed_2.sql
+docker cp backend/migrations/add_26_seed_3.sql aps_postgres:/tmp/add_26_seed_3.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_1.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_2.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_3.sql
+```
+
+3. **Проверить:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT slug, title FROM help_article WHERE category = 'faq' ORDER BY display_order LIMIT 3;
+"
+```
+
+Заголовки должны быть читаемыми на русском.
+
+**Профилактика:** никогда не применять SQL-файлы с кириллицей через
+`Get-Content | docker exec` — только `docker cp` + `psql -f`.
+
+---
+
+### 101. FAQ-статьи дублируются в поиске и категориях
+
+**Симптом:** одна и та же FAQ-статья отображается 2-3 раза.
+
+**Причина:** seed-миграции `add_26_seed_1/2/3.sql` применялись несколько раз
+без `ON CONFLICT DO NOTHING` (или через pipe, испортивший slug).
+
+**Решение:**
+
+1. Найти дубли:
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT slug, COUNT(*) AS cnt
+FROM help_article
+WHERE category = 'faq'
+GROUP BY slug
+HAVING COUNT(*) > 1
+ORDER BY slug;
+"
+```
+
+2. Удалить дубли (оставить самую свежую запись):
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+DELETE FROM help_article a
+USING help_article b
+WHERE a.id < b.id AND a.slug = b.slug;
+"
+```
+
+3. Проверить:
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT COUNT(*) AS faq_count FROM help_article WHERE category = 'faq';
+"
+```
+
+Должно быть **15**.
+
+---
+
+### 102. Кнопка «Связанные статьи» в FAQ ведёт не туда
+
+**Симптом:** клик по ссылке вида `[Обзор Ганта](/help/gantt-overview)` в
+FAQ-статье — открывается 404 или не та статья.
+
+**Причина:** возможные варианты:
+1. Опечатка в slug внутри `content_md`.
+2. Статья, на которую ссылаются, не была создана.
+3. Ссылка не соответствует формату `/help/{slug}`.
+
+**Решение:**
+
+**Шаг 1. Найти все ссылки в FAQ-статьях:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT slug, content_md
+FROM help_article
+WHERE category = 'faq' AND content_md LIKE '%/help/%';
+"
+```
+
+**Шаг 2. Проверить, что все slug существуют:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT DISTINCT a.slug AS faq_slug
+FROM help_article a
+WHERE a.category = 'faq'
+  AND a.content_md LIKE '%/help/%';
+"
+```
+
+Вручную сопоставить slug'и из ссылок с существующими в `help_article`.
+
+**Шаг 3. Исправить опечатки через UPDATE:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+UPDATE help_article
+SET content_md = REPLACE(content_md, '/help/wrong-slug', '/help/correct-slug')
+WHERE slug = 'faq-xxx';
+"
+```
+
+Полная проверка ссылок — в тестах `tests/test_help_faq.py`
+(`test_faq_articles_link_to_existing_slugs`).
+
+---
+
 ## Диагностика
 
-### 96. Общая проверка системы
+### 103. Общая проверка системы
 
 ```bash
 # PostgreSQL
@@ -1802,20 +2147,26 @@ SELECT COUNT(*) AS help_articles FROM help_article;
 docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT COUNT(*) AS help_hints FROM help_hint WHERE is_published = TRUE;
 "
+
+# FAQ-статьи
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT COUNT(*) AS faq_articles FROM help_article WHERE category = 'faq';
+"
 ```
 
 **Ожидаемые значения:**
 
 | Проверка | Ожидание |
 |----------|----------|
-| `help_articles` | 15 |
+| `help_articles` | 30 |
 | `help_hints` | 8 |
+| `faq_articles` | 15 |
 | `active` версия | 1 |
 | `plan_settings` активного плана | >0 |
 
 ---
 
-### 97. Полная очистка и пересоздание
+### 104. Полная очистка и пересоздание
 
 ```bash
 # 1. Снести контейнер
@@ -1845,6 +2196,7 @@ $migrations = @("add_06.sql", "add_06b.sql", "add_07.sql", "add_08.sql",
                 "add_21.sql", "add_22.sql", "add_23.sql",
                 "add_24.sql", "add_24_seed_1.sql", "add_24_seed_2.sql", "add_24_seed_3.sql",
                 "add_25.sql", "add_25_seed.sql",
+                "add_26_seed_1.sql", "add_26_seed_2.sql", "add_26_seed_3.sql",
                 "fix_shift_names.sql", "fix_work_time.sql")
 foreach ($m in $migrations) {
     docker cp "backend/migrations/$m" "aps_postgres:/tmp/$m"
@@ -1862,7 +2214,7 @@ cd ../frontend; npm run dev
 
 ---
 
-### 98. Полезные ссылки
+### 105. Полезные ссылки
 
 - [README.md](../README.md) — основная документация.
 - [docs/OPERATIONS.md](OPERATIONS.md) — операции с БД.

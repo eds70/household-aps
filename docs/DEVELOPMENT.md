@@ -12,6 +12,7 @@
 - [Как добавить эндпоинт](#как-добавить-эндпоинт)
 - [Как добавить настройку](#как-добавить-настройку)
 - [Как добавить статью справки](#как-добавить-статью-справки)
+- [Как добавить FAQ-статью](#как-добавить-faq-статью)
 - [Как добавить контекстную подсказку](#как-добавить-контекстную-подсказку)
 - [Как добавить ADR](#как-добавить-adr)
 - [Conventional Commits](#conventional-commits)
@@ -135,7 +136,7 @@ cd backend
 pytest tests/ -v
 ```
 
-**Текущее состояние:** **625 passed**, 13 warnings.
+**Текущее состояние:** **678 passed**, 0 warnings.
 
 ### Конкретный файл
 
@@ -210,7 +211,8 @@ pytest tests/ -v --log-cli-level=DEBUG
 | `test_schedule_versions_archive.py` | Архивация версий (13.21) |
 | `test_reschedule_cascade.py` | Каскадный сдвиг (13.17) |
 | `test_help.py` | Встроенная справка (15.1) |
-| **`test_help_hints.py`** | **Контекстные подсказки (15.2)** |
+| `test_help_hints.py` | Контекстные подсказки (15.2) |
+| **`test_help_faq.py`** | **FAQ-статьи (15.4)** |
 
 ---
 
@@ -286,83 +288,69 @@ def test_migration_wrapped_in_transaction():
 
 См. [Как обновлять CHANGELOG](#как-обновлять-changelog).
 
-### Пример: миграция `add_25.sql` (help_hint)
+### Пример: миграция `add_26.sql` (FAQ, Итерация 15.4)
+
+**Важно:** FAQ **не создаёт новых таблиц** — используется существующая
+`help_article` (миграция `add_24.sql`). FAQ-миграции — это **только seed**:
+
+**`backend/migrations/add_26_seed_1.sql`:**
 
 ```sql
--- Итерация 15.2: help_hint
+-- ==========================================
+-- SEED 26/1: СПРАВКА — FAQ (ПЛАНИРОВАНИЕ)
+-- ==========================================
+-- 5 статей FAQ категории 'faq'.
+-- Все — глобальные (organization_id = NULL).
+--
+-- Идемпотентна: ON CONFLICT (slug) DO NOTHING.
+-- ==========================================
+
 BEGIN;
 
-CREATE TABLE IF NOT EXISTS help_hint (
-                                         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    organization_id UUID REFERENCES organization(id) ON DELETE CASCADE,
-    hint_key VARCHAR(100) NOT NULL,
-    title VARCHAR(200) NOT NULL,
-    body_md TEXT NOT NULL,
-    article_slug VARCHAR(100),
-    display_order INT NOT NULL DEFAULT 0,
-    is_published BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (hint_key)
-    );
+INSERT INTO help_article
+(organization_id, slug, title, category, content_md, tags,
+ display_order, is_published)
+VALUES
+(NULL, 'faq-plan-feasible-not-optimal',
+ 'План получился FEASIBLE, а не OPTIMAL — что делать?',
+ 'faq',
+ $md$# План FEASIBLE, а не OPTIMAL
 
-CREATE INDEX IF NOT EXISTS idx_help_hint_published
-    ON help_hint(is_published, display_order);
+**Категория:** FAQ
 
-CREATE OR REPLACE FUNCTION help_hint_set_updated_at()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = NOW();
-RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+**Симптом:** В ответе `/schedule/build` приходит `status: "FEASIBLE"`.
 
-DROP TRIGGER IF EXISTS trg_help_hint_updated_at ON help_hint;
-CREATE TRIGGER trg_help_hint_updated_at
-    BEFORE UPDATE ON help_hint
-    FOR EACH ROW
-    EXECUTE FUNCTION help_hint_set_updated_at();
+## Причина
+
+Solver не успел найти оптимальное решение за `timeout_seconds`.
+
+## Что делать
+
+1. Увеличить `timeout_seconds` (до 1800 сек).
+2. Уменьшить `horizon_hours`.
+3. Уменьшить число pinned-задач.
+$md$,
+ '["faq", "solver", "optimal", "feasible", "timeout"]'::jsonb,
+ 10, TRUE)
+ON CONFLICT (slug) DO NOTHING;
 
 COMMIT;
+
+SELECT COUNT(*) AS seeded FROM help_article
+WHERE slug = 'faq-plan-feasible-not-optimal';
+-- Ожидаемо: 1
 ```
 
-**Пример: миграция `add_24.sql` (help_article)**
+**Структура FAQ-статьи (единый формат):**
 
-```sql
--- Итерация 15.1: help_article
-BEGIN;
+1. **Категория** — FAQ.
+2. **Симптом** — что видит пользователь.
+3. **Причина** — почему так происходит.
+4. **Что делать** — варианты решения (по приоритету).
+5. **Проверка** — SQL-запросы для диагностики.
+6. **Связанные статьи** — ссылки на 2-3 других статьи.
 
-CREATE TABLE IF NOT EXISTS help_article (
-                                            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    organization_id UUID REFERENCES organization(id) ON DELETE CASCADE,
-    slug VARCHAR(100) NOT NULL,
-    title VARCHAR(200) NOT NULL,
-    category VARCHAR(50) NOT NULL,
-    content_md TEXT NOT NULL,
-    tags JSONB NOT NULL DEFAULT '[]'::jsonb,
-    display_order INT NOT NULL DEFAULT 0,
-    is_published BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (slug)
-    );
-
-CREATE INDEX IF NOT EXISTS idx_help_article_category
-    ON help_article(category, display_order);
-
-CREATE INDEX IF NOT EXISTS idx_help_article_tags
-    ON help_article USING GIN (tags);
-
-COMMIT;
-```
-
-**Итерация 13.15 не требует миграции** — используются уже существующие снапшот-таблицы.
-
-**Итерация 13.21 использует миграцию `add_23.sql`:** добавлена колонка `is_archived`, partial-индекс, настройка `auto_archive_on_recalc`.
-
-**Итерация 15.1 использует миграцию `add_24.sql`:** таблица `help_article`, индексы, триггер. Плюс 3 seed-файла `add_24_seed_1/2/3.sql`.
-
-**Итерация 15.2 использует миграцию `add_25.sql`:** таблица `help_hint`, индексы, триггер. Плюс seed-файл `add_25_seed.sql`.
+**Тесты:** см. `tests/test_help_faq.py`.
 
 ---
 
@@ -619,6 +607,7 @@ WHERE slug = 'my-article-slug';
 | `cz` | Честный Знак |
 | `whatif` | What-if |
 | `settings` | Настройки |
+| `faq` | FAQ |
 
 ### 4. Применить
 
@@ -640,6 +629,160 @@ def test_seed_contains_slug():
     sql = Path("migrations/add_NN_seed_M.sql").read_text()
     assert "'my-article-slug'" in sql
 ```
+
+---
+
+## Как добавить FAQ-статью
+
+**Итерация 15.4.**
+
+FAQ — это **категория** `faq` в существующей таблице `help_article`.
+Отдельной таблицы/API/фронтенда **не требуется**.
+
+### 1. Создать seed-файл
+
+`backend/migrations/add_NN_seed_M.sql`, где `NN` — номер миграции, `M` — номер seed-пакета.
+
+### 2. Структура (единый формат FAQ-статьи)
+
+```sql
+-- ==========================================
+-- SEED M/N: СПРАВКА — FAQ (<ТЕМА>)
+-- ==========================================
+-- Добавляет N FAQ-статей в категорию 'faq'.
+-- Все — глобальные (organization_id = NULL).
+--
+-- Идемпотентна: ON CONFLICT (slug) DO NOTHING.
+-- ==========================================
+
+BEGIN;
+
+INSERT INTO help_article
+(organization_id, slug, title, category, content_md, tags,
+ display_order, is_published)
+VALUES
+(NULL,
+ 'faq-my-problem-slug',
+ 'Короткий вопрос или проблема',
+ 'faq',
+ $md$# Заголовок статьи
+
+**Категория:** FAQ
+
+**Симптом:** Что видит пользователь.
+
+## Причина
+
+Почему так происходит. 1-3 абзаца.
+
+## Что делать
+
+### Вариант 1: Первое решение
+
+Пошаговая инструкция.
+
+### Вариант 2: Второе решение
+
+Пошаговая инструкция.
+
+## Проверка
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT ...;"
+```
+
+## Связанные статьи
+
+- [Название 1](/help/slug-1)
+- [Название 2](/help/slug-2)
+  $md$,
+  '["faq", "тег1", "тег2"]'::jsonb,
+  100, TRUE)
+  ON CONFLICT (slug) DO NOTHING;
+
+COMMIT;
+
+SELECT COUNT(*) AS seeded FROM help_article
+WHERE slug = 'faq-my-problem-slug';
+-- Ожидаемо: 1
+```
+
+### 3. Обязательные разделы
+
+Каждая FAQ-статья **должна** содержать:
+
+| Раздел | Обязателен? | Описание |
+|--------|-------------|----------|
+| `**Категория:** FAQ` | ✅ | Явно указать категорию |
+| `**Симптом:**` | ✅ | Что видит пользователь |
+| `## Причина` | ✅ | Почему так происходит |
+| `## Что делать` | ✅ | Варианты решения (по приоритету) |
+| `## Проверка` | ⚠️ опционально | SQL-запросы для диагностики |
+| `## Связанные статьи` | ✅ | 2-3 ссылки на другие статьи |
+
+### 4. Правила именования slug
+
+- **Префикс `faq-`** — обязателен.
+- **kebab-case** — только `a-z`, `0-9`, дефисы.
+- **Длина ≤ 100** символов (ограничение `VARCHAR(100)`).
+- **Описательный** — по симптому, а не по решению.
+
+**Примеры:**
+- ✅ `faq-plan-feasible-not-optimal`
+- ✅ `faq-task-not-movable`
+- ❌ `plan-feasible` (нет префикса)
+- ❌ `faq_plan_feasible` (подчёркивания)
+
+### 5. Применить
+
+```bash
+docker cp backend/migrations/add_NN_seed_M.sql aps_postgres:/tmp/add_NN_seed_M.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_NN_seed_M.sql
+```
+
+### 6. Проверить
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT slug, title FROM help_article
+WHERE category = 'faq' AND slug = 'faq-my-problem-slug';
+"
+```
+
+### 7. Добавить тесты
+
+`tests/test_help_faq.py`:
+
+```python
+EXPECTED_FAQ_SLUGS = [
+    # ... существующие 15 ...
+    "faq-my-problem-slug",
+]
+
+def test_all_faq_slugs_present():
+    all_content = _read(SEED_1) + _read(SEED_2) + _read(SEED_3)
+    for slug in EXPECTED_FAQ_SLUGS:
+        assert f"'{slug}'" in all_content, f"Slug '{slug}' не найден"
+
+def test_faq_articles_have_symptom_section():
+    all_content = _read(SEED_1) + _read(SEED_2) + _read(SEED_3)
+    symptoms = all_content.count("**Симптом:**")
+    assert symptoms == 16  # было 15, стало 16
+```
+
+### 8. Обновить `test_help_faq.py` при добавлении
+
+- Обновить `EXPECTED_FAQ_SLUGS` (добавить новый slug).
+- Обновить ожидаемые счётчики (`15` → `16`, если добавляется одна статья).
+- Обновить `README.md`, `CHANGELOG.md`, `docs/ROADMAP.md`.
+
+### Ключевые гарантии
+
+- ✅ **Не создаёт новых таблиц** — использует `help_article`.
+- ✅ **Не требует миграции API** — `/categories` автоматически вернёт `faq`.
+- ✅ **Фронт не меняется** — `HelpPage` подхватывает категорию.
+- ✅ **Идемпотентность** — `ON CONFLICT (slug) DO NOTHING`.
+- ✅ **Ссылки валидируются** — тест `test_faq_articles_link_to_existing_slugs`.
 
 ---
 
@@ -900,6 +1043,15 @@ feat(help): add contextual hints (iteration 15.2)
 - +24 теста, всего 625 passed
 ```
 
+```
+feat(help): add FAQ category (iteration 15.4)
+
+- Seed-миграции add_26_seed_1/2/3.sql: 15 FAQ-статей
+- Категория faq в CATEGORY_LABELS и CATEGORY_ORDER
+- Формат статей: Симптом → Причина → Что делать → Проверка
+- +24 теста, всего 678 passed
+```
+
 ---
 
 ## Как обновлять CHANGELOG
@@ -924,7 +1076,7 @@ feat(help): add contextual hints (iteration 15.2)
 ### 3. При релизе — перенести в новую версию
 
 ```markdown
-## [4.5.0] — 2026-10-02
+## [4.6.0] — 2026-10-04
 
 ### Added
 - ...
@@ -953,7 +1105,7 @@ feat(help): add contextual hints (iteration 15.2)
 ```markdown
 ### Added
 
-#### Итерация 15.2 — Контекстные подсказки
+#### Итерация 15.4 — FAQ и расширение базы знаний
 
 - ...
 ```
@@ -1049,7 +1201,7 @@ docker exec aps_postgres psql -U aps -d household -c "DROP SCHEMA public CASCADE
 docker exec -i aps_postgres psql -U aps -d household -c "SELECT COUNT(*) AS help_articles FROM help_article;"
 ```
 
-Ожидаемо: 15.
+Ожидаемо: 30 (после Итерации 15.4).
 
 **Проверка подсказок (Итерация 15.2):**
 
@@ -1066,6 +1218,22 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT h.hint_key, h.ar
 ```
 
 Все должны быть `✅ OK`.
+
+**Проверка FAQ-статей (Итерация 15.4):**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT slug, title FROM help_article WHERE category = 'faq' ORDER BY display_order;"
+```
+
+Ожидаемо: 15 статей с префиксом `faq-`.
+
+**Проверка, что все FAQ глобальные:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT COUNT(*) FROM help_article WHERE category = 'faq' AND organization_id IS NULL;"
+```
+
+Ожидаемо: 15.
 
 ### Git
 
@@ -1141,7 +1309,7 @@ LOG_LEVEL=DEBUG
 
 В логах backend:
 ```
-[app.api.help] Загружено статей: 15
+[app.api.help] Загружено статей: 30
 ```
 
 Если статей 0 — проверьте seed-миграции.
@@ -1162,6 +1330,51 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/v1/help/hints
 ```
 
 (Эта ошибка — «тихая», не ломает UI.)
+
+**Отладка FAQ (Итерация 15.4):**
+
+Проверьте эндпоинт `/categories`:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/v1/help/categories
+```
+
+В ответе должна быть категория `faq` с `article_count: 15`:
+
+```json
+{
+  "categories": [
+    ...
+    {"key": "faq", "label": "FAQ", "article_count": 15}
+  ]
+}
+```
+
+Проверьте эндпоинт `/articles?category=faq`:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" "http://localhost:8000/api/v1/help/articles?category=faq"
+```
+
+В ответе должно быть 15 статей.
+
+Если FAQ-статей нет:
+1. Проверьте, что применены `add_26_seed_1/2/3.sql`.
+2. Проверьте, что `help.py` содержит `faq` в `CATEGORY_LABELS` и `CATEGORY_ORDER`.
+3. Перезапустите backend.
+
+**Отладка тестов:**
+
+```bash
+# Запустить только FAQ-тесты
+pytest tests/test_help_faq.py -v
+
+# С логированием
+pytest tests/test_help_faq.py -v --log-cli-level=DEBUG
+
+# Только конкретный тест
+pytest tests/test_help_faq.py::test_all_15_faq_slugs_present -v
+```
 
 ### Frontend
 
@@ -1205,6 +1418,18 @@ import { useHelpHints } from '../context/HelpHintsContext';
 const { hints } = useHelpHints();
 console.log('Все подсказки:', Object.keys(hints));
 ```
+
+**Отладка FAQ (Итерация 15.4):**
+
+FAQ-статьи — это обычные статьи в `HelpSidebar` (категория `faq`). Проверьте в React DevTools:
+
+1. В `HelpPage` → `HelpSidebar` → `categories` — должна быть запись `{key: 'faq', label: 'FAQ', article_count: 15}`.
+2. В `articlesByCategory['faq']` — массив из 15 статей.
+
+Если категории `faq` нет:
+1. Проверьте Network-вкладку — запрос `GET /api/v1/help/categories`.
+2. В ответе должна быть категория `faq`.
+3. Если нет — см. «Отладка FAQ» в разделе Backend.
 
 ### Solver
 

@@ -413,6 +413,40 @@ LIMIT 10;
 
 ---
 
+## Настройки, не относящиеся к app_settings
+
+Некоторые параметры системы настраиваются **не через `app_settings`**,
+а через контент в БД. Они не участвуют в приоритете `plan_settings` →
+`app_settings`, но влияют на поведение UI.
+
+### Справка (`help_article`) — Итерации 15.1, 15.4
+
+Контент статей справки и FAQ. Таблица `help_article`:
+- `slug`, `title`, `category`, `content_md`, `tags`, `display_order`, `is_published`.
+
+**Категории:** `getting-started`, `planning`, `gantt`, `shift`, `lab`,
+`cz`, `whatif`, `settings`, **`faq`** (Итерация 15.4).
+
+**Правки** — через SQL или seed-миграции:
+```
+docker cp backend/migrations/add_26_seed_1.sql aps_postgres:/tmp/add_26_seed_1.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_1.sql
+```
+
+### Контекстные подсказки (`help_hint`) — Итерация 15.2
+
+Короткие подсказки, привязанные к элементам UI. Таблица `help_hint`:
+- `hint_key` (формат `<module>.<action>`), `title`, `body_md`, `article_slug`, `display_order`, `is_published`.
+
+**8 стартовых подсказок:**
+- `planning.recalc`, `planning.advisor`, `planning.plan_dirty`
+- `gantt.edit_mode`, `gantt.brackets`
+- `shift.lab_block`, `whatif.json`, `settings.system`
+
+**Правки** — через SQL или seed-миграции (`add_25_seed.sql`).
+
+---
+
 ## Ссылки
 
 - [README.md](../README.md) — основная документация.
