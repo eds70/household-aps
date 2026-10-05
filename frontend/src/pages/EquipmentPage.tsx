@@ -247,7 +247,7 @@ const EquipmentPage: React.FC = () => {
         {
             headerName: "ID", field: "id", width: 120, editable: false,
             valueFormatter: (params) => params.value ? params.value.substring(0, 8) : "",
-            tooltipValueGetter: (params) => params.value || "",
+            tooltip: (params) => params.value || "",
             cellStyle: { fontFamily: "monospace", fontSize: "11px", color: "#7f8c8d" },
         },
         { headerName: "Наименование", field: "name", flex: 2, minWidth: 200, editable: !isReadOnly },

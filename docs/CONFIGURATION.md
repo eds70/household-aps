@@ -57,7 +57,7 @@ plan_settings  →  app_settings  →  .env  →  значения по умол
 | `horizon_hours` | `int` | `720` | `24` | `8760` | Горизонт планирования (ч) |
 | `timeout_seconds` | `int` | `600` | `10` | `3600` | Таймаут solver (сек) |
 | `max_fill_percent` | `float` | `0.70` | `0.1` | `1.0` | Макс. загрузка реактора |
-| **`auto_archive_on_recalc`** | **`bool`** | **`true`** | — | — | **Итерация 13.21:** архивировать старую версию после пересчёта |
+| `auto_archive_on_recalc` | `bool` | `true` | — | — | **Итерация 13.21:** архивировать старую версию после пересчёта |
 
 **Про `auto_archive_on_recalc`:**
 - `true` (по умолчанию) — при пересчёте плана старая версия уходит
@@ -444,6 +444,21 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_1.sql
 - `shift.lab_block`, `whatif.json`, `settings.system`
 
 **Правки** — через SQL или seed-миграции (`add_25_seed.sql`).
+
+### Интерактивный туториал — Итерация 15.3
+
+Конфигурация туров хранится **на фронтенде** в файле
+`frontend/src/tutorial/tours.ts`. Не относится к `app_settings`.
+
+**Прогресс прохождения** сохраняется в `localStorage` браузера:
+- Ключ: `aps_tutorial_completed_<tour_id>`.
+- Значение: `'true'`.
+- Сброс — через UI (`HelpPage` → «Интерактивные туры» → «Пройти заново»).
+
+**Статья `tutorial-interactive`** добавлена в `help_article` через
+seed-миграцию `add_27_seed_1.sql` (категория `getting-started`).
+
+**Дополнительных настроек** для туториала **не требуется**.
 
 ---
 

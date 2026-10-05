@@ -43,10 +43,9 @@ import type {Material, MaterialCategory, MaterialImportResponse, MaterialStockLo
 import {materialsApi} from '../services/api';
 import {usePlan} from '../context/PlainContext';
 import DraggableDialog from '../components/common/DraggableDialog';
+import AppAgGrid from '../components/common/AppAgGrid';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
-
-import AppAgGrid from '../components/common/AppAgGrid';
 
 const CATEGORY_LABELS: Record<MaterialCategory, string> = {
     RAW: 'Сырьё', PACKAGING: 'Упаковка', LABEL: 'Этикетки',
@@ -195,7 +194,7 @@ const MaterialsPage: React.FC = () => {
                 const v = params.value as number | null | undefined;
                 return v == null ? '—' : v.toFixed(2);
             },
-            tooltipValueGetter: () => 'Двойной клик для изменения остатка',
+            tooltip: () => 'Двойной клик для изменения остатка',
         },
         {
             headerName: 'Резерв', field: 'reserved_qty', width: 120, editable: true, type: 'numericColumn',

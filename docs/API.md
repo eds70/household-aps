@@ -1257,7 +1257,7 @@ REST API системы **APS Production Scheduler**.
 
 ## Справка
 
-**Итерации 15.1, 15.2 и 15.4.**
+**Итерации 15.1, 15.2, 15.3 и 15.4.**
 
 ### `GET /api/v1/help/articles`
 
@@ -1279,7 +1279,7 @@ REST API системы **APS Production Scheduler**.
       "updated_at": "2026-10-02T10:00:00Z"
     }
   ],
-  "total": 30
+  "total": 31
 }
 ```
 
@@ -1319,7 +1319,7 @@ REST API системы **APS Production Scheduler**.
 ```json
 {
   "categories": [
-    {"key": "getting-started", "label": "Начало работы", "article_count": 2},
+    {"key": "getting-started", "label": "Начало работы", "article_count": 3},
     {"key": "planning", "label": "Планирование", "article_count": 4},
     {"key": "gantt", "label": "Диаграмма Ганта", "article_count": 4},
     {"key": "shift", "label": "Мастера смены", "article_count": 1},
@@ -1331,6 +1331,8 @@ REST API системы **APS Production Scheduler**.
   ]
 }
 ```
+
+**Итерация 15.3:** в категорию `getting-started` добавлена статья `tutorial-interactive` (всего 3 статьи).
 
 **Итерация 15.4:** категория `faq` — последняя. Возвращается как обычная категория, без изменений в API.
 
@@ -1435,6 +1437,20 @@ REST API системы **APS Production Scheduler**.
 - `413` — файл больше 1 МБ.
 
 **Права:** любой.
+
+---
+
+### Интерактивный туториал (Итерация 15.3)
+
+**API-эндпоинтов нет.**
+
+Туториал полностью реализован на фронтенде:
+- Конфигурация туров — `frontend/src/tutorial/tours.ts`.
+- Управление состоянием — `frontend/src/context/TutorialContext.tsx`.
+- Прогресс хранится в `localStorage` браузера.
+
+**Косвенная связь с API:** статья `tutorial-interactive` доступна
+через `GET /api/v1/help/articles/tutorial-interactive`.
 
 ---
 
@@ -1551,6 +1567,12 @@ Authorization: Bearer <token>
 - Формат `hint_key`: `<module>.<action>`.
 - Если `article_slug` задан — фронт показывает кнопку «Читать подробнее».
 - Фронт кэширует ответ в `HelpHintsContext` на время сессии.
+
+### Интерактивный туториал (Итерация 15.3)
+
+- **API-эндпоинтов нет** — туториал полностью на фронтенде.
+- Прогресс хранится в `localStorage` (`aps_tutorial_completed_<tour_id>`).
+- Статья `tutorial-interactive` доступна через `/api/v1/help/articles/tutorial-interactive`.
 
 ### FAQ (Итерация 15.4)
 

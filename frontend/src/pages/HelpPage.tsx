@@ -1,31 +1,66 @@
 // frontend/src/pages/HelpPage.tsx
 /**
- * Страница «Помощь» (Итерация 15.1).
+ * Страница «Помощь» (Итерация 15.1 + 15.3).
  *
  * Двухпанельный layout:
  *  - Слева: дерево категорий + поиск (HelpSidebar).
  *  - Справа: markdown-статья (HelpArticleView).
+ *
+ * Итерация 15.3: на главной странице справки (intro-overview)
+ * добавлен блок «Интерактивные туры» с карточками туров.
  *
  * Маршрут: /help/:slug
  * Если slug не указан — открывается первая статья.
  */
 import React, {useCallback, useEffect, useState} from 'react';
 import {useNavigate, useParams} from 'react-router-dom';
-import {Alert, Box, CircularProgress, Typography} from '@mui/material';
-import {HelpOutlined as HelpIcon} from '@mui/icons-material';
+import {
+    Alert,
+    Box,
+    Button,
+    Card,
+    CardActions,
+    CardContent,
+    Chip,
+    CircularProgress,
+    Divider,
+    Typography,
+} from '@mui/material';
+import {
+    Assignment as AssignmentIcon,
+    CheckCircle as CheckCircleIcon,
+    HelpOutlined as HelpIcon,
+    PlayArrow as PlayIcon,
+    Replay as ReplayIcon,
+    RocketLaunch as RocketLaunchIcon,
+    Timeline as TimelineIcon,
+} from '@mui/icons-material';
 import {Allotment} from 'allotment';
 import 'allotment/dist/style.css';
 
 import HelpSidebar from '../components/help/HelpSidebar';
 import HelpArticleView from '../components/help/HelpArticleView';
 import {helpApi} from '../services/api';
+import {useTutorial} from '../context/TutorialContext';
+import {ALL_TOURS} from '../tutorial/tours';
 import type {HelpArticle} from '../types';
 
 const DEFAULT_SLUG = 'intro-overview';
 
+// ==========================================
+// Итерация 15.3: маппинг иконок туров
+// ==========================================
+// Ключи соответствуют tour.icon из tours.ts.
+const TOUR_ICONS: Record<string, React.ReactNode> = {
+    RocketLaunch: <RocketLaunchIcon fontSize="large" />,
+    Timeline: <TimelineIcon fontSize="large" />,
+    Assignment: <AssignmentIcon fontSize="large" />,
+};
+
 const HelpPage: React.FC = () => {
     const {slug} = useParams<{ slug: string }>();
     const navigate = useNavigate();
+    const {startTour, isTourCompleted, resetTourProgress} = useTutorial();
 
     const [article, setArticle] = useState<HelpArticle | null>(null);
     const [loading, setLoading] = useState(false);
@@ -63,6 +98,124 @@ const HelpPage: React.FC = () => {
     const handleSelectArticle = useCallback((newSlug: string) => {
         navigate(`/help/${newSlug}`);
     }, [navigate]);
+
+    // ==========================================
+    // Итерация 15.3: блок «Интерактивные туры»
+    // ==========================================
+    const renderToursBlock = () => {
+        return (
+            <Box sx={{ mb: 4 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                    <PlayIcon color="primary" />
+                    <Typography variant="h5" sx={{ fontWeight: 600 }}>
+                        Интерактивные туры
+                    </Typography>
+                </Box>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                    Пошаговые туры по ключевым сценариям. Тур можно пропустить
+                    на любом шаге — прогресс сохраняется в браузере.
+                </Typography>
+                <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+                    {ALL_TOURS.map((tour) => {
+                        const completed = isTourCompleted(tour.id);
+                        return (
+                            <Card
+                                key={tour.id}
+                                sx={{
+                                    width: 320,
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
+                                    transition: 'box-shadow 0.2s',
+                                    '&:hover': {
+                                        boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+                                    },
+                                }}
+                            >
+                                <CardContent sx={{ flexGrow: 1 }}>
+                                    <Box
+                                        sx={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: 1.5,
+                                            mb: 1.5,
+                                        }}
+                                    >
+                                        <Box
+                                            sx={{
+                                                color: 'primary.main',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                            }}
+                                        >
+                                            {TOUR_ICONS[tour.icon || ''] || (
+                                                <PlayIcon fontSize="large" />
+                                            )}
+                                        </Box>
+                                        <Typography
+                                            variant="h6"
+                                            sx={{
+                                                fontWeight: 600,
+                                                fontSize: '1rem',
+                                            }}
+                                        >
+                                            {tour.name}
+                                        </Typography>
+                                    </Box>
+                                    <Typography variant="body2" color="text.secondary">
+                                        {tour.description}
+                                    </Typography>
+                                </CardContent>
+                                <Divider />
+                                <CardActions
+                                    sx={{
+                                        justifyContent: 'space-between',
+                                        p: 1.5,
+                                    }}
+                                >
+                                    {completed ? (
+                                        <>
+                                            <Chip
+                                                icon={<CheckCircleIcon />}
+                                                label="Пройден"
+                                                color="success"
+                                                size="small"
+                                                variant="outlined"
+                                            />
+                                            <Button
+                                                size="small"
+                                                startIcon={<ReplayIcon />}
+                                                onClick={() => {
+                                                    resetTourProgress(tour.id);
+                                                    startTour(tour.id);
+                                                }}
+                                                sx={{ textTransform: 'none' }}
+                                            >
+                                                Пройти заново
+                                            </Button>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Box />
+                                            <Button
+                                                size="small"
+                                                variant="contained"
+                                                startIcon={<PlayIcon />}
+                                                onClick={() => startTour(tour.id)}
+                                                sx={{ textTransform: 'none' }}
+                                            >
+                                                Начать
+                                            </Button>
+                                        </>
+                                    )}
+                                </CardActions>
+                            </Card>
+                        );
+                    })}
+                </Box>
+            </Box>
+        );
+    };
 
     return (
         <Box
@@ -146,6 +299,15 @@ const HelpPage: React.FC = () => {
 
                             {!loading && !error && article && (
                                 <Box sx={{maxWidth: 900, mx: 'auto'}}>
+                                    {/* Итерация 15.3: блок туров
+                                        на главной странице помощи */}
+                                    {article.slug === DEFAULT_SLUG && (
+                                        <>
+                                            {renderToursBlock()}
+                                            <Divider sx={{ my: 4 }} />
+                                        </>
+                                    )}
+
                                     {/* Мета статьи */}
                                     <Box
                                         sx={{

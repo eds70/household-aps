@@ -1,7 +1,7 @@
 // frontend/src/components/gantt/GanttToolbar.tsx
 /**
  * Верхняя панель (тулбар) диаграммы Ганта
- * (Итерация 13.17 + 13.19 + 14.1 + 14.2 + 15.2).
+ * (Итерация 13.17 + 13.19 + 14.1 + 14.2 + 15.2 + 15.3).
  *
  * Итерация 13.19: кнопка «Пересчитать» становится активной ТОЛЬКО
  * если planDirty === true (есть несохранённые изменения,
@@ -20,13 +20,19 @@
  *   - Кнопка «Пересчитать» теперь рендерится всегда, когда передан
  *     onRecalculate (не только в readonly-режиме).
  *
- * Итерация 15.2 (НОВОЕ):
+ * Итерация 15.2:
  *   - Рядом с переключателем 🔒/✏️ добавлена контекстная подсказка
  *     <Hint id="gantt.edit_mode"/> (Popover с markdown-телом).
  *   - Рядом с селектом «Группировка» добавлена подсказка
  *     <Hint id="gantt.brackets"/> — про скобки партий.
  *   - Рядом с кнопкой «Пересчитать» добавлена подсказка
  *     <Hint id="planning.recalc"/> — про условия активации кнопки.
+ *
+ * Итерация 15.3:
+ *   - Добавлены data-tour-id для интерактивного тура:
+ *     * gantt-toolbar       — весь тулбар;
+ *     * gantt-edit-toggle   — переключатель 🔒/✏️;
+ *     * gantt-recalc-button — кнопка «Пересчитать».
  */
 import React from 'react';
 import {
@@ -127,18 +133,9 @@ export interface GanttToolbarProps {
     // ИТЕРАЦИЯ 14.1: РЕЖИМЫ ОТОБРАЖЕНИЯ
     // ==========================================
 
-    /**
-     * Режим группировки строк.
-     *   - 'equipment' — по оборудованию.
-     *   - 'batch' — по партиям.
-     */
     groupByMode: GroupByMode;
     onGroupByModeChange: (mode: GroupByMode) => void;
 
-    /**
-     * Показывать ли фантомные скобки партий
-     * (доступно только в режиме 'equipment').
-     */
     showBatchBrackets: boolean;
     onToggleBatchBrackets: () => void;
 
@@ -146,14 +143,7 @@ export interface GanttToolbarProps {
     // ИТЕРАЦИЯ 14.2: РЕЖИМ РЕДАКТИРОВАНИЯ
     // ==========================================
 
-    /**
-     * Локальный режим редактирования.
-     * Если true — задачи можно таскать/ресайзить.
-     * Если false — readonly.
-     */
     localEditMode: boolean;
-
-    /** Колбэк переключения режима. */
     onLocalEditModeChange: (value: boolean) => void;
 }
 
@@ -197,6 +187,7 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
 
     return (
         <Paper
+            data-tour-id="gantt-toolbar"
             elevation={1}
             sx={{
                 display: 'flex',
@@ -223,9 +214,10 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
 
             {/* ==========================================
                 ИТЕРАЦИЯ 14.2 (compact): Переключатель режима.
-                Только иконки — текст в tooltip.
+                ИТЕРАЦИЯ 15.3: data-tour-id="gantt-edit-toggle".
             ========================================== */}
             <ToggleButtonGroup
+                data-tour-id="gantt-edit-toggle"
                 size="small"
                 value={localEditMode ? 'edit' : 'view'}
                 exclusive
@@ -236,7 +228,6 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
                 }}
                 sx={{
                     ml: 0.5,
-                    // Компактные кнопки: 28×28 вместо 40×40 (MUI default)
                     '& .MuiToggleButton-root': {
                         padding: '4px 6px',
                         minWidth: 32,
@@ -263,10 +254,7 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
                 </Tooltip>
             </ToggleButtonGroup>
 
-            {/* ==========================================
-                ИТЕРАЦИЯ 15.2: контекстная подсказка
-                про режим редактирования.
-            ========================================== */}
+            {/* Итерация 15.2: контекстная подсказка про режим редактирования */}
             <Hint id="gantt.edit_mode" size="small" />
 
             <Divider orientation="vertical" flexItem sx={{mx: 0.5}} />
@@ -303,15 +291,11 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
                 </Select>
             </FormControl>
 
-            {/* ==========================================
-                ИТЕРАЦИЯ 15.2: контекстная подсказка
-                про скобки партий.
-            ========================================== */}
+            {/* Итерация 15.2: контекстная подсказка про скобки партий */}
             <Hint id="gantt.brackets" size="small" />
 
             {/* ==========================================
                 ИТЕРАЦИЯ 14.1: Чекбокс «Скобки партий»
-                (только в режиме 'equipment')
             ========================================== */}
             {bracketsAvailable && (
                 <Tooltip
@@ -421,11 +405,7 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
 
             {/* ==========================================
                 ИТЕРАЦИЯ 14.2: кнопка «Пересчитать»
-                Рендерится всегда, когда передан onRecalculate.
-                Активна, когда planDirty === true.
-
-                ИТЕРАЦИЯ 15.2: рядом с кнопкой — подсказка
-                <Hint id="planning.recalc"/>.
+                ИТЕРАЦИЯ 15.3: data-tour-id="gantt-recalc-button".
             ========================================== */}
             {onRecalculate && (
                 <>
@@ -436,7 +416,7 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
                                 : 'Нет изменений для пересчёта. Измените справочники, заказы, настройки или передвиньте задачу.'
                         }
                     >
-                        <span>
+                        <span data-tour-id="gantt-recalc-button">
                             <IconButton
                                 size="small"
                                 onClick={onRecalculate}

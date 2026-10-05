@@ -37,6 +37,7 @@ import {
     Person as PersonIcon,
     QrCodeScanner as QrCodeScannerIcon,
     Schedule as ScheduleIcon,
+    School as SchoolIcon,
     Science as ScienceIcon,
     Settings as SettingsIcon,
     ShoppingCart as ShoppingCartIcon,
@@ -44,6 +45,7 @@ import {
 } from '@mui/icons-material';
 import {useAuth} from '../../context/AuthContext';
 import {usePlan} from '../../context/PlainContext';
+import {useTutorial} from '../../context/TutorialContext';
 
 const DRAWER_WIDTH_EXPANDED = 240;
 const DRAWER_WIDTH_COLLAPSED = 56;
@@ -85,10 +87,13 @@ const MainLayout: React.FC = () => {
         // ==========================================
         localEditMode,
     } = usePlan();
+    const {startTour} = useTutorial();
     const navigate = useNavigate();
     const location = useLocation();
     const [mobileOpen, setMobileOpen] = useState(false);
     const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
+    const [helpMenuAnchorEl, setHelpMenuAnchorEl] =
+        useState<null | HTMLElement>(null);
 
     const [collapsed, setCollapsed] = useState<boolean>(() => {
         return localStorage.getItem(STORAGE_KEY) === 'true';
@@ -115,6 +120,27 @@ const MainLayout: React.FC = () => {
         navigate('/login');
     };
 
+    // ==========================================
+    // Итерация 15.3: меню «Помощь» с турами
+    // ==========================================
+    const handleHelpMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
+        setHelpMenuAnchorEl(event.currentTarget);
+    };
+
+    const handleHelpMenuClose = () => {
+        setHelpMenuAnchorEl(null);
+    };
+
+    const handleStartTour = (tourId: string) => {
+        handleHelpMenuClose();
+        startTour(tourId);
+    };
+
+    const handleOpenHelp = () => {
+        handleHelpMenuClose();
+        navigate('/help');
+    };
+
     const currentDrawerWidth = collapsed ? DRAWER_WIDTH_COLLAPSED : DRAWER_WIDTH_EXPANDED;
 
     const isPlanOpen = currentVersionId !== null;
@@ -139,11 +165,16 @@ const MainLayout: React.FC = () => {
             </Toolbar>
             <Divider />
 
-            <List sx={{ flexGrow: 1, pt: 1, px: collapsed ? 0.5 : 1 }}>
+            {/* Итерация 15.3: data-tour-id для тура */}
+            <List
+                data-tour-id="sidebar"
+                sx={{ flexGrow: 1, pt: 1, px: collapsed ? 0.5 : 1 }}
+            >
                 {MENU_ITEMS.map((item) => {
                     const isActive = location.pathname === item.path;
                     const button = (
                         <ListItemButton
+                            data-tour-id={`menu-${item.path.replace('/', '')}`}
                             selected={isActive}
                             onClick={() => {
                                 navigate(item.path);
@@ -354,6 +385,66 @@ const MainLayout: React.FC = () => {
                             </Tooltip>
                         )}
                     </Box>
+
+                    {/* ==========================================
+                        Итерация 15.3: меню «Помощь» с турами
+                    ========================================== */}
+                    <Tooltip title="Помощь">
+                        <IconButton
+                            color="inherit"
+                            onClick={handleHelpMenuOpen}
+                            sx={{ mr: 1 }}
+                        >
+                            <HelpOutlineIcon />
+                        </IconButton>
+                    </Tooltip>
+                    <Menu
+                        anchorEl={helpMenuAnchorEl}
+                        open={Boolean(helpMenuAnchorEl)}
+                        onClose={handleHelpMenuClose}
+                        transformOrigin={{ horizontal: 'right', vertical: 'top' }}
+                        anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
+                    >
+                        <MenuItem onClick={handleOpenHelp}>
+                            <ListItemIcon>
+                                <HelpOutlineIcon fontSize="small" />
+                            </ListItemIcon>
+                            <ListItemText>Открыть справку</ListItemText>
+                        </MenuItem>
+                        <Divider />
+                        <MenuItem disabled>
+                            <Typography
+                                variant="caption"
+                                color="text.secondary"
+                                sx={{
+                                    textTransform: 'uppercase',
+                                    letterSpacing: 0.5,
+                                    fontWeight: 600,
+                                    fontSize: '0.7rem',
+                                }}
+                            >
+                                Интерактивные туры
+                            </Typography>
+                        </MenuItem>
+                        <MenuItem onClick={() => handleStartTour('getting-started')}>
+                            <ListItemIcon>
+                                <SchoolIcon fontSize="small" />
+                            </ListItemIcon>
+                            <ListItemText>Первый план за 5 минут</ListItemText>
+                        </MenuItem>
+                        <MenuItem onClick={() => handleStartTour('gantt-basics')}>
+                            <ListItemIcon>
+                                <SchoolIcon fontSize="small" />
+                            </ListItemIcon>
+                            <ListItemText>Основы диаграммы Ганта</ListItemText>
+                        </MenuItem>
+                        <MenuItem onClick={() => handleStartTour('shift-management')}>
+                            <ListItemIcon>
+                                <SchoolIcon fontSize="small" />
+                            </ListItemIcon>
+                            <ListItemText>Работа мастера смены</ListItemText>
+                        </MenuItem>
+                    </Menu>
 
                     {user && (
                         <>

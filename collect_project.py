@@ -11,8 +11,8 @@
 
 import os
 import sys
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 # === НАСТРОЙКИ ===
 
@@ -33,6 +33,8 @@ EXCLUDED_DIRS = {
     '.idea',
     '.vscode',
     'docker',  # Если не нужны конфиги Docker
+    'tools',
+    #'docs'
 }
 
 # Расширения файлов для включения

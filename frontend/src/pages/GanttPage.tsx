@@ -13,6 +13,7 @@
 // Итерация 15.2: контекстные подсказки:
 //   - gantt.edit_mode — рядом с переключателем 🔒/✏️ в тулбаре
 //   - gantt.brackets  — в заголовке блока скобок (в тулбаре)
+// Итерация 15.3: data-tour-id="gantt-timeline" на контейнер диаграммы.
 
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useNavigate, useSearchParams} from 'react-router-dom';
@@ -833,7 +834,9 @@ const GanttPage: React.FC = () => {
                     bgcolor: 'white',
                 }}
             >
+                {/* Итерация 15.3: data-tour-id для тура */}
                 <Box
+                    data-tour-id="gantt-timeline"
                     ref={containerRef}
                     className={isReadOnly ? 'gantt-readonly' : ''}
                     sx={{

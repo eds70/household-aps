@@ -2,7 +2,7 @@
 
 **Система автоматического планирования производства на базе OR-Tools CP-SAT**
 
-Версия: **4.6.0** (Итерации 0–15.4 завершены)
+Версия: **4.7.0** (Итерации 0–15.4 завершены)
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -61,8 +61,9 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 - **What-if сценариев** (сценарное планирование без изменения БД)
 - **Архивации версий планов** (Итерация 13.21) — скрытие старых версий и иерархия
 - **Редактирования плана прямо на Ганте** (Итерация 14.2) — переключатель `🔒/✏️` в тулбаре
-- **Встроенной справки пользователя** (Итерация 15.1) — 15 markdown-статей в UI
-- **Контекстных подсказок** (Итерация 15.2) — 8 всплывающих подсказок в UI
+- **Встроенной справки пользователя** (Итерация 15.1) — markdown-статьи в UI
+- **Контекстных подсказок** (Итерация 15.2) — всплывающие подсказки в UI
+- **Интерактивного туториала** (Итерация 15.3) — пошаговое обучение по 3 сценариям
 - **FAQ** (Итерация 15.4) — 15 статей «Симптом → Причина → Что делать»
 
 ## 📚 Документация
@@ -83,6 +84,8 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 **Swagger UI** после запуска backend: **http://localhost:8000/docs**
 
 **Встроенная справка** после запуска frontend: **http://localhost:5173/help**
+
+**Интерактивный туториал** на странице справки: **http://localhost:5173/help** → блок «Интерактивные туры».
 
 ## 🛠️ Стек технологий
 
@@ -116,6 +119,7 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 | axios | 1.20 | HTTP-клиент с интерсепторами |
 | react-markdown | 9.x | Рендер markdown в UI |
 | remark-gfm | 4.x | GFM-расширения (таблицы, чекбоксы) |
+| react-joyride | 2.x | Интерактивный туториал |
 
 ## 📁 Структура проекта
 
@@ -192,6 +196,7 @@ household-aps/
 │   │   ├── add_26_seed_1.sql   # FAQ: планирование (5)
 │   │   ├── add_26_seed_2.sql   # FAQ: гант, смены, what-if, ЧЗ (5)
 │   │   ├── add_26_seed_3.sql   # FAQ: лаборатория, advisor (5)
+│   │   ├── add_27_seed_1.sql   # Туториал (15.3)
 │   │   ├── fix_versions_hotfix.sql
 │   │   └── fix_shift_names.sql
 │   ├── .env
@@ -228,7 +233,11 @@ household-aps/
 │   │   ├── context/
 │   │   │   ├── AuthContext.tsx
 │   │   │   ├── PlainContext.tsx
-│   │   │   └── HelpHintsContext.tsx
+│   │   │   ├── HelpHintsContext.tsx
+│   │   │   └── TutorialContext.tsx
+│   │   ├── tutorial/
+│   │   │   ├── tours.ts        # Конфигурация туров
+│   │   │   └── types.ts
 │   │   ├── hooks/
 │   │   │   ├── useCascadeMove.ts
 │   │   │   ├── useDoubleClick.ts
@@ -355,6 +364,7 @@ docker cp backend\migrations\add_25_seed.sql aps_postgres:/tmp/add_25_seed.sql
 docker cp backend\migrations\add_26_seed_1.sql aps_postgres:/tmp/add_26_seed_1.sql
 docker cp backend\migrations\add_26_seed_2.sql aps_postgres:/tmp/add_26_seed_2.sql
 docker cp backend\migrations\add_26_seed_3.sql aps_postgres:/tmp/add_26_seed_3.sql
+docker cp backend\migrations\add_27_seed_1.sql aps_postgres:/tmp/add_27_seed_1.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_21.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_23.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_24.sql
@@ -366,6 +376,7 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_25_seed.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_1.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_2.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_3.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_27_seed_1.sql
 ```
 
 #### Шаг 3: Создание администратора
@@ -398,7 +409,7 @@ cd backend
 pytest tests/ -v
 ```
 
-**Текущее состояние:** **678 passed**, 0 warnings.
+**Текущее состояние:** **696 passed**, 0 warnings.
 
 Подробнее о тестировании — в [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#запуск-тестов).
 
@@ -425,8 +436,8 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/seed_demo_data.sql
 
 ### Применить SQL-миграцию (правильный способ)
 ```
-docker cp backend\migrations\add_26_seed_1.sql aps_postgres:/tmp/add_26_seed_1.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_1.sql
+docker cp backend\migrations\add_27_seed_1.sql aps_postgres:/tmp/add_27_seed_1.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_27_seed_1.sql
 ```
 
 ### Проверить статьи справки по категориям (Итерация 15.1 + 15.4)
@@ -434,7 +445,7 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_1.sql
 docker exec -i aps_postgres psql -U aps -d household -c "SELECT category, COUNT(*) AS cnt FROM help_article GROUP BY category ORDER BY category;"
 ```
 
-**Ожидаемо:** 9 категорий, **30 статей** (включая 15 FAQ).
+**Ожидаемо:** 9 категорий, **31 статья** (включая 15 FAQ и 1 туториал).
 
 ### Проверить FAQ-статьи (Итерация 15.4)
 ```
@@ -442,6 +453,13 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT slug, title FROM
 ```
 
 **Ожидаемо:** 15 статей с префиксом `faq-`.
+
+### Проверить статью туториала (Итерация 15.3)
+```
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT slug, title FROM help_article WHERE slug = 'tutorial-interactive';"
+```
+
+**Ожидаемо:** 1 статья `tutorial-interactive`.
 
 ### Проверить контекстные подсказки (Итерация 15.2)
 ```
@@ -493,6 +511,9 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT h.hint_key, h.ar
 - **Справка (15.1):** нет редактирования статей через UI. Правки — через SQL или seed-миграции.
 - **Подсказки (15.2):** нет редактирования через UI. Правки — через SQL или seed-миграции.
 - **Подсказки (15.2):** обновление кэша только при перезагрузке страницы.
+- **Туториал (15.3):** прогресс хранится в `localStorage` (per-browser). При очистке браузера — тур показывается заново.
+- **Туториал (15.3):** нет per-user сохранения прогресса (нет поля в `app_user`).
+- **Туториал (15.3):** нет аналитики прохождения (какие шаги пропускаются).
 - **FAQ (15.4):** 15 статей покрывают топ-15 проблем. Дополнения — через seed-миграции.
 
 ## 🐛 Troubleshooting
@@ -510,6 +531,9 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT h.hint_key, h.ar
 - **Подсказки не показываются (15.2)** → проверить, что применены миграции `add_25.sql` и `add_25_seed.sql`, а также перезагрузить страницу (Ctrl+F5).
 - **Popover подсказки пустой (15.2)** → проверить `body_md` в `help_hint` для нужного `hint_key`.
 - **«Читать подробнее» ведёт на 404 (15.2)** → проверить связь `help_hint.article_slug` ↔ `help_article.slug`.
+- **Туториал не запускается (15.3)** → проверить, что установлен `react-joyride`, очистить `node_modules/.vite`, перезагрузить страницу.
+- **Туториал не подсвечивает элемент (15.3)** → проверить, что у элемента есть `data-tour-id`, совпадающий с `target` в `tours.ts`.
+- **Туториал показывается повторно (15.3)** → проверить `localStorage` ключ `aps_tutorial_completed_<tour_id>`, сбросить через кнопку «Пройти заново».
 - **FAQ-статьи не появились (15.4)** → проверить, что применены миграции `add_26_seed_1/2/3.sql`.
 - **FAQ-категория не отображается (15.4)** → перезапустить backend после правки `help.py`.
 
@@ -545,8 +569,8 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT h.hint_key, h.ar
 | 14.2 | Редактирование плана прямо на Ганте | 3 дня | 🔥🔥 | ✅ |
 | 15.1 | Встроенная справка пользователя | 3 дня | 🟡 | ✅ |
 | 15.2 | Контекстные подсказки | 2 дня | 🟡 | ✅ |
-| 15.3 | Интерактивный туториал | 2 дня | 🟡 | ⏳ |
-| **15.4** | **FAQ + расширение базы знаний** | **2 дня** | **🟡** | **✅** |
+| **15.3** | **Интерактивный туториал** | **2 дня** | **🟡** | **✅** |
+| 15.4 | FAQ + расширение базы знаний | 2 дня | 🟡 | ✅ |
 | 15.5 | Редактирование статей в UI | 3 дня | 🟢 | ⏳ |
 
 Полный Roadmap — в [docs/ROADMAP.md](docs/ROADMAP.md).
@@ -557,4 +581,4 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT h.hint_key, h.ar
 
 ---
 
-Итерации 0–15.4 завершены. Следующая — Итерация 15.3: Интерактивный туториал (⏳).
+Итерации 0–15.4 завершены. Следующая — Итерация 15.5: Редактирование статей в UI (⏳).

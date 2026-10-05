@@ -3,6 +3,11 @@
 //   разблокировках и внесении факта выполнения задач.
 // Итерация 15.2: контекстная подсказка <Hint id="shift.lab_block"/>
 //   в шапке страницы (рядом с заголовком).
+// Итерация 15.3: добавлены data-tour-id:
+//   - shift-date-picker — поле «Дата смены»
+//   - shift-selector    — селект «Смена»
+//   - shift-tasks-list  — контейнер с заданиями
+//   - task-material-load / task-complete / task-lab-block — иконки задач
 
 import React, {useCallback, useEffect, useState} from 'react';
 import {
@@ -563,6 +568,7 @@ const ShiftPage: React.FC = () => {
                                 {task.batch_id && !isLabBlocked && (
                                     <Tooltip title="Заблокировать лабораторией">
                                         <IconButton
+                                            data-tour-id="task-lab-block"
                                             size="small"
                                             color="error"
                                             onClick={() => handleOpenBlockDialog(task)}
@@ -586,6 +592,7 @@ const ShiftPage: React.FC = () => {
                                 {task.task_role === 'REACTOR_OP' && !task.material_load_at && !isLabBlocked && (
                                     <Tooltip title="Отметить загрузку сырья">
                                         <IconButton
+                                            data-tour-id="task-material-load"
                                             size="small"
                                             color="info"
                                             onClick={() => handleMaterialLoad(task)}
@@ -597,6 +604,7 @@ const ShiftPage: React.FC = () => {
                                 {task.status !== 'DONE' && !isLabBlocked && (
                                     <Tooltip title="Отметить выполнение">
                                         <IconButton
+                                            data-tour-id="task-complete"
                                             size="small"
                                             color="success"
                                             onClick={() => handleComplete(task)}
@@ -646,6 +654,7 @@ const ShiftPage: React.FC = () => {
                             <FormControl size="small" sx={{minWidth: 260}}>
                                 <InputLabel>Смена</InputLabel>
                                 <Select
+                                    data-tour-id="shift-selector"
                                     value={selectedShiftId || ''}
                                     label="Смена"
                                     onChange={(e) => handleShiftChange(e.target.value as string)}
@@ -660,6 +669,7 @@ const ShiftPage: React.FC = () => {
                         )}
 
                         <TextField
+                            data-tour-id="shift-date-picker"
                             type="date"
                             size="small"
                             label="Дата смены"
@@ -742,7 +752,10 @@ const ShiftPage: React.FC = () => {
             </Box>
 
             {!loading && currentShift && tasksData && (
-                <Box sx={{flexGrow: 1, minHeight: 0, overflow: 'auto', pr: 1}}>
+                <Box
+                    data-tour-id="shift-tasks-list"
+                    sx={{flexGrow: 1, minHeight: 0, overflow: 'auto', pr: 1}}
+                >
                     {tasksData.groups.length === 0 ? (
                         <Card>
                             <CardContent>

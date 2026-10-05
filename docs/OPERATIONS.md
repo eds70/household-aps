@@ -14,6 +14,7 @@
 - [Архивация версий планов (Итерация 13.21)](#архивация-версий-планов-итерация-1321)
 - [Встроенная справка (Итерация 15.1)](#встроенная-справка-итерация-151)
 - [Контекстные подсказки (Итерация 15.2)](#контекстные-подсказки-итерация-152)
+- [Интерактивный туториал (Итерация 15.3)](#интерактивный-туториал-итерация-153)
 - [FAQ (Итерация 15.4)](#faq-итерация-154)
 - [Диагностика](#диагностика)
 
@@ -100,15 +101,15 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT pg_terminate_bac
 ### Правильный способ
 
 ```bash
-docker cp backend/migrations/add_26_seed_1.sql aps_postgres:/tmp/add_26_seed_1.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_1.sql
+docker cp backend/migrations/add_27_seed_1.sql aps_postgres:/tmp/add_27_seed_1.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_27_seed_1.sql
 ```
 
 ### Неправильный способ (НЕ ИСПОЛЬЗОВАТЬ)
 
 ```bash
 # ❌ PowerShell испортит кириллицу
-Get-Content backend/migrations/add_26_seed_1.sql | docker exec -i aps_postgres psql -U aps -d household
+Get-Content backend/migrations/add_27_seed_1.sql | docker exec -i aps_postgres psql -U aps -d household
 ```
 
 ### История миграций
@@ -149,6 +150,7 @@ Get-Content backend/migrations/add_26_seed_1.sql | docker exec -i aps_postgres p
 | `add_26_seed_1.sql` | 15.4 | FAQ: планирование (5 статей) |
 | `add_26_seed_2.sql` | 15.4 | FAQ: гант, смены, what-if, ЧЗ (5 статей) |
 | `add_26_seed_3.sql` | 15.4 | FAQ: лаборатория, advisor (5 статей) |
+| **`add_27_seed_1.sql`** | **15.3** | **Туториал: статья `tutorial-interactive`** |
 | `fix_shift_names.sql` | — | Исправление имён смен |
 | `fix_work_time.sql` | — | Исправление work_start/end_time |
 
@@ -166,6 +168,7 @@ $migrations = @(
     "add_24.sql", "add_24_seed_1.sql", "add_24_seed_2.sql", "add_24_seed_3.sql",
     "add_25.sql", "add_25_seed.sql",
     "add_26_seed_1.sql", "add_26_seed_2.sql", "add_26_seed_3.sql",
+    "add_27_seed_1.sql",
     "fix_shift_names.sql", "fix_work_time.sql"
 )
 
@@ -210,6 +213,16 @@ docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT EXISTS (
     SELECT 1 FROM information_schema.tables
     WHERE table_name = 'help_hint'
+);
+"
+```
+
+Для `add_27_seed_1.sql` (туториал):
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT EXISTS (
+    SELECT 1 FROM help_article WHERE slug = 'tutorial-interactive'
 );
 "
 ```
@@ -952,14 +965,14 @@ ORDER BY category;
 | `cz` | 1 |
 | `faq` | 15 |
 | `gantt` | 4 |
-| `getting-started` | 2 |
+| `getting-started` | 3 |
 | `lab` | 1 |
 | `planning` | 4 |
 | `settings` | 1 |
 | `shift` | 1 |
 | `whatif` | 1 |
 
-Всего: **30 статей** (15 базовых + 15 FAQ).
+Всего: **31 статья** (15 базовых + 1 туториал + 15 FAQ).
 
 ### Список статей
 
@@ -1091,6 +1104,75 @@ SELECT indexname FROM pg_indexes WHERE tablename = 'help_hint';
 ```
 
 Ожидаемо: `idx_help_hint_published`, `idx_help_hint_org`.
+
+---
+
+## Интерактивный туториал (Итерация 15.3)
+
+Туториал — **полностью на фронтенде**. Специальных таблиц в БД нет.
+
+### Проверить, что статья туториала создана
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT slug, title, category, is_published
+FROM help_article
+WHERE slug = 'tutorial-interactive';
+"
+```
+
+**Ожидаемо:** 1 строка `tutorial-interactive`.
+
+### Применить seed-миграцию туториала
+
+```bash
+docker cp backend/migrations/add_27_seed_1.sql aps_postgres:/tmp/add_27_seed_1.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_27_seed_1.sql
+```
+
+**Идемпотентно** — повторное применение безопасно (`ON CONFLICT (slug) DO NOTHING`).
+
+### Проверить, что категория getting-started содержит туториал
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT slug, title, display_order
+FROM help_article
+WHERE category = 'getting-started'
+ORDER BY display_order;
+"
+```
+
+**Ожидаемо:** 3 статьи (`intro-overview`, `intro-first-plan`, `tutorial-interactive`).
+
+### Проверить через API
+
+```bash
+curl -s http://localhost:8000/api/v1/help/articles/tutorial-interactive \
+  -H "Authorization: Bearer $TOKEN" | jq '.title'
+```
+
+**Ожидаемо:** `"Интерактивный туториал"`.
+
+### Прогресс прохождения
+
+Хранится в `localStorage` браузера:
+- Ключ: `aps_tutorial_completed_<tour_id>`.
+- Значение: `'true'`.
+
+**Сбросить через консоль браузера (DevTools → Console):**
+
+```javascript
+localStorage.removeItem('aps_tutorial_completed_getting-started');
+localStorage.removeItem('aps_tutorial_completed_gantt-basics');
+localStorage.removeItem('aps_tutorial_completed_shift-management');
+```
+
+**Или сбросить весь localStorage (осторожно — удалит и токен):**
+
+```javascript
+localStorage.clear();
+```
 
 ---
 
@@ -1346,7 +1428,7 @@ SELECT
 "
 ```
 
-Все четыре `t`, `article_count` = 30.
+Все четыре `t`, `article_count` = 31.
 
 **add_25.sql (подсказки):**
 
@@ -1375,6 +1457,18 @@ SELECT
 ```
 
 Ожидаемо: `faq_count = 15`, `global_faq = 15`, `faq_slug_count = 15`.
+
+**add_27_seed_1.sql (туториал):**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT
+    (SELECT COUNT(*) FROM help_article WHERE slug = 'tutorial-interactive') AS tutorial_count,
+    (SELECT COUNT(*) FROM help_article WHERE category = 'getting-started') AS getting_started_count;
+"
+```
+
+Ожидаемо: `tutorial_count = 1`, `getting_started_count = 3`.
 
 ### Полная диагностика системы
 
@@ -1440,15 +1534,21 @@ SELECT COUNT(*) AS help_hints FROM help_hint WHERE is_published = TRUE;
 docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT COUNT(*) AS faq_articles FROM help_article WHERE category = 'faq';
 "
+
+# 12. Туториал
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT COUNT(*) AS tutorial_articles FROM help_article WHERE slug = 'tutorial-interactive';
+"
 ```
 
 **Ожидаемые значения:**
 
 | Проверка | Ожидание |
 |----------|----------|
-| `help_articles` | 30 |
+| `help_articles` | 31 |
 | `help_hints` | 8 |
 | `faq_articles` | 15 |
+| `tutorial_articles` | 1 |
 | `active` версия | 1 |
 | `plan_settings` активного плана | >0 |
 

@@ -5,6 +5,11 @@
 //   - planning.recalc  — рядом с кнопкой «Построить план»
 //   - planning.advisor — в заголовке панели Advisor
 //   - planning.plan_dirty — в заголовке «История планов»
+// Итерация 15.3: добавлены data-tour-id для интерактивного тура:
+//   - build-plan-button — кнопка «Построить план»
+//   - advisor-panel — панель Advisor
+//   - plans-history — панель «История планов»
+//   - open-gantt-button — иконка 👁 в строке плана
 
 import React, {useCallback, useEffect, useMemo, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
@@ -587,6 +592,7 @@ const SchedulePage: React.FC = () => {
                                     : "Открыть план (нет снапшотов — справочники будут пусты)"
                             }>
                                 <IconButton
+                                    data-tour-id="open-gantt-button"
                                     size="small"
                                     color={hasSnapshot ? 'primary' : 'warning'}
                                     onClick={() => handleOpenPlan(version)}
@@ -641,7 +647,10 @@ const SchedulePage: React.FC = () => {
     const renderAdvisorPanel = () => {
         return (
             <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column', m: 0.5 }}>
-                <CardContent sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', minHeight: 0, p: 2 }}>
+                <CardContent
+                    data-tour-id="advisor-panel"
+                    sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', minHeight: 0, p: 2 }}
+                >
                     <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5, flexShrink: 0 }}>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                             <Typography variant="h6" sx={{ fontWeight: 600, fontSize: '1rem' }}>
@@ -740,7 +749,10 @@ const SchedulePage: React.FC = () => {
 
         return (
             <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column', m: 0.5 }}>
-                <CardContent sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', minHeight: 0, p: 2 }}>
+                <CardContent
+                    data-tour-id="plans-history"
+                    sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', minHeight: 0, p: 2 }}
+                >
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1, flexShrink: 0, flexWrap: 'wrap' }}>
                         <HistoryIcon color="primary" />
                         <Typography variant="h6" sx={{ fontWeight: 600, fontSize: '1rem' }}>
@@ -946,6 +958,7 @@ const SchedulePage: React.FC = () => {
                             helperText="Сохраняется в app_settings"
                         />
                         <Button
+                            data-tour-id="build-plan-button"
                             variant="contained"
                             startIcon={loading ? <CircularProgress size={20} /> : <PlayIcon />}
                             onClick={handleBuildSchedule}

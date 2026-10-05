@@ -23,6 +23,7 @@
 - [Редактирование плана (14.2)](#редактирование-плана-142)
 - [Встроенная справка (15.1)](#встроенная-справка-151)
 - [Контекстные подсказки (15.2)](#контекстные-подсказки-152)
+- [Интерактивный туториал (15.3)](#интерактивный-туториал-153)
 - [FAQ (15.4)](#faq-154)
 - [Диагностика](#диагностика)
 
@@ -114,9 +115,9 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_XX.sql
 | `app_settings` (таблица) | `add_13.sql` |
 | `whatif_scenario` (таблица) | `add_16.sql` |
 | `plan_settings` (таблица) | `add_21.sql` |
-| **`is_archived`** | **`add_23.sql`** |
-| **`help_article` (таблица)** | **`add_24.sql`** |
-| **`help_hint` (таблица)** | **`add_25.sql`** |
+| `is_archived` | `add_23.sql` |
+| `help_article` (таблица) | `add_24.sql` |
+| `help_hint` (таблица) | `add_25.sql` |
 
 ---
 
@@ -190,7 +191,7 @@ curl http://localhost:8000/openapi.json | grep "unarchive"
    SELECT COUNT(*) FROM help_article;
    "
    ```
-   Должно быть **30** (после Итерации 15.4).
+   Должно быть **31** (после Итерации 15.3).
 5. Проверить, что применены FAQ-миграции `add_26_seed_1/2/3.sql`:
    ```bash
    docker exec -i aps_postgres psql -U aps -d household -c "
@@ -205,6 +206,13 @@ curl http://localhost:8000/openapi.json | grep "unarchive"
    "
    ```
    Должно быть **8**.
+7. Проверить, что применена seed-миграция `add_27_seed_1.sql` (туториал):
+   ```bash
+   docker exec -i aps_postgres psql -U aps -d household -c "
+   SELECT COUNT(*) FROM help_article WHERE slug = 'tutorial-interactive';
+   "
+   ```
+   Должно быть **1**.
 
 ---
 
@@ -1506,7 +1514,7 @@ SELECT COUNT(*) FROM help_article;
 "
 ```
 
-Должно быть **30** (после Итерации 15.4).
+Должно быть **31** (после Итерации 15.3).
 
 ---
 
@@ -1756,9 +1764,259 @@ ORDER BY h.hint_key;
 
 ---
 
+## Интерактивный туториал (15.3)
+
+### 96. Туториал не запускается
+
+**Симптом:** клик на кнопку «Запустить тур» — ничего не происходит, или появляется ошибка.
+
+**Причина:** возможные варианты:
+1. Библиотека `react-joyride` не установлена.
+2. `TutorialProvider` не обёрнут вокруг приложения в `App.tsx`.
+3. Кэш Vite устарел после добавления `react-joyride`.
+
+**Решение:**
+
+**Шаг 1. Проверить установку:**
+
+```bash
+cd frontend
+npm list react-joyride
+```
+
+Если пусто — установить:
+
+```bash
+npm install react-joyride@^2.9.3
+```
+
+**Шаг 2. Проверить провайдер в `App.tsx`:**
+
+```tsx
+<AuthProvider>
+    <PlanProvider>
+        <HelpHintsProvider>
+            <TutorialProvider>
+                <BrowserRouter>
+                    <AppRoutes />
+                </BrowserRouter>
+            </TutorialProvider>
+        </HelpHintsProvider>
+    </PlanProvider>
+</AuthProvider>
+```
+
+**Шаг 3. Очистить кэш Vite:**
+
+```bash
+cd frontend
+Remove-Item -Recurse -Force node_modules\.vite
+npm run dev
+```
+
+**Шаг 4. Перезагрузить страницу** (`Ctrl+F5`).
+
+---
+
+### 97. Туториал не подсвечивает нужный элемент
+
+**Симптом:** тур запускается, но подсвечивает пустое место или другое место.
+
+**Причина:** `target` в конфигурации тура не совпадает с реальным `data-tour-id` в DOM, или элемент ещё не отрисован.
+
+**Решение:**
+
+**Шаг 1. Проверить `data-tour-id` в DOM:**
+
+1. Откройте DevTools → Elements.
+2. Найдите целевой элемент (например, кнопку «Построить план»).
+3. Проверьте, что у него есть атрибут `data-tour-id="schedule-build-button"`.
+
+**Шаг 2. Сверить с `tours.ts`:**
+
+В `frontend/src/tutorial/tours.ts`:
+
+```typescript
+{
+    target: '[data-tour-id="schedule-build-button"]',
+    content: '...',
+}
+```
+
+`target` и `data-tour-id` должны совпадать **точно** (включая все дефисы).
+
+**Шаг 3. Проверить порядок рендера:**
+
+Если элемент ещё не отрисован (например, страница только загрузилась), Joyride подсветит пустое место. Туры должны запускаться на **полностью отрисованной** странице.
+
+**Обходное решение:** использовать `before` в конфигурации шага:
+
+```typescript
+{
+    target: '[data-tour-id="some-element"]',
+    content: '...',
+    before: () => new Promise((resolve) => setTimeout(resolve, 300)),
+}
+```
+
+---
+
+### 98. Туториал показывается повторно после завершения
+
+**Симптом:** прошли тур, но при следующем заходе он снова предлагается.
+
+**Причина:** `localStorage` ключ `aps_tutorial_completed_<tour_id>` не сохранён.
+
+**Решение:**
+
+**Шаг 1. Проверить `localStorage`:**
+
+DevTools → Application → Local Storage → `http://localhost:5173`.
+
+Ищите ключи:
+- `aps_tutorial_completed_getting-started`
+- `aps_tutorial_completed_gantt-basics`
+- `aps_tutorial_completed_shift-management`
+
+**Шаг 2. Если ключа нет — проверить `TutorialContext`:**
+
+В `TutorialContext.tsx` должно быть:
+
+```typescript
+const completeTour = () => {
+    if (activeTourId) {
+        localStorage.setItem(
+            `aps_tutorial_completed_${activeTourId}`,
+            'true'
+        );
+    }
+    setActiveTourId(null);
+};
+```
+
+Метод `completeTour` должен вызываться в `onComplete` callback от Joyride.
+
+**Шаг 3. Если ключ есть, но тур всё равно запускается:**
+
+Проверить `isTourCompleted`:
+
+```typescript
+const isTourCompleted = (tourId: string): boolean => {
+    return localStorage.getItem(`aps_tutorial_completed_${tourId}`) === 'true';
+};
+```
+
+И что `HelpPage` использует `isTourCompleted` перед запуском.
+
+---
+
+### 99. Туториал не проходит через все шаги
+
+**Симптом:** тур останавливается после 3-4 шагов, кнопки «Далее» пропадают.
+
+**Причина:** возможные варианты:
+1. Один из целевых элементов отсутствует в DOM (например, скрыт из-за фильтра).
+2. Ошибка в JS-коде внутри шага.
+3. Открылся модальный диалог, который перекрывает подсветку.
+
+**Решение:**
+
+**Шаг 1. Открыть DevTools → Console:**
+
+Ищите ошибки вроде `[Joyride] Target not found: ...`.
+
+**Шаг 2. Проверить каждый `target`:**
+
+Для каждого шага вручную выполните в Console:
+
+```javascript
+document.querySelector('[data-tour-id="schedule-build-button"]')
+```
+
+Если возвращает `null` — элемент не отрисован. Проверьте, что вы на **правильной странице** для этого тура.
+
+**Шаг 3. Ограничения туров:**
+
+Тур `gantt-basics` требует, чтобы открыт план на Ганте. Тур `shift-management` требует открытой смены. Если этих условий нет — часть шагов пропустится.
+
+**Обходное решение:** сделать шаги условными:
+
+```typescript
+{
+    target: '[data-tour-id="gantt-toolbar"]',
+    content: '...',
+    skipBeacon: true,
+    // Пропустить, если элемент не найден
+    disableBeacon: true,
+}
+```
+
+---
+
+### 100. Прогресс туров сохраняется между разными пользователями
+
+**Симптом:** коллега прошёл тур на моём компьютере — у меня он тоже считается пройденным.
+
+**Причина:** `localStorage` не разделяется по пользователям.
+
+**Решение:**
+
+Это **by design** — прогресс хранится в браузере, не в БД.
+
+**Обходные пути:**
+
+1. **Не использовать общий браузер** — каждый сотрудник заходит со своего устройства.
+2. **Сбрасывать при выходе из системы** — модифицировать `AuthContext.logout()`:
+   ```typescript
+   const logout = () => {
+       // ...
+       localStorage.removeItem('aps_tutorial_completed_getting-started');
+       localStorage.removeItem('aps_tutorial_completed_gantt-basics');
+       localStorage.removeItem('aps_tutorial_completed_shift-management');
+   };
+   ```
+3. **Планируемое решение (Итерация 15.5):** перенос прогресса в `app_user` (поле `is_tutorial_completed`).
+
+---
+
+### 101. Кнопка «Пройти заново» не работает
+
+**Симптом:** клик по «Пройти заново» не сбрасывает прогресс.
+
+**Причина:** метод `resetTour` не удаляет ключ из `localStorage`, или UI не обновляется.
+
+**Решение:**
+
+**Шаг 1. Проверить `resetTour` в `TutorialContext`:**
+
+```typescript
+const resetTour = (tourId: string) => {
+    localStorage.removeItem(`aps_tutorial_completed_${tourId}`);
+    // Триггерим ререндер через setState
+    setForceUpdate((n) => n + 1);
+};
+```
+
+**Шаг 2. Проверить, что `HelpPage` подписан на изменения:**
+
+Использовать `useTutorial()` и вызывать `resetTour` из контекста. После сброса — обновлять локальный стейт.
+
+**Шаг 3. Проверить вручную:**
+
+DevTools → Console:
+
+```javascript
+localStorage.removeItem('aps_tutorial_completed_getting-started');
+location.reload();
+```
+
+Если после этого тур запускается — проблема в UI-обновлении, не в сохранении.
+
+---
+
 ## FAQ (15.4)
 
-### 96. FAQ-статьи не появились в справке
+### 102. FAQ-статьи не появились в справке
 
 **Симптом:** в разделе «Помощь» (`/help`) нет категории «FAQ» и/или нет самих статей.
 
@@ -1815,7 +2073,7 @@ curl -s http://localhost:8000/api/v1/help/categories \
 
 ---
 
-### 97. Категория FAQ не отображается в сайдбаре `/help`
+### 103. Категория FAQ не отображается в сайдбаре `/help`
 
 **Симптом:** FAQ-статьи в БД есть, но в левой панели `/help` категории
 «FAQ» нет.
@@ -1868,13 +2126,13 @@ curl -s http://localhost:8000/api/v1/help/categories \
 }
 ```
 
-Если ответ пустой — backend не видит FAQ-статьи в БД (см. пункт 96).
+Если ответ пустой — backend не видит FAQ-статьи в БД (см. пункт 102).
 
 **Шаг 4. Hard reload на фронте** (`Ctrl+Shift+R`).
 
 ---
 
-### 98. FAQ-статьи не находятся через поиск
+### 104. FAQ-статьи не находятся через поиск
 
 **Симптом:** вводишь в поиске «FEASIBLE» или «сирота» — результатов нет.
 
@@ -1913,7 +2171,7 @@ grep "faq-plan-feasible" backend/migrations/add_26_seed_1.sql
 
 ---
 
-### 99. `ON CONFLICT DO NOTHING` в seed-миграции FAQ не работает
+### 105. `ON CONFLICT DO NOTHING` в seed-миграции FAQ не работает
 
 **Симптом:** при повторном применении `add_26_seed_*.sql` появляется
 ошибка `ON CONFLICT (slug) DO NOTHING не срабатывает` или дубли.
@@ -1956,7 +2214,7 @@ WHERE a.id > b.id AND a.slug = b.slug;
 
 ---
 
-### 100. FAQ-статья отображается с «кракозябрами» вместо кириллицы
+### 106. FAQ-статья отображается с «кракозябрами» вместо кириллицы
 
 **Симптом:** вместо «Что делать» отображается `Ð§Ñ‚Ð¾ Ð´ÐµÐ»Ð°Ñ‚ÑŒ`.
 
@@ -1999,7 +2257,7 @@ SELECT slug, title FROM help_article WHERE category = 'faq' ORDER BY display_ord
 
 ---
 
-### 101. FAQ-статьи дублируются в поиске и категориях
+### 107. FAQ-статьи дублируются в поиске и категориях
 
 **Симптом:** одна и та же FAQ-статья отображается 2-3 раза.
 
@@ -2043,7 +2301,7 @@ SELECT COUNT(*) AS faq_count FROM help_article WHERE category = 'faq';
 
 ---
 
-### 102. Кнопка «Связанные статьи» в FAQ ведёт не туда
+### 108. Кнопка «Связанные статьи» в FAQ ведёт не туда
 
 **Симптом:** клик по ссылке вида `[Обзор Ганта](/help/gantt-overview)` в
 FAQ-статье — открывается 404 или не та статья.
@@ -2095,7 +2353,7 @@ WHERE slug = 'faq-xxx';
 
 ## Диагностика
 
-### 103. Общая проверка системы
+### 109. Общая проверка системы
 
 ```bash
 # PostgreSQL
@@ -2152,21 +2410,27 @@ SELECT COUNT(*) AS help_hints FROM help_hint WHERE is_published = TRUE;
 docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT COUNT(*) AS faq_articles FROM help_article WHERE category = 'faq';
 "
+
+# Туториал
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT COUNT(*) AS tutorial_articles FROM help_article WHERE slug = 'tutorial-interactive';
+"
 ```
 
 **Ожидаемые значения:**
 
 | Проверка | Ожидание |
 |----------|----------|
-| `help_articles` | 30 |
+| `help_articles` | 31 |
 | `help_hints` | 8 |
 | `faq_articles` | 15 |
+| `tutorial_articles` | 1 |
 | `active` версия | 1 |
 | `plan_settings` активного плана | >0 |
 
 ---
 
-### 104. Полная очистка и пересоздание
+### 110. Полная очистка и пересоздание
 
 ```bash
 # 1. Снести контейнер
@@ -2197,6 +2461,7 @@ $migrations = @("add_06.sql", "add_06b.sql", "add_07.sql", "add_08.sql",
                 "add_24.sql", "add_24_seed_1.sql", "add_24_seed_2.sql", "add_24_seed_3.sql",
                 "add_25.sql", "add_25_seed.sql",
                 "add_26_seed_1.sql", "add_26_seed_2.sql", "add_26_seed_3.sql",
+                "add_27_seed_1.sql",
                 "fix_shift_names.sql", "fix_work_time.sql")
 foreach ($m in $migrations) {
     docker cp "backend/migrations/$m" "aps_postgres:/tmp/$m"
@@ -2214,7 +2479,7 @@ cd ../frontend; npm run dev
 
 ---
 
-### 105. Полезные ссылки
+### 111. Полезные ссылки
 
 - [README.md](../README.md) — основная документация.
 - [docs/OPERATIONS.md](OPERATIONS.md) — операции с БД.
