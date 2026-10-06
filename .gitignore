@@ -6,74 +6,174 @@ __pycache__/
 *$py.class
 *.so
 .Python
-.venv/
-venv/
 env/
+venv/
+.venv/
 ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib60/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Тесты и покрытие
 .pytest_cache/
-.mypy_cache/
-.ruff_cache/
-htmlcov/
 .coverage
 .coverage.*
-*.egg-info/
-dist/
-build/
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Линтеры и типы
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pylint.d/
 
 # ==========================================
-# Backups и дампы БД
+# Node.js / Frontend
 # ==========================================
-*.sql.bak
-backup_*.sql
-backups/
-project_dump.txt
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.npm
+.yarn/
+.pnp/
+.pnp.js
+
+# Сборка
+dist/
+dist-ssr/
+build/
+*.local
+.vite/
+.cache/
+
+# ==========================================
+# IDE и редакторы
+# ==========================================
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-workspace
+*.sublime-project
+
+# ==========================================
+# Операционная система
+# ==========================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ==========================================
+# Переменные окружения (СЕКРЕТЫ!)
+# ==========================================
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+*.env.local
+!.env.example
+
+# ==========================================
+# Базы данных и дампы
+# ==========================================
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+*.backup
+
+# ==========================================
+# Дампы проекта для AI-ассистента
+# ==========================================
+# См. docs/COLLECT_PROJECT_CHEATSHEET.md и docs/AI_WORKFLOW.md
+project_dump*.txt
+project_meta.txt
+project_core.txt
+project_files_dump.txt
+project_tz.txt
+project_audit.txt
+project_small.txt
+project_app.txt
+
+# Именованные дампы подсистем (паттерн из collect_project.py)
+project_dump_*.txt
 
 # ==========================================
 # Логи
 # ==========================================
 *.log
 logs/
+*.log.*
 
 # ==========================================
-# IDE
+# Кэши и временные файлы
 # ==========================================
-.vscode/
-.idea/
+.cache/
+.tmp/
+.temp/
+*.tmp
+*.bak
 *.swp
-*.swo
-*~
 
 # ==========================================
-# Node / Frontend
+# Docker (локальные volume-ы)
 # ==========================================
-node_modules/
-frontend/dist/
-frontend/node_modules/
-frontend/node_modules/.vite/
-frontend/.vite/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+docker/volumes/
+docker/data/
 
 # ==========================================
-# OS
+# Excel и офисные документы (пользовательские)
 # ==========================================
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# ==========================================
-# Env-файлы (секреты)
-# ==========================================
-.env
-.env.local
-.env.*.local
-backend/.env
-backend/.env.local
+~$*.xlsx
+~$*.xls
+~$*.docx
+~$*.doc
+*.xlsx.tmp
 
 # ==========================================
 # Прочее
 # ==========================================
-*.tmp
-*.temp
-.cache/
+*.pid
+*.seed
+*.pid.lock
+.eslintcache
+.stylelintcache
+
+# ==========================================
+# Исключения (то, что ДОЛЖНО быть в git)
+# ==========================================
+!.env.example
+!.gitkeep
+!docs/requirements/*.txt

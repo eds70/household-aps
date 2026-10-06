@@ -2,7 +2,7 @@
 
 **Система автоматического планирования производства на базе OR-Tools CP-SAT**
 
-Версия: **4.8.0** (Итерации 0–15.5 завершены)
+Версия: **4.8.0** (Итерации 0–15.6 завершены)
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -411,7 +411,7 @@ cd backend
 pytest tests/ -v
 ```
 
-**Текущее состояние:** **714 passed**, 0 warnings.
+**Текущее состояние:** **672 passed**, 66 skipped (требуют PostgreSQL).
 
 Подробнее о тестировании — в [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#запуск-тестов).
 
@@ -574,7 +574,11 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT h.hint_key, h.ar
 | 15.2 | Контекстные подсказки | 2 дня | 🟡 | ✅ |
 | 15.3 | Интерактивный туториал | 2 дня | 🟡 | ✅ |
 | 15.4 | FAQ + расширение базы знаний | 2 дня | 🟡 | ✅ |
-| **15.5** | **Редактирование статей в UI** | **3 дня** | **🟢** | **✅** |
+| 15.5 | Редактирование статей в UI | 3 дня | 🟡 | ✅ |
+| 15.6 | Улучшение workflow с AI-ассистентом | 1 день | 🟢 | ✅ |
+| 15.7 | Аудит документации (`check_docs.py`) | 1 день | 🟢 | ✅ |
+| 16 | Расширенный аудит и отчёты | 2 нед | 🟡 | ⏳ |
+| 17 | Резерв | — | — | ⏳ |
 
 Полный Roadmap — в [docs/ROADMAP.md](docs/ROADMAP.md).
 
@@ -584,4 +588,4 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT h.hint_key, h.ar
 
 ---
 
-Итерации 0–15.5 завершены. Следующая — Итерация 16: Расширенный аудит и отчёты (⏳).
+Итерации 0–15.6 завершены. Следующая — Итерация 16: Расширенный аудит и отчёты (⏳).

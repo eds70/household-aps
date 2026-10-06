@@ -115,8 +115,13 @@ plan_settings  →  app_settings  →  .env  →  значения по умол
 |------|-----|--------------|-----|-----|----------|
 | `enable_cz_integration` | `bool` | `true` | — | — | Включить ЧЗ |
 | `cz_completion_threshold` | `float` | `0.95` | `0.1` | `1.0` | Порог завершения маркировки |
-| `cz_api_key` | `str` | `dev-cz-api-key-change-in-production` | — | — | API-key для камер |
+| `cz_api_key` | `str` | `dev-cz-api-key-change-in-production` | — | — | API-key для камер ЧЗ |
 | `enable_cz_auto_close` | `bool` | `false` | — | — | Автозакрытие задачи слива |
+
+> **Про `CZ_API_KEY`:** это НЕ ENV-переменная приложения.
+> Ключ хранится в `app_settings.cz_api_key` (категория `cz`)
+> и меняется через UI «Настройки → ЧЗ» или через
+> `PUT /api/v1/settings/cz_api_key`.
 
 ### Категория `resources` — Персонал
 
@@ -214,18 +219,18 @@ plan_settings  →  app_settings  →  .env  →  значения по умол
 DATABASE_URL=postgresql+asyncpg://aps:aps_secret@localhost:5432/household
 
 # JWT
-JWT_SECRET=change-me-in-production
-JWT_ALGORITHM=HS256
-JWT_EXPIRES_MINUTES=60
-
-# CZ
-CZ_API_KEY=dev-cz-api-key-change-in-production
-
-# Logging
-LOG_LEVEL=INFO
+SECRET_KEY=change-me-in-production-min-32-chars
+ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=1440
 
 # CORS
-CORS_ORIGINS=http://localhost:5173,http://localhost:3000
+ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
+
+# Application
+APP_NAME=APS Production Scheduler
+APP_VERSION=1.2.0
+DEBUG=false
+DEFAULT_ORG_ID=00000000-0000-0000-0000-000000000001
 ```
 
 ### Переменные
@@ -233,18 +238,27 @@ CORS_ORIGINS=http://localhost:5173,http://localhost:3000
 | Переменная | Обязательна | По умолчанию | Описание |
 |------------|-------------|--------------|----------|
 | `DATABASE_URL` | ✅ | — | Строка подключения к PostgreSQL |
-| `JWT_SECRET` | ✅ | — | Секрет для подписи JWT |
-| `JWT_ALGORITHM` | ❌ | `HS256` | Алгоритм JWT |
-| `JWT_EXPIRES_MINUTES` | ❌ | `60` | Время жизни токена (мин) |
-| `CZ_API_KEY` | ❌ | `dev-cz-api-key-change-in-production` | API-key для камер ЧЗ |
-| `LOG_LEVEL` | ❌ | `INFO` | Уровень логирования |
-| `CORS_ORIGINS` | ❌ | `http://localhost:5173` | Разрешённые origin'ы |
+| `SECRET_KEY` | ✅ | — | Секрет для подписи JWT (мин. 32 символа) |
+| `ALGORITHM` | ❌ | `HS256` | Алгоритм JWT |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | ❌ | `1440` | Время жизни токена (мин) |
+| `ALLOWED_ORIGINS` | ❌ | `http://localhost:5173,http://localhost:3000` | CORS-источники через запятую |
+| `DEFAULT_ORG_ID` | ❌ | `00000000-0000-0000-0000-000000000001` | ID организации по умолчанию |
+| `APP_NAME` | ❌ | `APS Production Scheduler` | Название приложения |
+| `APP_VERSION` | ❌ | `1.2.0` | Версия приложения |
+| `DEBUG` | ❌ | `false` | Режим отладки |
+
+**Читается через:** `backend/app/core/config.py` (класс `Settings`, `pydantic-settings`). Файл `.env` ищется в директории `backend/`. Регистр имён полей важен: `case_sensitive=True`.
 
 ---
 
 ## Docker-параметры
 
 ### PostgreSQL
+
+Параметры `docker run` для контейнера PostgreSQL.
+
+> Эти переменные читает **PostgreSQL внутри контейнера**, а не приложение.
+> Приложение подключается к БД через `DATABASE_URL` (см. раздел `.env`).
 
 ```bash
 docker run --name aps_postgres \

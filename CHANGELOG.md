@@ -9,6 +9,56 @@
 
 ### Added
 
+- **tools/check_docs.py** — аудит консистентности md-файлов:
+  версии, число тестов, таблица Roadmap, эндпоинты API, ENV и
+  app_settings. Режимы: default / --strict / --api-strict / --json.
+- **docs/DEVELOPMENT.md** — раздел «Аудит документации».
+
+### Fixed
+
+- **docs/CONFIGURATION.md** — ENV приведены в соответствие с
+  `backend/app/core/config.py` (`SECRET_KEY`, `ALGORITHM`,
+  `ACCESS_TOKEN_EXPIRE_MINUTES`, `ALLOWED_ORIGINS`, `DEFAULT_ORG_ID`,
+  `APP_NAME`, `APP_VERSION`, `DEBUG`). Удалены фантомные ENV
+  (`JWT_*`, `LOG_LEVEL`, `CORS_ORIGINS`, `CZ_API_KEY`, `POSTGRES_*`
+  из раздела приложения). Возвращён `cz_api_key` в категорию `cz`.
+- **README.md** — таблица Roadmap синхронизирована с `docs/ROADMAP.md`
+  (добавлены итерации 15.6, 16, 17). Счётчик тестов приведён к
+  фактическому (`672 passed + 66 skipped = 738`).
+
+### Changed
+
+- **CHANGELOG.md** — счётчик тестов: 714 → 738.
+
+### Fixed
+
+- **tests:** устранён конфликт event loop между pytest-asyncio,
+  asyncpg и ASGITransport. `conftest.py` создаёт свежий engine
+  на каждый async-тест и подменяет `get_db_session` через
+  `app.dependency_overrides`. Все 738 тестов проходят.
+- **tests:** `db_available` переведена в sync-фикстуру
+  (проверка через `socket.create_connection`) — устраняет
+  `ScopeMismatch` с `asyncio_default_fixture_loop_scope=function`.
+- **tests:** исправлены короткие `title` в
+  `test_update_article_slug_conflict` (`"A"`/`"B"` →
+  `"Article A"`/`"Article B"`), нарушавшие `min_length=3`.
+- **tests:** кириллица в выводе pytest на Windows —
+  `sys.stdout.reconfigure(encoding="utf-8")` в `conftest.py`,
+  `PYTHONUTF8=1` в окружении, удалены несуществующие опции
+  `log_cli_encoding` / `log_file_encoding` из `pytest.ini`.
+- **tests:** подавлен библиотечный warning
+  `DeprecationWarning: anyio.abc.BlockingPortal alias`
+  (приходит из `starlette.testclient`).
+
+### Changed
+
+- **pytest.ini:** добавлены явные
+  `asyncio_default_fixture_loop_scope = function` и
+  `asyncio_default_test_loop_scope = function`.
+- **CHANGELOG:** обновлено количество тестов: **672 passed + 66 skipped = 738 collected**.
+
+### Added
+
 - Заготовка для Итерации 16.x: см. Roadmap.
 
 ---
@@ -198,7 +248,7 @@
   `tutorial-interactive` в категорию `getting-started`.
 - ✅ Статья содержит ссылки на все доступные туры.
 
-**5. Тесты (+18, всего 714):**
+**5. Тесты (+18, всего 738):**
 - ✅ `frontend/src/context/__tests__/TutorialContext.test.tsx` (13):
   - Инициализация (2).
   - `startTour`, `stopTour` (3).
