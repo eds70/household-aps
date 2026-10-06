@@ -1,13 +1,17 @@
 # backend/app/api/v1/help_models.py
 """
-Pydantic-модели для API встроенной справки (Итерация 15.1 + 15.2).
+Pydantic-модели для API встроенной справки
+(Итерация 15.1 + 15.2 + 15.5).
 
 Эндпоинты:
-  GET /api/v1/help/articles       — список статей
-  GET /api/v1/help/articles/{slug} — одна статья
-  GET /api/v1/help/categories     — категории
-  GET /api/v1/help/search         — поиск
-  GET /api/v1/help/hints          — контекстные подсказки (Итерация 15.2)
+  GET    /api/v1/help/articles        — список статей
+  GET    /api/v1/help/articles/{slug} — одна статья
+  POST   /api/v1/help/articles        — создать статью (15.5, ADMIN)
+  PUT    /api/v1/help/articles/{slug} — обновить статью (15.5, ADMIN)
+  DELETE /api/v1/help/articles/{slug} — удалить статью (15.5, ADMIN)
+  GET    /api/v1/help/categories      — категории
+  GET    /api/v1/help/search          — поиск
+  GET    /api/v1/help/hints           — контекстные подсказки (15.2)
 """
 from datetime import datetime
 from typing import List, Optional
@@ -42,6 +46,53 @@ class HelpArticleResponse(BaseModel):
     tags: List[str] = Field(default_factory=list)
     display_order: int = 0
     updated_at: datetime
+
+
+# ==========================================
+# ИТЕРАЦИЯ 15.5: CRUD-МОДЕЛИ
+# ==========================================
+
+class HelpArticleCreate(BaseModel):
+    """
+    Запрос на создание статьи справки (ADMIN).
+
+    slug — опционален. Если не задан, генерируется из title
+    (транслитерация RU → EN + kebab-case).
+    """
+    title: str = Field(..., min_length=3, max_length=200)
+    slug: Optional[str] = Field(
+        default=None,
+        min_length=3,
+        max_length=100,
+        description="Опциональный slug. Если не задан — генерируется из title.",
+    )
+    category: str = Field(..., min_length=2, max_length=50)
+    content_md: str = Field(..., min_length=1)
+    tags: List[str] = Field(default_factory=list)
+    display_order: Optional[int] = Field(default=None, ge=0)
+    is_published: bool = Field(default=True)
+
+
+class HelpArticleUpdate(BaseModel):
+    """
+    Запрос на обновление статьи (ADMIN).
+
+    Все поля опциональны — передавайте только изменяемые.
+    """
+    title: Optional[str] = Field(default=None, min_length=3, max_length=200)
+    slug: Optional[str] = Field(default=None, min_length=3, max_length=100)
+    category: Optional[str] = Field(default=None, min_length=2, max_length=50)
+    content_md: Optional[str] = Field(default=None, min_length=1)
+    tags: Optional[List[str]] = None
+    display_order: Optional[int] = Field(default=None, ge=0)
+    is_published: Optional[bool] = None
+
+
+class HelpArticleDeleteResponse(BaseModel):
+    """Ответ на удаление статьи."""
+    status: str = "success"
+    slug: str
+    message: str
 
 
 # ==========================================

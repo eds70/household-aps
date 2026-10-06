@@ -46,6 +46,18 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_NN.sql
 | `add_19.sql` | 13.4 | TANK_2 для крем-мыла 5л (связи Р2 → TANK_2 → LINE_2) |
 | `add_20.sql` | 13.6 | Колонка `scheduled_task.depends_on_task_ids` (связи между задачами на Ганте) |
 | `add_21.sql` | 13.14 | Таблица `plan_settings` (снапшот настроек для плана), триггер `copy_app_settings_to_plan` |
+| `add_22.sql` | 13.17 | Индексы для каскадного сдвига: `idx_scheduled_task_equipment_time`, `idx_scheduled_task_version_deps` |
+| `add_23.sql` | 13.21 | Архивация версий планов: колонка `schedule_version.is_archived`, partial-индекс `idx_schedule_version_archived`, настройка `auto_archive_on_recalc`, одноразовая миграция неактивных версий в архив |
+| `add_24.sql` | 15.1 | Встроенная справка: таблица `help_article` (slug, title, category, content_md, tags JSONB, display_order, is_published), индексы `idx_help_article_category`, `idx_help_article_tags` (GIN), триггер `trg_help_article_updated_at` |
+| `add_24_seed_1.sql` | 15.1 | 3 статьи справки: `intro-overview`, `intro-first-plan`, `planning-build-plan` |
+| `add_24_seed_2.sql` | 15.1 | 5 статей справки: `planning-history`, `planning-recalculate`, `planning-advisor`, `gantt-overview`, `gantt-editing` |
+| `add_24_seed_3.sql` | 15.1 | 7 статей справки: `gantt-grouping`, `gantt-filters`, `shift-overview`, `lab-blocks`, `cz-overview`, `whatif-overview`, `settings-app-vs-plan` |
+| `add_25.sql` | 15.2 | Контекстные подсказки: таблица `help_hint` (hint_key UNIQUE, title, body_md, article_slug, display_order, is_published), индексы `idx_help_hint_published`, `idx_help_hint_org`, триггер `trg_help_hint_updated_at` |
+| `add_25_seed.sql` | 15.2 | 8 подсказок: `planning.recalc`, `planning.advisor`, `planning.plan_dirty`, `gantt.edit_mode`, `gantt.brackets`, `shift.lab_block`, `whatif.json`, `settings.system` |
+| `add_26_seed_1.sql` | 15.4 | FAQ: планирование (5 статей): `faq-plan-feasible-not-optimal`, `faq-task-not-movable`, `faq-plan-is-empty`, `faq-plan-settings-empty`, `faq-material-shortage` |
+| `add_26_seed_2.sql` | 15.4 | FAQ: гант, смены, what-if, ЧЗ (5 статей): `faq-move-pinned-task`, `faq-old-version-not-archived`, `faq-shift-mode-change`, `faq-whatif-running`, `faq-cz-orphan-scan` |
+| `add_26_seed_3.sql` | 15.4 | FAQ: лаборатория, advisor (5 статей): `faq-lab-blocked-batch`, `faq-route-mismatch`, `faq-cooling-degradation`, `faq-cz-incomplete`, `faq-underload` |
+| `add_27_seed_1.sql` | 15.3 | Туториал: статья `tutorial-interactive` в категории `getting-started` |
 | `fix_shift_names.sql` | — | Hotfix: пересоздание смен с корректными именами (кириллица) |
 | `fix_work_time.sql` | — | Hotfix: исправление `work_start_time` / `work_end_time` в `app_settings` |
 
@@ -55,7 +67,7 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_NN.sql
 
 ### Сценарий 1: Пустая БД (новая установка)
 
-Применяйте **только** `init_schema.sql` + `seed_demo_data.sql`. Все миграции `add_06.sql`...`add_21.sql` **уже включены** в актуальный `init_schema.sql` (v4.0.0).
+Применяйте **только** `init_schema.sql` + `seed_demo_data.sql`. Все миграции `add_06.sql`...`add_27_seed_1.sql` **уже включены** в актуальный `init_schema.sql` (v4.0.0).
 
 ```bash
 docker cp backend/init_schema.sql aps_postgres:/tmp/init_schema.sql
@@ -88,6 +100,12 @@ $migrations = @(
     "add_19.sql",
     "add_20.sql",
     "add_21.sql",
+    "add_22.sql",
+    "add_23.sql",
+    "add_24.sql", "add_24_seed_1.sql", "add_24_seed_2.sql", "add_24_seed_3.sql",
+    "add_25.sql", "add_25_seed.sql",
+    "add_26_seed_1.sql", "add_26_seed_2.sql", "add_26_seed_3.sql",
+    "add_27_seed_1.sql",
     "fix_shift_names.sql",
     "fix_work_time.sql"
 )
@@ -113,6 +131,59 @@ SELECT EXISTS (
 ```
 
 Если `t` — применена. Если `f` — нет.
+
+**Для справки (15.1):**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT COUNT(*) FROM help_article;
+"
+```
+
+Ожидаемо: **31** (15 базовых + 1 туториал + 15 FAQ).
+
+**Для подсказок (15.2):**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT COUNT(*) FROM help_hint;
+"
+```
+
+Ожидаемо: **8**.
+
+**Для FAQ (15.4):**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT COUNT(*) FROM help_article WHERE category = 'faq';
+"
+```
+
+Ожидаемо: **15**.
+
+**Для туториала (15.3):**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT COUNT(*) FROM help_article WHERE slug = 'tutorial-interactive';
+"
+```
+
+Ожидаемо: **1**.
+
+**Для архивации (13.21):**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'schedule_version' AND column_name = 'is_archived'
+);
+"
+```
+
+Ожидаемо: `t`.
 
 ---
 
@@ -169,6 +240,21 @@ SELECT EXISTS (
 - `add_19.sql` — TANK_2.
 - `add_20.sql` — `depends_on_task_ids`.
 - `add_21.sql` — `plan_settings`.
+- `add_22.sql` — индексы для каскадного сдвига (13.17).
+- `add_23.sql` — архивация версий планов (13.21).
+
+### Итерации 15.1–15.5 — Встроенная справка
+
+- `add_24.sql` — таблица `help_article` (15.1).
+- `add_24_seed_1/2/3.sql` — 15 статей справки (15.1).
+- `add_25.sql` — таблица `help_hint` (15.2).
+- `add_25_seed.sql` — 8 контекстных подсказок (15.2).
+- `add_26_seed_1/2/3.sql` — 15 FAQ-статей (15.4).
+- `add_27_seed_1.sql` — статья `tutorial-interactive` (15.3).
+
+**Примечание:** Итерация 15.5 (редактирование статей через UI) **не
+требует новых миграций** — использует существующую таблицу
+`help_article` (из 15.1). CRUD-эндпоинты работают с ней на уровне API.
 
 ### Hotfix-миграции
 
@@ -214,6 +300,27 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_NN.sql
 
 7. **Обновить `CHANGELOG.md`** (секция `[Unreleased]`).
 
+### Особенности seed-миграций справки (15.x)
+
+Seed-миграции (`add_24_seed_*`, `add_25_seed`, `add_26_seed_*`,
+`add_27_seed_1`) **не создают таблиц** — они только наполняют
+существующие `help_article` / `help_hint`.
+
+**Правила:**
+
+- **Кириллица** — использовать dollar-quoted strings: `$md$...$md$`.
+- **Только через `docker cp` + `psql -f`** — иначе PowerShell испортит
+  кириллицу в `$md$...$md$`.
+- **Идемпотентность** — `ON CONFLICT (slug) DO NOTHING` (или
+  `ON CONFLICT (hint_key) DO NOTHING`).
+- **Глобальные статьи** — `organization_id = NULL`.
+- **Проверка после применения** — `SELECT COUNT(*) FROM help_article;`.
+
+**Альтернатива для статей:** с Итерации 15.5 статьи можно создавать
+и редактировать **через UI** (роль ADMIN) — без SQL-миграций. Seed-
+миграции остаются для глобальных статей и для первоначального
+наполнения БД.
+
 ---
 
 ## Ссылки
@@ -223,3 +330,4 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_NN.sql
 - [../seed_demo_data.sql](../seed_demo_data.sql) — демо-данные.
 - [../../docs/OPERATIONS.md](../../docs/OPERATIONS.md) — операции с БД.
 - [../../docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md) — архитектура.
+- [../../docs/DEVELOPMENT.md](../../docs/DEVELOPMENT.md) — руководство разработчика.

@@ -34,7 +34,7 @@ EXCLUDED_DIRS = {
     '.vscode',
     'docker',  # Если не нужны конфиги Docker
     'tools',
-    'docs'
+    #'docs'
 }
 
 # Расширения файлов для включения

@@ -902,7 +902,7 @@ export const auditApi = {
 };
 
 // ==========================================
-// Help API (Итерация 15.1 + 15.2)
+// Help API (Итерация 15.1 + 15.2 + 15.5)
 // ==========================================
 
 export const helpApi = {
@@ -920,6 +920,39 @@ export const helpApi = {
         slug: string,
     ): Promise<import('../types').HelpArticle> => {
         const response = await api.get(`/api/v1/help/articles/${slug}`);
+        return response.data;
+    },
+
+    /**
+     * Итерация 15.5: создать новую статью (только ADMIN).
+     * Slug опционален — если не задан, генерируется на бэкенде из title.
+     */
+    createArticle: async (
+        data: import('../types').HelpArticleCreate,
+    ): Promise<import('../types').HelpArticle> => {
+        const response = await api.post('/api/v1/help/articles', data);
+        return response.data;
+    },
+
+    /**
+     * Итерация 15.5: обновить статью (только ADMIN).
+     * Все поля опциональны — передавайте только изменяемые.
+     */
+    updateArticle: async (
+        slug: string,
+        data: import('../types').HelpArticleUpdate,
+    ): Promise<import('../types').HelpArticle> => {
+        const response = await api.put(`/api/v1/help/articles/${slug}`, data);
+        return response.data;
+    },
+
+    /**
+     * Итерация 15.5: удалить статью (только ADMIN).
+     */
+    deleteArticle: async (
+        slug: string,
+    ): Promise<import('../types').HelpArticleDeleteResponse> => {
+        const response = await api.delete(`/api/v1/help/articles/${slug}`);
         return response.data;
     },
 

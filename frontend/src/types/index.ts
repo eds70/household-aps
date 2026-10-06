@@ -1029,6 +1029,50 @@ export interface HelpDocFileResponse {
 }
 
 // ==========================================
+// ИТЕРАЦИЯ 15.5: CRUD-МОДЕЛИ СПРАВКИ
+// ==========================================
+
+/**
+ * Запрос на создание статьи справки (ADMIN).
+ *
+ * slug — опционален. Если не задан, генерируется на бэкенде
+ * из title (транслитерация RU → EN + kebab-case).
+ */
+export interface HelpArticleCreate {
+    title: string;
+    slug?: string | null;
+    category: string;
+    content_md: string;
+    tags?: string[];
+    display_order?: number | null;
+    is_published?: boolean;
+}
+
+/**
+ * Запрос на обновление статьи справки (ADMIN).
+ *
+ * Все поля опциональны — передавайте только изменяемые.
+ */
+export interface HelpArticleUpdate {
+    title?: string | null;
+    slug?: string | null;
+    category?: string | null;
+    content_md?: string | null;
+    tags?: string[] | null;
+    display_order?: number | null;
+    is_published?: boolean | null;
+}
+
+/**
+ * Ответ на удаление статьи справки.
+ */
+export interface HelpArticleDeleteResponse {
+    status: string;
+    slug: string;
+    message: string;
+}
+
+// ==========================================
 // ИТЕРАЦИЯ 15.2: КОНТЕКСТНЫЕ ПОДСКАЗКИ
 // ==========================================
 

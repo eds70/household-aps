@@ -419,7 +419,7 @@ LIMIT 10;
 а через контент в БД. Они не участвуют в приоритете `plan_settings` →
 `app_settings`, но влияют на поведение UI.
 
-### Справка (`help_article`) — Итерации 15.1, 15.4
+### Справка (`help_article`) — Итерации 15.1, 15.4, 15.5
 
 Контент статей справки и FAQ. Таблица `help_article`:
 - `slug`, `title`, `category`, `content_md`, `tags`, `display_order`, `is_published`.
@@ -427,11 +427,13 @@ LIMIT 10;
 **Категории:** `getting-started`, `planning`, `gantt`, `shift`, `lab`,
 `cz`, `whatif`, `settings`, **`faq`** (Итерация 15.4).
 
-**Правки** — через SQL или seed-миграции:
-```
-docker cp backend/migrations/add_26_seed_1.sql aps_postgres:/tmp/add_26_seed_1.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_1.sql
-```
+**Редактирование:**
+- **Итерация 15.5:** через UI (роль ADMIN) — страница «Помощь».
+- Альтернативно — через SQL или seed-миграции:
+  ```
+  docker cp backend/migrations/add_26_seed_1.sql aps_postgres:/tmp/add_26_seed_1.sql
+  docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_1.sql
+  ```
 
 ### Контекстные подсказки (`help_hint`) — Итерация 15.2
 
@@ -443,7 +445,9 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_1.sql
 - `gantt.edit_mode`, `gantt.brackets`
 - `shift.lab_block`, `whatif.json`, `settings.system`
 
-**Правки** — через SQL или seed-миграции (`add_25_seed.sql`).
+**Правки** — только через SQL или seed-миграции (`add_25_seed.sql`).
+**Через UI редактирование подсказок не реализовано** (по состоянию на
+Итерацию 15.5).
 
 ### Интерактивный туториал — Итерация 15.3
 

@@ -25,6 +25,7 @@
 - [Контекстные подсказки (15.2)](#контекстные-подсказки-152)
 - [Интерактивный туториал (15.3)](#интерактивный-туториал-153)
 - [FAQ (15.4)](#faq-154)
+- [Редактирование статей через UI (15.5)](#редактирование-статей-через-ui-155)
 - [Диагностика](#диагностика)
 
 ---
@@ -1760,8 +1761,6 @@ ORDER BY h.hint_key;
 2. Если не помогло — проверить, что в `HelpHintsContext.tsx` есть `useEffect` на `[authLoading, isAuthenticated, loadHints]` (без `[]`).
 3. Если всё ещё не обновляется — возможно, браузер кэширует GET `/api/v1/help/hints`. Проверить в DevTools → Network → Headers → `Cache-Control`.
 
-**Долгосрочное решение:** в Итерации 15.5 (редактирование статей в UI) появится кнопка «Обновить кэш подсказок» — вызов `reload()` из `useHelpHints()`.
-
 ---
 
 ## Интерактивный туториал (15.3)
@@ -1787,7 +1786,7 @@ npm list react-joyride
 Если пусто — установить:
 
 ```bash
-npm install react-joyride@^2.9.3
+npm install react-joyride@^3.2.0
 ```
 
 **Шаг 2. Проверить провайдер в `App.tsx`:**
@@ -1946,7 +1945,6 @@ document.querySelector('[data-tour-id="schedule-build-button"]')
     target: '[data-tour-id="gantt-toolbar"]',
     content: '...',
     skipBeacon: true,
-    // Пропустить, если элемент не найден
     disableBeacon: true,
 }
 ```
@@ -1975,7 +1973,7 @@ document.querySelector('[data-tour-id="schedule-build-button"]')
        localStorage.removeItem('aps_tutorial_completed_shift-management');
    };
    ```
-3. **Планируемое решение (Итерация 15.5):** перенос прогресса в `app_user` (поле `is_tutorial_completed`).
+3. **Планируемое решение (Итерация 16.x):** перенос прогресса в `app_user`.
 
 ---
 
@@ -2351,9 +2349,205 @@ WHERE slug = 'faq-xxx';
 
 ---
 
+## Редактирование статей через UI (15.5)
+
+### 109. Кнопка «Новая статья» не появляется
+
+**Симптом:** на странице `/help` в шапке нет кнопки «Новая статья».
+
+**Причина:** кнопка видна только роли **ADMIN**.
+
+**Решение:**
+
+1. Проверить роль текущего пользователя:
+   ```bash
+   curl -H "Authorization: Bearer $TOKEN" \
+     http://localhost:8000/api/v1/auth/me | jq '.role'
+   ```
+   Должно быть `"ADMIN"`.
+2. Если роль другая — войти под админом.
+3. Если роль ADMIN, но кнопки нет — очистить кэш Vite:
+   ```bash
+   cd frontend
+   Remove-Item -Recurse -Force node_modules\.vite
+   npm run dev
+   ```
+
+---
+
+### 110. `403 Forbidden` при попытке создать/изменить статью
+
+**Симптом:** `POST /api/v1/help/articles` (или `PUT`/`DELETE`) возвращает `403`.
+
+**Причина:** роль пользователя не ADMIN.
+
+**Решение:**
+
+1. Проверить роль:
+   ```bash
+   curl -H "Authorization: Bearer $TOKEN" \
+     http://localhost:8000/api/v1/auth/me | jq '.role'
+   ```
+2. CRUD-эндпоинты защищены `Depends(require_admin)` — доступ только ADMIN.
+3. Если роль нужно изменить — обновить в БД:
+   ```bash
+   docker exec -i aps_postgres psql -U aps -d household -c "
+   UPDATE app_user SET role = 'ADMIN' WHERE email = '<email>';
+   "
+   ```
+
+---
+
+### 111. `409 Conflict` при создании статьи
+
+**Симптом:** `POST /api/v1/help/articles` возвращает `409`.
+
+**Причина:** slug уже занят другой статьёй.
+
+**Ответ сервера:**
+```json
+{
+  "detail": "Статья со slug 'my-article' уже существует"
+}
+```
+
+**Решение:**
+
+1. Выбрать другой slug.
+2. Или не передавать slug вовсе — он сгенерируется из title
+   (`_slugify`) и будет уникальным.
+3. Проверить занятые slug'и:
+   ```bash
+   docker exec -i aps_postgres psql -U aps -d household -c "
+   SELECT slug FROM help_article WHERE slug LIKE '%my-article%';
+   "
+   ```
+
+---
+
+### 112. `400 Bad Request` при создании статьи
+
+**Симптом:** `POST /api/v1/help/articles` возвращает `400`.
+
+**Возможные причины и решения:**
+
+| detail | Причина | Решение |
+|--------|---------|---------|
+| `Неизвестная категория: 'xxx'` | Опечатка в category | Использовать одну из 9 категорий |
+| `Не удалось сгенерировать slug из title` | Заголовок из одних символов | Добавить буквы в заголовок |
+| `slug не может быть пустым` | Пустой slug при update | Убрать поле slug из запроса |
+| `Нет данных для обновления` | Все поля update = null | Передать хотя бы одно поле |
+
+**Проверить допустимые категории:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT DISTINCT category FROM help_article ORDER BY category;
+"
+```
+
+Ожидаемо: `getting-started`, `planning`, `gantt`, `shift`, `lab`, `cz`,
+`whatif`, `settings`, `faq`.
+
+---
+
+### 113. Статья не появляется в списке после создания
+
+**Симптом:** создали статью через UI, но её нет в сайдбаре `/help`.
+
+**Причина:** возможные варианты:
+1. `is_published = false` (статья скрыта).
+2. `organization_id` не совпадает с текущей организацией.
+3. Frontend кэширует список статей (загружается один раз при монтировании).
+
+**Решение:**
+
+1. Проверить в БД:
+   ```bash
+   docker exec -i aps_postgres psql -U aps -d household -c "
+   SELECT slug, is_published, organization_id, category
+   FROM help_article
+   WHERE slug = 'my-article';
+   "
+   ```
+   - `is_published` должно быть `true`.
+   - `organization_id` должна совпадать с вашей организацией.
+
+2. Перезагрузить страницу (`Ctrl+F5`).
+
+3. Если статьи нет в списке категории — проверить, что её category
+   входит в `CATEGORY_ORDER`:
+   ```bash
+   docker exec -i aps_postgres psql -U aps -d household -c "
+   SELECT category, COUNT(*) FROM help_article
+   WHERE slug = 'my-article' GROUP BY category;
+   "
+   ```
+
+---
+
+### 114. Удаление статьи прошло, но она всё ещё видна
+
+**Симптом:** `DELETE /api/v1/help/articles/{slug}` вернул success, но
+статья отображается в UI.
+
+**Причина:** frontend не перезагрузил список статей после удаления.
+
+**Решение:**
+
+1. Перезагрузить страницу (`Ctrl+F5`).
+2. Проверить в БД:
+   ```bash
+   docker exec -i aps_postgres psql -U aps -d household -c "
+   SELECT slug FROM help_article WHERE slug = 'my-article';
+   "
+   ```
+   Если пусто — статья удалена, проблема в UI (перезагрузить).
+3. Если статья есть в БД — эндпоинт вернул 404, но UI показал success
+   (баг клиента, сообщить).
+
+---
+
+### 115. Редактор статьи: кнопка «Сохранить» серая
+
+**Симптом:** форма редактора открыта, но кнопка «Сохранить» неактивна.
+
+**Причина:** не заполнены обязательные поля.
+
+**Решение:** проверить:
+
+| Поле | Требование |
+|------|------------|
+| `title` | Минимум 3 символа, обязательно |
+| `category` | Обязательно (селект) |
+| `content_md` | Минимум 1 символ, обязательно |
+| `slug` | Опционально — генерируется из title |
+| `display_order` | Опционально — авто `max+10` |
+
+Кнопка активируется, когда все три обязательных поля заполнены.
+
+---
+
+### 116. `changedKeys` в мастере настроек не содержит изменённых полей
+
+**Симптом:** изменили поле в мастере, но кнопка «Сохранить» всё ещё
+неактивна.
+
+**Причина:** возможно, изменили поле, которое **не** относится к категории
+текущего шага. Мастер сохраняет только поля, отличающиеся от `originalValues`.
+
+**Решение:**
+
+1. Проверить в React DevTools → `PlanSettingsWizard` → `changedKeys`.
+2. Если изменённое поле в списке — баг, сообщить.
+3. Если нет — возможно, поле относится к системным (`is_system=true`) и
+   не сохраняется через мастер.
+
+---
+
 ## Диагностика
 
-### 109. Общая проверка системы
+### 117. Общая проверка системы
 
 ```bash
 # PostgreSQL
@@ -2430,7 +2624,7 @@ SELECT COUNT(*) AS tutorial_articles FROM help_article WHERE slug = 'tutorial-in
 
 ---
 
-### 110. Полная очистка и пересоздание
+### 118. Полная очистка и пересоздание
 
 ```bash
 # 1. Снести контейнер
@@ -2479,7 +2673,7 @@ cd ../frontend; npm run dev
 
 ---
 
-### 111. Полезные ссылки
+### 119. Полезные ссылки
 
 - [README.md](../README.md) — основная документация.
 - [docs/OPERATIONS.md](OPERATIONS.md) — операции с БД.

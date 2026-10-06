@@ -1,6 +1,6 @@
 // frontend/src/pages/HelpPage.tsx
 /**
- * Страница «Помощь» (Итерация 15.1 + 15.3).
+ * Страница «Помощь» (Итерация 15.1 + 15.3 + 15.5).
  *
  * Двухпанельный layout:
  *  - Слева: дерево категорий + поиск (HelpSidebar).
@@ -8,6 +8,10 @@
  *
  * Итерация 15.3: на главной странице справки (intro-overview)
  * добавлен блок «Интерактивные туры» с карточками туров.
+ *
+ * Итерация 15.5: добавлены кнопки «Новая статья» (в шапке)
+ * и «Редактировать» (над статьёй). Доступны только ADMIN.
+ * Открывают компонент HelpArticleEditor.
  *
  * Маршрут: /help/:slug
  * Если slug не указан — открывается первая статья.
@@ -24,11 +28,15 @@ import {
     Chip,
     CircularProgress,
     Divider,
+    IconButton,
+    Tooltip,
     Typography,
 } from '@mui/material';
 import {
+    Add as AddIcon,
     Assignment as AssignmentIcon,
     CheckCircle as CheckCircleIcon,
+    Edit as EditIcon,
     HelpOutlined as HelpIcon,
     PlayArrow as PlayIcon,
     Replay as ReplayIcon,
@@ -40,17 +48,18 @@ import 'allotment/dist/style.css';
 
 import HelpSidebar from '../components/help/HelpSidebar';
 import HelpArticleView from '../components/help/HelpArticleView';
+import HelpArticleEditor, {type HelpEditorMode,} from '../components/help/HelpArticleEditor';
 import {helpApi} from '../services/api';
+import {useAuth} from '../context/AuthContext';
 import {useTutorial} from '../context/TutorialContext';
 import {ALL_TOURS} from '../tutorial/tours';
-import type {HelpArticle} from '../types';
+import type {HelpArticle, HelpArticleCreate, HelpArticleUpdate, HelpCategory,} from '../types';
 
 const DEFAULT_SLUG = 'intro-overview';
 
 // ==========================================
 // Итерация 15.3: маппинг иконок туров
 // ==========================================
-// Ключи соответствуют tour.icon из tours.ts.
 const TOUR_ICONS: Record<string, React.ReactNode> = {
     RocketLaunch: <RocketLaunchIcon fontSize="large" />,
     Timeline: <TimelineIcon fontSize="large" />,
@@ -60,11 +69,21 @@ const TOUR_ICONS: Record<string, React.ReactNode> = {
 const HelpPage: React.FC = () => {
     const {slug} = useParams<{ slug: string }>();
     const navigate = useNavigate();
+    const {user} = useAuth();
     const {startTour, isTourCompleted, resetTourProgress} = useTutorial();
 
+    const isAdmin = user?.role === 'ADMIN';
+
     const [article, setArticle] = useState<HelpArticle | null>(null);
+    const [categories, setCategories] = useState<HelpCategory[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+
+    // ---- Итерация 15.5: состояние редактора ----
+    const [editorOpen, setEditorOpen] = useState(false);
+    const [editorMode, setEditorMode] = useState<HelpEditorMode>('create');
+    const [editorArticle, setEditorArticle] = useState<HelpArticle | null>(null);
+    const [editorError, setEditorError] = useState<string | null>(null);
 
     // Если slug не задан — редирект на дефолтную статью
     useEffect(() => {
@@ -72,6 +91,16 @@ const HelpPage: React.FC = () => {
             navigate(`/help/${DEFAULT_SLUG}`, {replace: true});
         }
     }, [slug, navigate]);
+
+    // Загрузка категорий (нужна для селекта в редакторе)
+    const loadCategories = useCallback(async () => {
+        try {
+            const cats = await helpApi.listCategories();
+            setCategories(cats.categories);
+        } catch (err) {
+            console.warn('[HelpPage] Не удалось загрузить категории:', err);
+        }
+    }, []);
 
     // Загрузка статьи
     const loadArticle = useCallback(async (s: string) => {
@@ -95,9 +124,91 @@ const HelpPage: React.FC = () => {
         }
     }, [slug, loadArticle]);
 
+    useEffect(() => {
+        loadCategories();
+    }, [loadCategories]);
+
     const handleSelectArticle = useCallback((newSlug: string) => {
         navigate(`/help/${newSlug}`);
     }, [navigate]);
+
+    // ==========================================
+    // Итерация 15.5: обработчики редактора
+    // ==========================================
+    const handleOpenCreate = useCallback(() => {
+        setEditorMode('create');
+        setEditorArticle(null);
+        setEditorError(null);
+        setEditorOpen(true);
+    }, []);
+
+    const handleOpenEdit = useCallback(() => {
+        if (!article) return;
+        setEditorMode('edit');
+        setEditorArticle(article);
+        setEditorError(null);
+        setEditorOpen(true);
+    }, [article]);
+
+    const handleCloseEditor = useCallback(() => {
+        setEditorOpen(false);
+        setEditorArticle(null);
+        setEditorError(null);
+    }, []);
+
+    const handleSaveArticle = useCallback(async (
+        payload: HelpArticleCreate | HelpArticleUpdate,
+    ) => {
+        setEditorError(null);
+        try {
+            if (editorMode === 'create') {
+                const created = await helpApi.createArticle(
+                    payload as HelpArticleCreate,
+                );
+                await loadCategories();
+                setEditorOpen(false);
+                navigate(`/help/${created.slug}`);
+            } else {
+                if (!article) throw new Error('Нет статьи для обновления');
+                const updated = await helpApi.updateArticle(
+                    article.slug,
+                    payload as HelpArticleUpdate,
+                );
+                await loadCategories();
+                setEditorOpen(false);
+                // Если slug изменился — переходим на новый URL
+                if (updated.slug !== article.slug) {
+                    navigate(`/help/${updated.slug}`, {replace: true});
+                } else {
+                    setArticle(updated);
+                }
+            }
+        } catch (err: any) {
+            const detail = err?.response?.data?.detail;
+            setEditorError(
+                typeof detail === 'string' ? detail : 'Ошибка сохранения',
+            );
+            throw err;
+        }
+    }, [editorMode, article, loadCategories, navigate]);
+
+    const handleDeleteArticle = useCallback(async () => {
+        if (!article) return;
+        setEditorError(null);
+        try {
+            await helpApi.deleteArticle(article.slug);
+            await loadCategories();
+            setEditorOpen(false);
+            // После удаления — вернуться на дефолтную страницу
+            navigate(`/help/${DEFAULT_SLUG}`, {replace: true});
+        } catch (err: any) {
+            const detail = err?.response?.data?.detail;
+            setEditorError(
+                typeof detail === 'string' ? detail : 'Ошибка удаления',
+            );
+            throw err;
+        }
+    }, [article, loadCategories, navigate]);
 
     // ==========================================
     // Итерация 15.3: блок «Интерактивные туры»
@@ -240,10 +351,20 @@ const HelpPage: React.FC = () => {
                 <Typography
                     variant="h4"
                     component="h1"
-                    sx={{fontWeight: 600, color: '#2c3e50'}}
+                    sx={{fontWeight: 600, color: '#2c3e50', flexGrow: 1}}
                 >
                     Помощь
                 </Typography>
+                {isAdmin && (
+                    <Button
+                        variant="contained"
+                        startIcon={<AddIcon />}
+                        onClick={handleOpenCreate}
+                        sx={{ textTransform: 'none', fontWeight: 600 }}
+                    >
+                        Новая статья
+                    </Button>
+                )}
             </Box>
 
             {/* Двухпанельный layout */}
@@ -308,7 +429,7 @@ const HelpPage: React.FC = () => {
                                         </>
                                     )}
 
-                                    {/* Мета статьи */}
+                                    {/* Мета статьи + кнопка «Редактировать» */}
                                     <Box
                                         sx={{
                                             display: 'flex',
@@ -317,6 +438,7 @@ const HelpPage: React.FC = () => {
                                             mb: 2,
                                             color: 'text.secondary',
                                             fontSize: '0.8rem',
+                                            flexWrap: 'wrap',
                                         }}
                                     >
                                         <Typography
@@ -339,6 +461,18 @@ const HelpPage: React.FC = () => {
                                                 article.updated_at,
                                             ).toLocaleDateString('ru-RU')}
                                         </Typography>
+
+                                        {isAdmin && (
+                                            <Tooltip title="Редактировать статью">
+                                                <IconButton
+                                                    size="small"
+                                                    onClick={handleOpenEdit}
+                                                    sx={{ ml: 'auto' }}
+                                                >
+                                                    <EditIcon fontSize="small" />
+                                                </IconButton>
+                                            </Tooltip>
+                                        )}
                                     </Box>
 
                                     <HelpArticleView
@@ -357,6 +491,20 @@ const HelpPage: React.FC = () => {
                     </Allotment.Pane>
                 </Allotment>
             </Box>
+
+            {/* Итерация 15.5: редактор статьи */}
+            <HelpArticleEditor
+                open={editorOpen}
+                mode={editorMode}
+                article={editorArticle}
+                categories={categories}
+                onSave={handleSaveArticle}
+                onDelete={
+                    editorMode === 'edit' ? handleDeleteArticle : undefined
+                }
+                onClose={handleCloseEditor}
+                error={editorError}
+            />
         </Box>
     );
 };

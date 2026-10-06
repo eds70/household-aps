@@ -314,6 +314,16 @@ feat(help): add FAQ category (iteration 15.4)
 - +24 теста, всего 678 passed
 ```
 
+```
+feat(help): add article CRUD in UI (iteration 15.5)
+
+- 3 эндпоинта POST/PUT/DELETE /help/articles (ADMIN)
+- HelpArticleEditor.tsx — форма с предпросмотром
+- HelpPage.tsx — кнопки «Новая статья» и «Редактировать»
+- Хелперы: _slugify, _check_slug_conflict, _next_display_order
+- +54 теста, всего 714 passed
+```
+
 ---
 
 ## Тестирование
@@ -391,6 +401,7 @@ npm run lint
 | Статья справки | `backend/migrations/add_24_seed_*.sql` |
 | Контекстная подсказка | `backend/migrations/add_25_seed.sql` |
 | FAQ-статья | `backend/migrations/add_26_seed_*.sql` |
+| Интерактивный тур | `frontend/src/tutorial/tours.ts` |
 
 ### Стиль документации
 
@@ -471,6 +482,29 @@ npm run lint
 4. Примените миграцию через `docker cp` + `psql -f`.
 5. Добавьте тест в `tests/test_help_hints.py`.
 
+### Как добавить интерактивный тур
+
+1. Откройте `frontend/src/tutorial/tours.ts`.
+2. Добавьте новый объект тура в массив `ALL_TOURS`:
+   ```typescript
+   {
+       id: 'my-tour',
+       name: 'Мой тур',
+       description: 'Краткое описание',
+       icon: 'RocketLaunch',
+       steps: [
+           {
+               target: '[data-tour-id="my-target"]',
+               content: 'Текст подсказки для шага',
+           },
+           // ...
+       ],
+   }
+   ```
+3. Убедитесь, что у целевых элементов в UI есть атрибут
+   `data-tour-id="my-target"`.
+4. Добавьте тест в `frontend/src/tutorial/__tests__/tours.test.ts`.
+
 ### Как обновить CHANGELOG
 
 1. Откройте `CHANGELOG.md`.
@@ -484,7 +518,7 @@ npm run lint
    ```
 3. При релизе — перенесите `[Unreleased]` в новую версию:
    ```
-   ## [4.6.0] — 2026-10-04
+   ## [4.8.0] — 2026-10-06
    ```
 
 ---

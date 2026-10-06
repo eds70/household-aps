@@ -8,7 +8,125 @@
 ## [Unreleased]
 
 ### Added
-- Заготовка для Итерации 15.5: редактирование статей в UI.
+
+- Заготовка для Итерации 16.x: см. Roadmap.
+
+---
+
+## [4.8.0] — 2026-10-06
+
+Итерация 15.5 — Редактирование статей справки в UI.
+
+### Added
+
+#### Итерация 15.5 — Редактирование статей справки в UI
+
+**Проблема:**
+Итерации 15.1–15.4 создали полноценную справку: markdown-статьи,
+контекстные подсказки, интерактивные туры, FAQ. Но для добавления
+или правки статьи требовалось писать SQL-миграцию и применять её
+вручную через `docker cp` + `psql -f`. Это неудобно для контент-
+менеджеров и администраторов: даже исправить опечатку — целая
+операция.
+
+**Решение:**
+Добавлены CRUD-эндпоинты на бэкенде и полноценный редактор на
+фронтенде. Редактирование доступно роли **ADMIN** через страницу
+«Помощь».
+
+**1. Backend (`help.py` + `help_models.py`):**
+- ✅ 3 новых эндпоинта:
+  - `POST   /api/v1/help/articles` — создать статью.
+  - `PUT    /api/v1/help/articles/{slug}` — обновить.
+  - `DELETE /api/v1/help/articles/{slug}` — удалить.
+- ✅ Все три защищены `Depends(require_admin)` (роль ADMIN).
+- ✅ `HelpArticleCreate`, `HelpArticleUpdate`, `HelpArticleDeleteResponse`
+  вынесены в `help_models.py` (единый источник Pydantic-моделей).
+- ✅ Автогенерация slug из title: `_slugify()` с транслитерацией
+  RU → EN (`Первый план за 5 минут` → `pervyy-plan-za-5-minut`).
+- ✅ Проверка уникальности slug: `_check_slug_conflict()` — включая
+  режим исключения для update (тот же slug не считается конфликтом).
+- ✅ Авто-`display_order`: если не задан — `max + 10` в категории
+  (`_next_display_order()`).
+- ✅ Валидация категории по `CATEGORY_LABELS` (9 категорий).
+- ✅ Теги сериализуются в JSONB.
+- ✅ Статья привязывается к организации (`organization_id = org_id`),
+  изоляция по мульти-тенантности.
+- ✅ Физическое удаление (`DELETE`). Для скрытия — `is_published = false`.
+
+**2. Frontend (React):**
+- ✅ Новый компонент `HelpArticleEditor.tsx`:
+  - Форма создания/редактирования на базе `DraggableDialog`.
+  - Две вкладки: «Редактор» (поля + textarea markdown) и
+    «Предпросмотр» (рендер через `HelpArticleView`).
+  - Поля: title, slug (опционально), category (селект),
+    content_md (markdown), tags (строка через запятую с парсингом
+    в чипы), display_order, is_published.
+  - Валидация обязательных полей на клиенте.
+  - Кнопка «Удалить» — только в режиме `edit`, с `window.confirm`.
+- ✅ Доработка `HelpPage.tsx`:
+  - Кнопка **«Новая статья»** в шапке — видна только `ADMIN`.
+  - Кнопка **«Редактировать»** (иконка карандаша) над статьёй —
+    видна только `ADMIN`.
+  - Состояние `editorOpen`, `editorMode`, `editorArticle`,
+    `editorError`.
+  - Обработчики `handleOpenCreate`, `handleOpenEdit`,
+    `handleSaveArticle`, `handleDeleteArticle`.
+  - Авторедирект на новый slug после смены slug в редакторе.
+  - Перезагрузка списка категорий после CRUD-операции.
+- ✅ `helpApi` в `api.ts` — 3 новых метода:
+  - `createArticle(payload)`, `updateArticle(slug, payload)`,
+    `deleteArticle(slug)`.
+- ✅ Типы в `types/index.ts`: `HelpArticleCreate`,
+  `HelpArticleUpdate`, `HelpArticleDeleteResponse`.
+
+**3. Тесты (+54):**
+
+- ✅ `test_help.py` — **+37** структурных тестов:
+  - Pydantic-модели CRUD (9).
+  - Хелпер `_slugify` (8).
+  - Роутер: наличие эндпоинтов и async-обработчиков (5).
+  - Проверка `require_admin` (3).
+  - Структурные проверки CRUD (8).
+  - HTTP-контракты 401/403 без токена (3).
+  - Sanity: идемпотентность slug (1).
+- ✅ `test_help_crud_integration.py` — **+17** интеграционных тестов
+  (требуют реальной PostgreSQL):
+  - POST /articles: успех, авто-slug, авто-display_order,
+    конфликт slug, неизвестная категория (5).
+  - PUT /articles/{slug}: успех, частичное, смена slug, конфликт,
+    404, неизвестная категория (6).
+  - DELETE /articles/{slug}: успех, 404 (2).
+  - Права: PLANNER/MASTER/VIEWER → 403 (4 — create×3, update, delete).
+  - Изоляция по организации: 404 для чужой org (1).
+  - Sanity cleanup (1).
+
+**Ключевые гарантии:**
+- ✅ **Редактирование без SQL** — правки через UI.
+- ✅ **Только ADMIN** — остальные роли получают 403.
+- ✅ **Авто-slug** — не нужно придумывать руками.
+- ✅ **Предпросмотр** — видно результат до сохранения.
+- ✅ **Мульти-тенантность** — статьи изолированы по организации.
+- ✅ **Обратная совместимость** — существующие 15+15+1 статей
+  из seed-миграций не затронуты.
+- ✅ **Идемпотентность** — повторное создание с тем же slug → 409
+  (не 500).
+
+### Changed
+
+- Версия проекта: `4.7.0` → `4.8.0`.
+- `backend/app/api/v1/help.py` — 3 новых эндпоинта, хелпер `_slugify`,
+  `_check_slug_conflict`, `_next_display_order`. Модели CRUD вынесены
+  в `help_models.py`.
+- `backend/app/api/v1/help_models.py` — добавлены `HelpArticleCreate`,
+  `HelpArticleUpdate`, `HelpArticleDeleteResponse`.
+- `frontend/src/services/api.ts` — `helpApi.createArticle`,
+  `helpApi.updateArticle`, `helpApi.deleteArticle`.
+- `frontend/src/types/index.ts` — 3 новых типа для CRUD.
+- `frontend/src/pages/HelpPage.tsx` — кнопки «Новая статья» и
+  «Редактировать» (только ADMIN), интеграция `HelpArticleEditor`.
+- `frontend/src/components/help/HelpArticleEditor.tsx` — **новый
+  компонент** (форма + предпросмотр).
 
 ---
 

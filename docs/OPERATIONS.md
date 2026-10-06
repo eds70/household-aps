@@ -16,6 +16,7 @@
 - [Контекстные подсказки (Итерация 15.2)](#контекстные-подсказки-итерация-152)
 - [Интерактивный туториал (Итерация 15.3)](#интерактивный-туториал-итерация-153)
 - [FAQ (Итерация 15.4)](#faq-итерация-154)
+- [Редактирование статей через UI (Итерация 15.5)](#редактирование-статей-через-ui-итерация-155)
 - [Диагностика](#диагностика)
 
 ---
@@ -1283,6 +1284,88 @@ curl -s http://localhost:8000/api/v1/help/categories \
   "article_count": 15
 }
 ```
+
+---
+
+## Редактирование статей через UI (Итерация 15.5)
+
+### Правка статей справки через UI
+
+С Итерации 15.5 статьи можно создавать/редактировать/удалять через UI
+(роль **ADMIN**). SQL-миграции больше **не нужны** для правки контента.
+
+**Через UI:**
+1. Открыть страницу **«Помощь»** (`/help`).
+2. Для новой статьи — кнопка **«Новая статья»** в шапке.
+3. Для правки существующей — кнопка **«Редактировать»** (карандаш)
+   над статьёй.
+4. Форма с двумя вкладками: «Редактор» / «Предпросмотр».
+5. Сохранить.
+
+**Через API (альтернатива):**
+
+```bash
+# Создать статью
+curl -X POST http://localhost:8000/api/v1/help/articles \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Моя статья",
+    "slug": "my-article",
+    "category": "planning",
+    "content_md": "# Заголовок\n\nТекст.",
+    "tags": ["тег1", "тег2"],
+    "display_order": 100,
+    "is_published": true
+  }'
+
+# Обновить статью
+curl -X PUT http://localhost:8000/api/v1/help/articles/my-article \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Обновлённый заголовок", "is_published": false}'
+
+# Удалить статью
+curl -X DELETE http://localhost:8000/api/v1/help/articles/my-article \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+**Важно:**
+- Правки идут в `help_article` **напрямую** (не через seed-миграции).
+- Через UI редактируются **только статьи текущей организации**
+  (`organization_id = org_id`). Глобальные статьи (`organization_id IS NULL`)
+  по-прежнему правятся через seed-миграции.
+- **Мульти-тенантность:** ADMIN одной организации не может править
+  статьи другой.
+- **Остальные роли** (PLANNER, MASTER, LAB, VIEWER) при попытке
+  создания/правки получают `403`.
+
+### Проверить, что статья создана через UI
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT slug, title, category, organization_id, updated_at
+FROM help_article
+WHERE slug = 'my-article';
+"
+```
+
+Если `organization_id = '00000000-0000-0000-0000-000000000001'` — статья
+создана через UI (привязана к организации). Если `NULL` — через seed-миграцию.
+
+### Массовые правки через SQL (когда UI недоступен)
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+UPDATE help_article
+SET content_md = REPLACE(content_md, 'старое', 'новое'),
+    updated_at = NOW()
+WHERE slug = 'planning-build-plan';
+"
+```
+
+**Осторожно:** `updated_at` обновится автоматически через триггер, если
+не задавать явно.
 
 ---
 

@@ -14,6 +14,7 @@
 - [Как добавить статью справки](#как-добавить-статью-справки)
 - [Как добавить FAQ-статью](#как-добавить-faq-статью)
 - [Как добавить контекстную подсказку](#как-добавить-контекстную-подсказку)
+- [Как добавить интерактивный тур](#как-добавить-интерактивный-тур)
 - [Как добавить ADR](#как-добавить-adr)
 - [Conventional Commits](#conventional-commits)
 - [Как обновлять CHANGELOG](#как-обновлять-changelog)
@@ -136,7 +137,7 @@ cd backend
 pytest tests/ -v
 ```
 
-**Текущее состояние:** **678 passed**, 0 warnings.
+**Текущее состояние:** **714 passed**, 0 warnings.
 
 ### Конкретный файл
 
@@ -188,31 +189,41 @@ pytest tests/ -v --log-cli-level=DEBUG
 |------|---------------|
 | `test_tz_case.py` | Эталонный кейс ТЗ |
 | `test_materials.py` | Расчёт потребности в сырье |
+| `test_materials_stock.py` | Остатки материалов (13.1) |
+| `test_material_stock_log.py` | Журнал остатков (13.2–13.3) |
+| `test_material_import.py` | Импорт/экспорт Excel (13.2) |
 | `test_advisor.py` | Подсказки Advisor |
 | `test_routing.py` | Цепочки операций |
 | `test_shifts.py` | Смены и API |
-| `test_rescheduler.py` | Перепланирование |
+| `test_rescheduler.py` | Перепланирование (9, A3) |
+| `test_rescheduler_uses_plan_settings.py` | Rescheduler + version_id (13.14) |
+| `test_reschedule_cascade.py` | Каскадный сдвиг (13.17) |
 | `test_lab.py` | Лабораторные блокировки |
 | `test_personnel.py` | Люди как ресурс |
 | `test_cooling_degradation.py` | Охлаждение |
 | `test_cz.py` | Честный Знак |
 | `test_whatif.py` | What-if сценарии |
-| `test_plan_settings_*.py` | plan_settings |
-| `test_rescheduler_uses_plan_settings.py` | rescheduler + version_id |
-| `test_whatif_uses_plan_settings.py` | whatif + version_id |
-| `test_audit.py` | API аудита |
-| `test_audit_models.py` | Модели аудита |
-| `test_material_import.py` | Импорт/экспорт Excel |
-| `test_material_stock_log.py` | Журнал остатков |
-| `test_materials_stock.py` | Остатки материалов |
+| `test_whatif_uses_plan_settings.py` | Whatif + version_id (13.14) |
+| `test_plan_settings_models.py` | Модели plan_settings |
+| `test_plan_settings_api.py` | API plan_settings |
+| `test_plan_settings_migration.py` | Миграция add_21.sql |
+| `test_plan_settings_integration.py` | Интеграция plan_settings |
+| `test_plan_settings_data_loader.py` | DataLoader + version_id |
 | `test_snapshot.py` | Модуль snapshot (13.15) |
 | `test_schedule_create_version.py` | Создание версии + снапшоты (13.15) |
 | `test_saver_uses_snapshot.py` | saver → snapshot_all_catalogs (13.15) |
 | `test_schedule_versions_archive.py` | Архивация версий (13.21) |
-| `test_reschedule_cascade.py` | Каскадный сдвиг (13.17) |
-| `test_help.py` | Встроенная справка (15.1) |
+| `test_audit.py` | API аудита (13.3) |
+| `test_audit_models.py` | Модели аудита (13.3) |
+| `test_versions.py` | Версии планов (5h) |
+| `test_help.py` | Встроенная справка + CRUD (15.1, 15.5) |
 | `test_help_hints.py` | Контекстные подсказки (15.2) |
-| **`test_help_faq.py`** | **FAQ-статьи (15.4)** |
+| `test_help_faq.py` | FAQ-статьи (15.4) |
+| `test_help_crud_integration.py` | Интеграция CRUD справки (15.5) |
+| `test_dependencies.py` | Auth dependencies |
+| `test_auth_models.py` | Auth models |
+| `test_security.py` | Security utilities |
+| `test_config.py` | Конфигурация |
 
 ---
 
@@ -288,12 +299,10 @@ def test_migration_wrapped_in_transaction():
 
 См. [Как обновлять CHANGELOG](#как-обновлять-changelog).
 
-### Пример: миграция `add_26.sql` (FAQ, Итерация 15.4)
+### Пример: миграция `add_26_seed_1.sql` (FAQ, Итерация 15.4)
 
 **Важно:** FAQ **не создаёт новых таблиц** — используется существующая
 `help_article` (миграция `add_24.sql`). FAQ-миграции — это **только seed**:
-
-**`backend/migrations/add_26_seed_1.sql`:**
 
 ```sql
 -- ==========================================
@@ -471,6 +480,34 @@ async def list_items(
     ...
 ```
 
+### Пример: CRUD-эндпоинты справки (Итерация 15.5)
+
+**`POST /api/v1/help/articles` — создание статьи (ADMIN):**
+
+```python
+@router.post("/articles", response_model=HelpArticleResponse, status_code=201)
+async def create_article(
+    payload: HelpArticleCreate,
+    current_user: dict = Depends(require_admin),
+    org_id: UUID = Depends(get_current_org_id),
+    db: AsyncSession = Depends(get_db_session),
+):
+    # 1. Проверка category ∈ CATEGORY_LABELS
+    # 2. Slug: если не задан — _slugify(title). Если занят — 409.
+    # 3. display_order: если None — _next_display_order(category)
+    # 4. INSERT с organization_id = org_id
+    # 5. Теги сериализуются в JSONB
+    ...
+```
+
+**Ключевые хелперы:**
+
+- `_slugify(text)` — генерация slug из title (транслитерация RU→EN).
+- `_check_slug_conflict(db, slug, exclude_id=None)` — проверка уникальности.
+- `_next_display_order(db, category)` — авто-`display_order` (`max+10`).
+
+Все CRUD-эндпоинты защищены `Depends(require_admin)`.
+
 ---
 
 ## Как добавить настройку
@@ -629,6 +666,24 @@ def test_seed_contains_slug():
     sql = Path("migrations/add_NN_seed_M.sql").read_text()
     assert "'my-article-slug'" in sql
 ```
+
+### 6. Альтернатива: редактирование через UI (Итерация 15.5)
+
+**С 15.5** статьи можно создавать/редактировать через UI (**ADMIN**),
+без SQL-миграций. Seed-миграции остаются для **глобальных** статей
+(`organization_id = NULL`), а UI работает только со статьями **текущей
+организации**.
+
+| | Seed-миграция | UI-редактор (15.5) |
+|--|---------------|---------------------|
+| Права | Только разработчик (SQL) | ADMIN |
+| organization_id | `NULL` (глобальная) | `= org_id` |
+| Отображение | Видна всем | Видна только своей org |
+| Авто-slug | Нет (задаётся вручную) | Да (`_slugify` из title) |
+| Предпросмотр | Нет | Да (`HelpArticleEditor`) |
+
+**UI:** `HelpPage` → кнопка **«Новая статья»** → форма с вкладками
+«Редактор» / «Предпросмотр» → «Сохранить».
 
 ---
 
@@ -831,7 +886,8 @@ WHERE hint_key = 'my_module.my_action';
 
 ### 4. `article_slug`
 
-Опционально. Если задан — в Popover появится кнопка «Читать подробнее», ведущая на `/help/{slug}`. Убедитесь, что slug существует в `help_article`.
+Опционально. Если задан — в Popover появится кнопка «Читать подробнее»,
+ведущая на `/help/{slug}`. Убедитесь, что slug существует в `help_article`.
 
 ### 5. Применить
 
@@ -854,6 +910,7 @@ import Hint from '../components/help/Hint';
 ```
 
 **Правила:**
+
 - Если подсказки нет в БД — `<Hint/>` рендерит `null` (безопасно).
 - `<Hint/>` читает кэш из `HelpHintsContext` — перезагрузка страницы не нужна.
 - Размер: `small` (14px) или `medium` (18px).
@@ -875,6 +932,100 @@ def test_seed_links_to_existing_article():
     # Проверяем, что article_slug существует в add_24_seed_*
     ...
 ```
+
+---
+
+## Как добавить интерактивный тур
+
+**Итерация 15.3.**
+
+### 1. Добавить тур в `tours.ts`
+
+`frontend/src/tutorial/tours.ts`:
+
+```typescript
+{
+    id: 'my-tour',
+    name: 'Мой тур',
+    description: 'Краткое описание',
+    icon: 'RocketLaunch',
+    steps: [
+        {
+            target: '[data-tour-id="my-target"]',
+            content: 'Текст подсказки для шага',
+            placement: 'bottom',
+        },
+        // ...
+    ],
+    // Итерация 15.3 (fix): маршруты для навигации между шагами
+    stepRoutes: [
+        '/equipment',       // шаг 0
+        '/products',        // шаг 1
+        '/schedule',        // шаг 2
+        // null — остаёмся на текущей странице
+    ],
+}
+```
+
+### 2. Добавить `data-tour-id` в UI
+
+В компоненте, который должен подсвечиваться:
+
+```tsx
+<Button
+    data-tour-id="my-target"
+    onClick={...}
+>
+    Кнопка
+</Button>
+```
+
+### 3. Правила
+
+- `target` — CSS-селектор. Обычно `[data-tour-id="..."]`.
+- `content` — короткий текст (1-2 предложения).
+- `placement` — `'top' | 'bottom' | 'left' | 'right' | 'center'`.
+- `stepRoutes[stepIndex]` — маршрут, куда нужно перейти перед показом шага.
+  Если `null` — остаёмся на текущей странице.
+- `id` тура — уникальный (используется в `localStorage`).
+
+### 4. Добавить тест
+
+`frontend/src/tutorial/__tests__/tours.test.ts`:
+
+```typescript
+import {ALL_TOURS, getTourById} from '../tours';
+
+describe('tours', () => {
+    it('все туры имеют уникальные id', () => {
+        const ids = ALL_TOURS.map(t => t.id);
+        expect(new Set(ids).size).toBe(ids.length);
+    });
+
+    it('у каждого шага есть target и content', () => {
+        for (const tour of ALL_TOURS) {
+            for (const step of tour.steps) {
+                expect(step.target).toBeTruthy();
+                expect(step.content).toBeTruthy();
+            }
+        }
+    });
+});
+```
+
+### 5. Обновить статью `tutorial-interactive`
+
+Если добавляется новый тур — обновить seed-миграцию
+`add_27_seed_1.sql` или создать новую, добавив ссылку на тур.
+
+### 6. Прогресс
+
+Хранится в `localStorage`:
+
+- Ключ: `aps_tutorial_completed_<tour_id>`.
+- Значение: `'true'`.
+
+**Сброс:** `HelpPage` → «Интерактивные туры» → «Пройти заново».
 
 ---
 
@@ -974,7 +1125,8 @@ def test_seed_links_to_existing_article():
 
 ### Scope
 
-`scheduler`, `api`, `frontend`, `db`, `settings`, `whatif`, `cz`, `lab`, `shift`, `personnel`, `gantt`, `snapshot`, `help`, `docs`.
+`scheduler`, `api`, `frontend`, `db`, `settings`, `whatif`, `cz`, `lab`,
+`shift`, `personnel`, `gantt`, `snapshot`, `help`, `docs`.
 
 ### Примеры
 
@@ -1044,12 +1196,32 @@ feat(help): add contextual hints (iteration 15.2)
 ```
 
 ```
+feat(help): add interactive tutorial (iteration 15.3)
+
+- Библиотека react-joyride
+- Конфигурация туров в tutorial/tours.ts
+- TutorialContext, TutorialProvider, TutorialRunner
+- Статья tutorial-interactive (add_27_seed_1.sql)
+- +18 тестов, всего 643 passed
+```
+
+```
 feat(help): add FAQ category (iteration 15.4)
 
 - Seed-миграции add_26_seed_1/2/3.sql: 15 FAQ-статей
 - Категория faq в CATEGORY_LABELS и CATEGORY_ORDER
 - Формат статей: Симптом → Причина → Что делать → Проверка
 - +24 теста, всего 678 passed
+```
+
+```
+feat(help): add article CRUD in UI (iteration 15.5)
+
+- 3 эндпоинта POST/PUT/DELETE /help/articles (ADMIN)
+- HelpArticleEditor.tsx — форма с предпросмотром
+- HelpPage.tsx — кнопки «Новая статья» и «Редактировать»
+- Хелперы: _slugify, _check_slug_conflict, _next_display_order
+- +54 теста, всего 714 passed
 ```
 
 ---
@@ -1076,7 +1248,7 @@ feat(help): add FAQ category (iteration 15.4)
 ### 3. При релизе — перенести в новую версию
 
 ```markdown
-## [4.6.0] — 2026-10-04
+## [4.8.0] — 2026-10-06
 
 ### Added
 - ...
@@ -1201,7 +1373,7 @@ docker exec aps_postgres psql -U aps -d household -c "DROP SCHEMA public CASCADE
 docker exec -i aps_postgres psql -U aps -d household -c "SELECT COUNT(*) AS help_articles FROM help_article;"
 ```
 
-Ожидаемо: 30 (после Итерации 15.4).
+Ожидаемо: 31 (15 базовых + 1 туториал + 15 FAQ).
 
 **Проверка подсказок (Итерация 15.2):**
 
@@ -1309,7 +1481,7 @@ LOG_LEVEL=DEBUG
 
 В логах backend:
 ```
-[app.api.help] Загружено статей: 30
+[app.api.help] Загружено статей: 31
 ```
 
 Если статей 0 — проверьте seed-миграции.
@@ -1362,6 +1534,27 @@ curl -H "Authorization: Bearer $TOKEN" "http://localhost:8000/api/v1/help/articl
 1. Проверьте, что применены `add_26_seed_1/2/3.sql`.
 2. Проверьте, что `help.py` содержит `faq` в `CATEGORY_LABELS` и `CATEGORY_ORDER`.
 3. Перезапустите backend.
+
+**Отладка CRUD справки (Итерация 15.5):**
+
+Проверьте, что у пользователя роль ADMIN:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/v1/auth/me | jq '.role'
+```
+
+Должно быть `"ADMIN"`. Иначе CRUD-эндпоинты вернут `403`.
+
+Проверьте создание статьи:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/help/articles \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Тест", "category": "planning", "content_md": "body"}'
+```
+
+Должен вернуть `201` с автогенерированным slug.
 
 **Отладка тестов:**
 
@@ -1430,6 +1623,27 @@ FAQ-статьи — это обычные статьи в `HelpSidebar` (кат
 1. Проверьте Network-вкладку — запрос `GET /api/v1/help/categories`.
 2. В ответе должна быть категория `faq`.
 3. Если нет — см. «Отладка FAQ» в разделе Backend.
+
+**Отладка туров (Итерация 15.3):**
+
+1. В React DevTools выберите `TutorialProvider` — увидите `activeTour` и `currentStepIndex`.
+2. Если тур не запускается — проверьте `localStorage` ключ `aps_tutorial_completed_<tour_id>`.
+3. Если элемент не подсвечивается — проверьте, что `data-tour-id` в DOM совпадает с `target` в `tours.ts`.
+
+**Сброс прогресса тура:**
+
+```javascript
+// DevTools → Console
+localStorage.removeItem('aps_tutorial_completed_getting-started');
+location.reload();
+```
+
+**Отладка CRUD справки (Итерация 15.5):**
+
+1. Проверьте роль пользователя: `user.role === 'ADMIN'`.
+2. Если кнопка «Новая статья» не появляется — проверьте, что `isAdmin` истинно.
+3. Если редактор не открывается — проверьте, что `HelpArticleEditor` импортирован в `HelpPage`.
+4. Если сохранение падает с `409` — slug уже занят, используйте другой.
 
 ### Solver
 
