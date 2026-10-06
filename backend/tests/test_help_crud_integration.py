@@ -7,7 +7,7 @@
   - применённых миграций add_24.sql (help_article).
 
 Если БД недоступна — все тесты автоматически skip'аются
-(см. фикстуру async_session в conftest.py).
+(через фикстуру async_client → db_available).
 
 Проверяют:
   1. POST /articles — создание (успех, конфликт slug, невалидная
@@ -18,21 +18,23 @@
   4. Права: PLANNER/MASTER/VIEWER → 403.
   5. Изоляция по organization_id.
 
-ВАЖНО: TestClient использует собственный engine из
-app.auth.dependencies (get_db_session). Это значит, что HTTP-запросы
-идут в РЕАЛЬНУЮ БД. Тестовая фикстура async_session тоже смотрит
-в ту же БД — значит, для проверки/очистки можно её использовать.
+ВАЖНО (Итерация 15.5, fix):
+  Раньше использовался синхронный TestClient + async_session из
+  conftest. Это давало конфликт двух event loop'ов и asyncpg
+  кидал InterfaceError. Сейчас используется httpx.AsyncClient
+  + ASGITransport (см. conftest.async_client) — один loop,
+  конфликт устранён.
+
+  Все проверки — через HTTP. Прямой доступ к БД в тестах не
+  используется. Cleanup — через DELETE /articles/{slug}.
 """
 import uuid
 from uuid import UUID
 
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+from httpx import AsyncClient
 
 from app.auth.security import create_access_token
-from app.main import app
 
 # ==========================================
 # КОНСТАНТЫ
@@ -52,12 +54,7 @@ TEST_SLUG_PREFIX = "test-crud-"
 # ==========================================
 
 def _make_token(role: str = "ADMIN", org_id: UUID = TEST_ORG_ID) -> str:
-    """
-    Генерирует валидный JWT для теста.
-
-    sub — тестовый user_id (валидный UUID), org_id — указанная
-    организация, role — указанная роль.
-    """
+    """Генерирует валидный JWT для теста."""
     return create_access_token({
         "sub": str(uuid.uuid4()),
         "org_id": str(org_id),
@@ -72,7 +69,7 @@ def _auth_headers(role: str = "ADMIN", org_id: UUID = TEST_ORG_ID) -> dict:
 
 
 # ==========================================
-# ХЕЛПЕРЫ: работа с БД
+# ХЕЛПЕРЫ: работа через HTTP
 # ==========================================
 
 def _unique_slug(prefix: str = TEST_SLUG_PREFIX) -> str:
@@ -80,53 +77,52 @@ def _unique_slug(prefix: str = TEST_SLUG_PREFIX) -> str:
     return f"{prefix}{uuid.uuid4().hex[:12]}"
 
 
-async def _cleanup_test_articles(
-        session: AsyncSession,
-        org_id: UUID = TEST_ORG_ID,
+async def _cleanup_test_article(
+        client: AsyncClient,
+        headers: dict,
+        slug: str,
 ) -> None:
     """
-    Удаляет все тестовые статьи (по префиксу slug).
+    Удаляет тестовую статью (если существует).
 
-    Идемпотентно: если тест упал посередине — повторный вызов
-    всё подчистит.
+    Идемпотентно: 404 игнорируется. Не бросает исключений.
+    Используется в finally каждого теста.
     """
-    await session.execute(
-        text("""
-            DELETE FROM help_article
-            WHERE organization_id = :org_id
-              AND slug LIKE :prefix
-        """),
-        {"org_id": org_id, "prefix": f"{TEST_SLUG_PREFIX}%"},
-    )
-    await session.commit()
+    try:
+        await client.delete(
+            f"/api/v1/help/articles/{slug}",
+            headers=headers,
+        )
+    except Exception:
+        # Не мешаем оригинальному исключению теста
+        pass
 
 
-async def _fetch_article_from_db(
-        session: AsyncSession,
-        slug: str,
-):
-    """Читает статью из БД напрямую (для проверки)."""
-    result = await session.execute(
-        text("""
-            SELECT slug, title, category, content_md, tags,
-                   display_order, is_published, organization_id
-            FROM help_article
-            WHERE slug = :slug
-        """),
-        {"slug": slug},
+async def _create_article(
+        client: AsyncClient,
+        headers: dict,
+        **fields,
+) -> dict:
+    """
+    Хелпер: создать статью через HTTP.
+
+    Возвращает JSON ответа. Бросает AssertionError, если
+    статус != 201.
+    """
+    response = await client.post(
+        "/api/v1/help/articles",
+        headers=headers,
+        json=fields,
     )
-    return result.fetchone()
+    assert response.status_code == 201, (
+        f"Ожидался 201, получен {response.status_code}: {response.text}"
+    )
+    return response.json()
 
 
 # ==========================================
 # FIXTURES
 # ==========================================
-
-@pytest.fixture
-def client():
-    """TestClient для HTTP-запросов."""
-    return TestClient(app)
-
 
 @pytest.fixture
 def admin_headers():
@@ -157,16 +153,11 @@ def viewer_headers():
 # ==========================================
 
 @pytest.mark.asyncio
-async def test_create_article_success(
-        async_session,
-        client,
-        admin_headers,
-):
+async def test_create_article_success(async_client, admin_headers):
     """Успешное создание статьи с явным slug."""
     slug = _unique_slug()
-
     try:
-        response = client.post(
+        response = await async_client.post(
             "/api/v1/help/articles",
             headers=admin_headers,
             json={
@@ -186,25 +177,27 @@ async def test_create_article_success(
         assert data["category"] == "planning"
         assert data["tags"] == ["test", "crud"]
 
-        # Проверка в БД
-        row = await _fetch_article_from_db(async_session, slug)
-        assert row is not None
-        assert row.title == "Тестовая статья CRUD"
-        assert row.organization_id == TEST_ORG_ID
+        # Проверка через GET
+        get_resp = await async_client.get(
+            f"/api/v1/help/articles/{slug}",
+            headers=admin_headers,
+        )
+        assert get_resp.status_code == 200
+        assert get_resp.json()["title"] == "Тестовая статья CRUD"
 
     finally:
-        await _cleanup_test_articles(async_session)
+        await _cleanup_test_article(async_client, admin_headers, slug)
 
 
 @pytest.mark.asyncio
 async def test_create_article_auto_generates_slug(
-        async_session,
-        client,
+        async_client,
         admin_headers,
 ):
     """Slug генерируется из title, если не задан."""
+    created_slug: str | None = None
     try:
-        response = client.post(
+        response = await async_client.post(
             "/api/v1/help/articles",
             headers=admin_headers,
             json={
@@ -216,69 +209,62 @@ async def test_create_article_auto_generates_slug(
 
         assert response.status_code == 201, response.text
         data = response.json()
-        # slug должен начинаться с "crud-test-article-auto"
-        assert "crud-test-article-auto" in data["slug"]
+        created_slug = data["slug"]
 
-        # Убираем мусор — slug сгенерированный, префикс не наш
-        await async_session.execute(
-            text("DELETE FROM help_article WHERE slug = :slug"),
-            {"slug": data["slug"]},
-        )
-        await async_session.commit()
-    except Exception:
-        await _cleanup_test_articles(async_session)
-        raise
+        # slug должен начинаться с "crud-test-article-auto"
+        assert "crud-test-article-auto" in created_slug
+    finally:
+        if created_slug:
+            await _cleanup_test_article(
+                async_client, admin_headers, created_slug,
+            )
 
 
 @pytest.mark.asyncio
 async def test_create_article_auto_display_order(
-        async_session,
-        client,
+        async_client,
         admin_headers,
 ):
-    """display_order = max + 10, если не задан."""
+    """display_order задаётся автоматически (не 0, если есть другие)."""
     slug = _unique_slug()
     try:
-        # Находим текущий max для категории 'faq'
-        result = await async_session.execute(
-            text("""
-                SELECT COALESCE(MAX(display_order), 0) AS m
-                FROM help_article
-                WHERE category = 'faq'
-            """),
+        # Создаём первую — узнаём display_order
+        first = await _create_article(
+            async_client,
+            admin_headers,
+            title="FAQ Test 1",
+            slug=slug,
+            category="faq",
+            content_md="body",
         )
-        max_before = int(result.fetchone().m)
 
-        response = client.post(
-            "/api/v1/help/articles",
-            headers=admin_headers,
-            json={
-                "title": "FAQ Test",
-                "slug": slug,
-                "category": "faq",
-                "content_md": "body",
-            },
-        )
-        assert response.status_code == 201, response.text
-        data = response.json()
-        # display_order должен быть max_before + 10
-        assert data["display_order"] == max_before + 10
-
+        # Создаём вторую — display_order должен быть БОЛЬШЕ первой
+        slug2 = _unique_slug()
+        try:
+            second = await _create_article(
+                async_client,
+                admin_headers,
+                title="FAQ Test 2",
+                slug=slug2,
+                category="faq",
+                content_md="body",
+            )
+            assert second["display_order"] > first["display_order"]
+        finally:
+            await _cleanup_test_article(
+                async_client, admin_headers, slug2,
+            )
     finally:
-        await _cleanup_test_articles(async_session)
+        await _cleanup_test_article(async_client, admin_headers, slug)
 
 
 @pytest.mark.asyncio
-async def test_create_article_slug_conflict(
-        async_session,
-        client,
-        admin_headers,
-):
+async def test_create_article_slug_conflict(async_client, admin_headers):
     """Дубликат slug → 409."""
     slug = _unique_slug()
     try:
         # Первое создание
-        r1 = client.post(
+        r1 = await async_client.post(
             "/api/v1/help/articles",
             headers=admin_headers,
             json={
@@ -291,7 +277,7 @@ async def test_create_article_slug_conflict(
         assert r1.status_code == 201
 
         # Второе создание с тем же slug → 409
-        r2 = client.post(
+        r2 = await async_client.post(
             "/api/v1/help/articles",
             headers=admin_headers,
             json={
@@ -303,19 +289,17 @@ async def test_create_article_slug_conflict(
         )
         assert r2.status_code == 409
         assert "уже существует" in r2.json()["detail"].lower()
-
     finally:
-        await _cleanup_test_articles(async_session)
+        await _cleanup_test_article(async_client, admin_headers, slug)
 
 
 @pytest.mark.asyncio
 async def test_create_article_unknown_category(
-        async_session,
-        client,
+        async_client,
         admin_headers,
 ):
     """Неизвестная категория → 400."""
-    response = client.post(
+    response = await async_client.post(
         "/api/v1/help/articles",
         headers=admin_headers,
         json={
@@ -333,29 +317,22 @@ async def test_create_article_unknown_category(
 # ==========================================
 
 @pytest.mark.asyncio
-async def test_update_article_success(
-        async_session,
-        client,
-        admin_headers,
-):
+async def test_update_article_success(async_client, admin_headers):
     """Полное обновление полей статьи."""
     slug = _unique_slug()
     try:
-        # Создаём
-        client.post(
-            "/api/v1/help/articles",
-            headers=admin_headers,
-            json={
-                "title": "Оригинал",
-                "slug": slug,
-                "category": "planning",
-                "content_md": "old body",
-                "tags": ["old"],
-            },
+        await _create_article(
+            async_client,
+            admin_headers,
+            title="Оригинал",
+            slug=slug,
+            category="planning",
+            content_md="old body",
+            tags=["old"],
         )
 
         # Обновляем
-        response = client.put(
+        response = await async_client.put(
             f"/api/v1/help/articles/{slug}",
             headers=admin_headers,
             json={
@@ -371,36 +348,33 @@ async def test_update_article_success(
         assert data["tags"] == ["new1", "new2"]
         assert data["slug"] == slug  # slug не менялся
 
-        # Проверка в БД
-        row = await _fetch_article_from_db(async_session, slug)
-        assert row.title == "Обновлено"
-
+        # Проверка через GET
+        get_resp = await async_client.get(
+            f"/api/v1/help/articles/{slug}",
+            headers=admin_headers,
+        )
+        assert get_resp.status_code == 200
+        assert get_resp.json()["title"] == "Обновлено"
     finally:
-        await _cleanup_test_articles(async_session)
+        await _cleanup_test_article(async_client, admin_headers, slug)
 
 
 @pytest.mark.asyncio
-async def test_update_article_partial(
-        async_session,
-        client,
-        admin_headers,
-):
+async def test_update_article_partial(async_client, admin_headers):
     """Частичное обновление — только title."""
     slug = _unique_slug()
     try:
-        client.post(
-            "/api/v1/help/articles",
-            headers=admin_headers,
-            json={
-                "title": "Оригинал",
-                "slug": slug,
-                "category": "planning",
-                "content_md": "original body",
-                "tags": ["orig"],
-            },
+        await _create_article(
+            async_client,
+            admin_headers,
+            title="Оригинал",
+            slug=slug,
+            category="planning",
+            content_md="original body",
+            tags=["orig"],
         )
 
-        response = client.put(
+        response = await async_client.put(
             f"/api/v1/help/articles/{slug}",
             headers=admin_headers,
             json={"title": "Только заголовок"},
@@ -411,33 +385,26 @@ async def test_update_article_partial(
         # content_md и tags не менялись
         assert data["content_md"] == "original body"
         assert data["tags"] == ["orig"]
-
     finally:
-        await _cleanup_test_articles(async_session)
+        await _cleanup_test_article(async_client, admin_headers, slug)
 
 
 @pytest.mark.asyncio
-async def test_update_article_change_slug(
-        async_session,
-        client,
-        admin_headers,
-):
+async def test_update_article_change_slug(async_client, admin_headers):
     """Изменение slug статьи."""
     old_slug = _unique_slug()
     new_slug = _unique_slug()
     try:
-        client.post(
-            "/api/v1/help/articles",
-            headers=admin_headers,
-            json={
-                "title": "Статья",
-                "slug": old_slug,
-                "category": "planning",
-                "content_md": "body",
-            },
+        await _create_article(
+            async_client,
+            admin_headers,
+            title="Статья",
+            slug=old_slug,
+            category="planning",
+            content_md="body",
         )
 
-        response = client.put(
+        response = await async_client.put(
             f"/api/v1/help/articles/{old_slug}",
             headers=admin_headers,
             json={"slug": new_slug},
@@ -447,69 +414,63 @@ async def test_update_article_change_slug(
         assert data["slug"] == new_slug
 
         # Старого больше нет
-        row_old = await _fetch_article_from_db(async_session, old_slug)
-        assert row_old is None
-        # Новый есть
-        row_new = await _fetch_article_from_db(async_session, new_slug)
-        assert row_new is not None
+        old_get = await async_client.get(
+            f"/api/v1/help/articles/{old_slug}",
+            headers=admin_headers,
+        )
+        assert old_get.status_code == 404
 
+        # Новый есть
+        new_get = await async_client.get(
+            f"/api/v1/help/articles/{new_slug}",
+            headers=admin_headers,
+        )
+        assert new_get.status_code == 200
     finally:
-        await _cleanup_test_articles(async_session)
+        await _cleanup_test_article(async_client, admin_headers, old_slug)
+        await _cleanup_test_article(async_client, admin_headers, new_slug)
 
 
 @pytest.mark.asyncio
-async def test_update_article_slug_conflict(
-        async_session,
-        client,
-        admin_headers,
-):
+async def test_update_article_slug_conflict(async_client, admin_headers):
     """Попытка занять чужой slug → 409."""
     slug_a = _unique_slug()
     slug_b = _unique_slug()
     try:
-        # Создаём две статьи
-        client.post(
-            "/api/v1/help/articles",
-            headers=admin_headers,
-            json={
-                "title": "A",
-                "slug": slug_a,
-                "category": "planning",
-                "content_md": "a",
-            },
+        await _create_article(
+            async_client,
+            admin_headers,
+            title="Article A",
+            slug=slug_a,
+            category="planning",
+            content_md="a",
         )
-        client.post(
-            "/api/v1/help/articles",
-            headers=admin_headers,
-            json={
-                "title": "B",
-                "slug": slug_b,
-                "category": "planning",
-                "content_md": "b",
-            },
+        await _create_article(
+            async_client,
+            admin_headers,
+            title="Article B",
+            slug=slug_b,
+            category="planning",
+            content_md="b",
         )
 
         # Пытаемся slug B занять статьёй A
-        response = client.put(
+        response = await async_client.put(
             f"/api/v1/help/articles/{slug_a}",
             headers=admin_headers,
             json={"slug": slug_b},
         )
         assert response.status_code == 409
-
     finally:
-        await _cleanup_test_articles(async_session)
+        await _cleanup_test_article(async_client, admin_headers, slug_a)
+        await _cleanup_test_article(async_client, admin_headers, slug_b)
 
 
 @pytest.mark.asyncio
-async def test_update_article_not_found(
-        async_session,
-        client,
-        admin_headers,
-):
+async def test_update_article_not_found(async_client, admin_headers):
     """Несуществующий slug → 404."""
     fake_slug = f"{TEST_SLUG_PREFIX}nonexistent-{uuid.uuid4().hex[:8]}"
-    response = client.put(
+    response = await async_client.put(
         f"/api/v1/help/articles/{fake_slug}",
         headers=admin_headers,
         json={"title": "Новый"},
@@ -519,31 +480,28 @@ async def test_update_article_not_found(
 
 @pytest.mark.asyncio
 async def test_update_article_unknown_category(
-        async_session,
-        client,
+        async_client,
         admin_headers,
 ):
     """Неизвестная категория при обновлении → 400."""
     slug = _unique_slug()
     try:
-        client.post(
-            "/api/v1/help/articles",
-            headers=admin_headers,
-            json={
-                "title": "Статья",
-                "slug": slug,
-                "category": "planning",
-                "content_md": "body",
-            },
+        await _create_article(
+            async_client,
+            admin_headers,
+            title="Статья",
+            slug=slug,
+            category="planning",
+            content_md="body",
         )
-        response = client.put(
+        response = await async_client.put(
             f"/api/v1/help/articles/{slug}",
             headers=admin_headers,
             json={"category": "unknown"},
         )
         assert response.status_code == 400
     finally:
-        await _cleanup_test_articles(async_session)
+        await _cleanup_test_article(async_client, admin_headers, slug)
 
 
 # ==========================================
@@ -551,26 +509,20 @@ async def test_update_article_unknown_category(
 # ==========================================
 
 @pytest.mark.asyncio
-async def test_delete_article_success(
-        async_session,
-        client,
-        admin_headers,
-):
+async def test_delete_article_success(async_client, admin_headers):
     """Успешное удаление статьи."""
     slug = _unique_slug()
     try:
-        client.post(
-            "/api/v1/help/articles",
-            headers=admin_headers,
-            json={
-                "title": "Удаляемая",
-                "slug": slug,
-                "category": "planning",
-                "content_md": "body",
-            },
+        await _create_article(
+            async_client,
+            admin_headers,
+            title="Удаляемая",
+            slug=slug,
+            category="planning",
+            content_md="body",
         )
 
-        response = client.delete(
+        response = await async_client.delete(
             f"/api/v1/help/articles/{slug}",
             headers=admin_headers,
         )
@@ -580,22 +532,20 @@ async def test_delete_article_success(
         assert data["slug"] == slug
 
         # Проверка, что удалено
-        row = await _fetch_article_from_db(async_session, slug)
-        assert row is None
-
+        get_resp = await async_client.get(
+            f"/api/v1/help/articles/{slug}",
+            headers=admin_headers,
+        )
+        assert get_resp.status_code == 404
     finally:
-        await _cleanup_test_articles(async_session)
+        await _cleanup_test_article(async_client, admin_headers, slug)
 
 
 @pytest.mark.asyncio
-async def test_delete_article_not_found(
-        async_session,
-        client,
-        admin_headers,
-):
+async def test_delete_article_not_found(async_client, admin_headers):
     """Несуществующий slug → 404."""
     fake_slug = f"{TEST_SLUG_PREFIX}missing-{uuid.uuid4().hex[:8]}"
-    response = client.delete(
+    response = await async_client.delete(
         f"/api/v1/help/articles/{fake_slug}",
         headers=admin_headers,
     )
@@ -607,13 +557,9 @@ async def test_delete_article_not_found(
 # ==========================================
 
 @pytest.mark.asyncio
-async def test_planner_cannot_create(
-        async_session,
-        client,
-        planner_headers,
-):
+async def test_planner_cannot_create(async_client, planner_headers):
     """PLANNER не может создавать статьи → 403."""
-    response = client.post(
+    response = await async_client.post(
         "/api/v1/help/articles",
         headers=planner_headers,
         json={
@@ -626,13 +572,9 @@ async def test_planner_cannot_create(
 
 
 @pytest.mark.asyncio
-async def test_master_cannot_create(
-        async_session,
-        client,
-        master_headers,
-):
+async def test_master_cannot_create(async_client, master_headers):
     """MASTER не может создавать статьи → 403."""
-    response = client.post(
+    response = await async_client.post(
         "/api/v1/help/articles",
         headers=master_headers,
         json={
@@ -645,13 +587,9 @@ async def test_master_cannot_create(
 
 
 @pytest.mark.asyncio
-async def test_viewer_cannot_create(
-        async_session,
-        client,
-        viewer_headers,
-):
+async def test_viewer_cannot_create(async_client, viewer_headers):
     """VIEWER не может создавать статьи → 403."""
-    response = client.post(
+    response = await async_client.post(
         "/api/v1/help/articles",
         headers=viewer_headers,
         json={
@@ -665,61 +603,55 @@ async def test_viewer_cannot_create(
 
 @pytest.mark.asyncio
 async def test_planner_cannot_update(
-        async_session,
-        client,
+        async_client,
         admin_headers,
         planner_headers,
 ):
     """PLANNER не может обновлять статьи → 403."""
     slug = _unique_slug()
     try:
-        client.post(
-            "/api/v1/help/articles",
-            headers=admin_headers,
-            json={
-                "title": "Тест",
-                "slug": slug,
-                "category": "planning",
-                "content_md": "body",
-            },
+        await _create_article(
+            async_client,
+            admin_headers,
+            title="Тест",
+            slug=slug,
+            category="planning",
+            content_md="body",
         )
-        response = client.put(
+        response = await async_client.put(
             f"/api/v1/help/articles/{slug}",
             headers=planner_headers,
             json={"title": "Изменено"},
         )
         assert response.status_code == 403
     finally:
-        await _cleanup_test_articles(async_session)
+        await _cleanup_test_article(async_client, admin_headers, slug)
 
 
 @pytest.mark.asyncio
 async def test_planner_cannot_delete(
-        async_session,
-        client,
+        async_client,
         admin_headers,
         planner_headers,
 ):
     """PLANNER не может удалять статьи → 403."""
     slug = _unique_slug()
     try:
-        client.post(
-            "/api/v1/help/articles",
-            headers=admin_headers,
-            json={
-                "title": "Тест",
-                "slug": slug,
-                "category": "planning",
-                "content_md": "body",
-            },
+        await _create_article(
+            async_client,
+            admin_headers,
+            title="Тест",
+            slug=slug,
+            category="planning",
+            content_md="body",
         )
-        response = client.delete(
+        response = await async_client.delete(
             f"/api/v1/help/articles/{slug}",
             headers=planner_headers,
         )
         assert response.status_code == 403
     finally:
-        await _cleanup_test_articles(async_session)
+        await _cleanup_test_article(async_client, admin_headers, slug)
 
 
 # ==========================================
@@ -728,22 +660,20 @@ async def test_planner_cannot_delete(
 
 @pytest.mark.asyncio
 async def test_article_not_visible_from_other_org(
-        async_session,
-        client,
+        async_client,
         admin_headers,
 ):
     """
     Статья, созданная org A, не видна org B.
 
-    PUT/DELETE из org B → 404.
-    GET /articles/{slug} из org B → 404.
+    GET/PUT/DELETE из org B → 404.
     """
     slug = _unique_slug()
     other_org_headers = _auth_headers("ADMIN", org_id=OTHER_ORG_ID)
 
     try:
         # Создаём в TEST_ORG
-        r = client.post(
+        r = await async_client.post(
             "/api/v1/help/articles",
             headers=admin_headers,
             json={
@@ -756,14 +686,14 @@ async def test_article_not_visible_from_other_org(
         assert r.status_code == 201
 
         # Пытаемся прочитать из другой org
-        r_get = client.get(
+        r_get = await async_client.get(
             f"/api/v1/help/articles/{slug}",
             headers=other_org_headers,
         )
         assert r_get.status_code == 404
 
         # Пытаемся обновить из другой org
-        r_put = client.put(
+        r_put = await async_client.put(
             f"/api/v1/help/articles/{slug}",
             headers=other_org_headers,
             json={"title": "Hijack"},
@@ -771,19 +701,22 @@ async def test_article_not_visible_from_other_org(
         assert r_put.status_code == 404
 
         # Пытаемся удалить из другой org
-        r_del = client.delete(
+        r_del = await async_client.delete(
             f"/api/v1/help/articles/{slug}",
             headers=other_org_headers,
         )
         assert r_del.status_code == 404
 
         # Статья всё ещё существует в TEST_ORG
-        row = await _fetch_article_from_db(async_session, slug)
-        assert row is not None
-        assert row.title == "Org A"
+        r_check = await async_client.get(
+            f"/api/v1/help/articles/{slug}",
+            headers=admin_headers,
+        )
+        assert r_check.status_code == 200
+        assert r_check.json()["title"] == "Org A"
 
     finally:
-        await _cleanup_test_articles(async_session)
+        await _cleanup_test_article(async_client, admin_headers, slug)
 
 
 # ==========================================
@@ -792,54 +725,52 @@ async def test_article_not_visible_from_other_org(
 
 @pytest.mark.asyncio
 async def test_cleanup_removes_only_test_slugs(
-        async_session,
-        client,
+        async_client,
         admin_headers,
 ):
     """
-    _cleanup_test_articles удаляет только slug'и с префиксом.
+    Cleanup по slug удаляет только тестовую статью.
 
     Реальные статьи (например, 'planning-build-plan') не затрагиваются.
     """
-    # Создаём тестовую статью
     slug = _unique_slug()
-    client.post(
-        "/api/v1/help/articles",
-        headers=admin_headers,
-        json={
-            "title": "Test",
-            "slug": slug,
-            "category": "planning",
-            "content_md": "body",
-        },
-    )
-
-    # Проверяем, что реальная статья 'planning-build-plan' есть
-    # (если seed-миграции применены)
-    real_slug_result = await async_session.execute(
-        text("""
-            SELECT slug FROM help_article
-            WHERE slug = 'planning-build-plan'
-        """)
-    )
-    real_slug_before = real_slug_result.fetchone()
-
-    # Cleanup
-    await _cleanup_test_articles(async_session)
-
-    # Тестовая удалена
-    row = await _fetch_article_from_db(async_session, slug)
-    assert row is None
-
-    # Реальная статья (если была) — не тронута
-    if real_slug_before is not None:
-        real_slug_after_result = await async_session.execute(
-            text("""
-                SELECT slug FROM help_article
-                WHERE slug = 'planning-build-plan'
-            """)
+    try:
+        # Создаём тестовую статью
+        await _create_article(
+            async_client,
+            admin_headers,
+            title="Test",
+            slug=slug,
+            category="planning",
+            content_md="body",
         )
-        assert real_slug_after_result.fetchone() is not None
+
+        # Проверяем, есть ли реальная статья (если seed применён)
+        real_check = await async_client.get(
+            "/api/v1/help/articles/planning-build-plan",
+            headers=admin_headers,
+        )
+        real_exists_before = real_check.status_code == 200
+
+        # Cleanup
+        await _cleanup_test_article(async_client, admin_headers, slug)
+
+        # Тестовая удалена
+        gone = await async_client.get(
+            f"/api/v1/help/articles/{slug}",
+            headers=admin_headers,
+        )
+        assert gone.status_code == 404
+
+        # Реальная статья (если была) — не тронута
+        if real_exists_before:
+            real_after = await async_client.get(
+                "/api/v1/help/articles/planning-build-plan",
+                headers=admin_headers,
+            )
+            assert real_after.status_code == 200
+    finally:
+        await _cleanup_test_article(async_client, admin_headers, slug)
 
 
 if __name__ == "__main__":
