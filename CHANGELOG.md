@@ -9,57 +9,151 @@
 
 ### Added
 
-- **tools/check_docs.py** — аудит консистентности md-файлов:
-  версии, число тестов, таблица Roadmap, эндпоинты API, ENV и
-  app_settings. Режимы: default / --strict / --api-strict / --json.
-- **docs/DEVELOPMENT.md** — раздел «Аудит документации».
+- Заготовка для Итерации 17: см. Roadmap.
 
-### Fixed
+---
 
-- **docs/CONFIGURATION.md** — ENV приведены в соответствие с
-  `backend/app/core/config.py` (`SECRET_KEY`, `ALGORITHM`,
-  `ACCESS_TOKEN_EXPIRE_MINUTES`, `ALLOWED_ORIGINS`, `DEFAULT_ORG_ID`,
-  `APP_NAME`, `APP_VERSION`, `DEBUG`). Удалены фантомные ENV
-  (`JWT_*`, `LOG_LEVEL`, `CORS_ORIGINS`, `CZ_API_KEY`, `POSTGRES_*`
-  из раздела приложения). Возвращён `cz_api_key` в категорию `cz`.
-- **README.md** — таблица Roadmap синхронизирована с `docs/ROADMAP.md`
-  (добавлены итерации 15.6, 16, 17). Счётчик тестов приведён к
-  фактическому (`672 passed + 66 skipped = 738`).
+## [4.9.0] — 2026-10-07
 
-### Changed
-
-- **CHANGELOG.md** — счётчик тестов: 714 → 738.
-
-### Fixed
-
-- **tests:** устранён конфликт event loop между pytest-asyncio,
-  asyncpg и ASGITransport. `conftest.py` создаёт свежий engine
-  на каждый async-тест и подменяет `get_db_session` через
-  `app.dependency_overrides`. Все 738 тестов проходят.
-- **tests:** `db_available` переведена в sync-фикстуру
-  (проверка через `socket.create_connection`) — устраняет
-  `ScopeMismatch` с `asyncio_default_fixture_loop_scope=function`.
-- **tests:** исправлены короткие `title` в
-  `test_update_article_slug_conflict` (`"A"`/`"B"` →
-  `"Article A"`/`"Article B"`), нарушавшие `min_length=3`.
-- **tests:** кириллица в выводе pytest на Windows —
-  `sys.stdout.reconfigure(encoding="utf-8")` в `conftest.py`,
-  `PYTHONUTF8=1` в окружении, удалены несуществующие опции
-  `log_cli_encoding` / `log_file_encoding` из `pytest.ini`.
-- **tests:** подавлен библиотечный warning
-  `DeprecationWarning: anyio.abc.BlockingPortal alias`
-  (приходит из `starlette.testclient`).
-
-### Changed
-
-- **pytest.ini:** добавлены явные
-  `asyncio_default_fixture_loop_scope = function` и
-  `asyncio_default_test_loop_scope = function`.
-- **CHANGELOG:** обновлено количество тестов: **672 passed + 66 skipped = 738 collected**.
+Итерация 16 — Расширенный аудит и отчёты.
 
 ### Added
 
-- Заготовка для Итерации 16.x: см. Roadmap.
+#### Итерация 16 — Расширенный аудит и отчёты
+
+**Проблема:**
+Страница «Аудит» (Итерация 13.3) собирала события из 4 журналов
+(`material_stock_log`, `reschedule_log`, `lab_analysis_log`,
+`cz_scan_log`) и показывала их списком с базовыми фильтрами.
+Но:
+- пункт меню был **скрыт** в UI (Итерация 13.16 — «страница в разработке»),
+- фильтров не хватало для реального анализа (нет `actor_id`,
+  `entity_type`, диапазона `delta_qty`),
+- не было дашборда — только список,
+- нельзя было сохранить часто используемые представления,
+- нельзя было выгрузить результат в Excel.
+
+**Решение:**
+
+**1. Возврат аудита в UI (16.0):**
+- ✅ `frontend/src/App.tsx` — роут `/audit` снова зарегистрирован.
+- ✅ `frontend/src/components/layout/MainLayout.tsx` — пункт меню «Аудит»
+  раскомментирован, добавлена иконка `History`.
+- ✅ Backend был подключён всегда — потребовалась только правка фронта.
+
+**2. Расширенные фильтры (16.1):**
+- ✅ 4 новых query-параметра в `GET /api/v1/audit/log`:
+  - `actor_id` — фильтр по автору события (UUID);
+  - `entity_type` — тип сущности: `material | batch | schedule_version`;
+  - `delta_qty_from` / `delta_qty_to` — диапазон изменения количества
+    (только для STOCK-событий).
+- ✅ SQL-фильтры `actor_id`/`entity_type` добавлены в `_fetch_*_events`
+  (для STOCK/RESCHEDULE/LAB; CZ — всегда пусто при `actor_id`, т.к.
+  камера не является пользователем).
+- ✅ Пост-фильтр `_post_filter` применяет `delta_qty` к STOCK-событиям
+  и отбрасывает события без этого поля.
+- ✅ Новая Pydantic-модель `AuditFilterSpec` — единый формат для
+  GET-запросов, POST-экспорта и сохранённых представлений.
+
+**3. Сохранённые представления (16.2):**
+- ✅ Миграция `add_28.sql` — таблица `audit_saved_view`:
+  - `id`, `organization_id`, `user_id`, `name`, `comment`, `filters` (JSONB),
+    `is_default`, `display_order`, `created_at`, `updated_at`;
+  - UNIQUE `(organization_id, user_id, name)`;
+  - partial-index по `is_default = TRUE`;
+  - триггер автообновления `updated_at`.
+- ✅ 4 эндпоинта:
+  - `GET    /api/v1/audit/saved-views` — список моих представлений;
+  - `POST   /api/v1/audit/saved-views` — создать;
+  - `PUT    /api/v1/audit/saved-views/{id}` — обновить;
+  - `DELETE /api/v1/audit/saved-views/{id}` — удалить.
+- ✅ Все 4 защищены `Depends(get_current_user_id)` — представления per-user.
+- ✅ При установке `is_default = TRUE` с других представлений пользователя
+  флаг снимается автоматически (в одной транзакции).
+- ✅ UI: чипы представлений над фильтрами; клик — загрузить, крестик — удалить,
+  двойной клик — переключить «по умолчанию» (★).
+
+**4. Дашборд с графиками (16.3):**
+- ✅ Новый эндпоинт `GET /api/v1/audit/stats/series`:
+  - `group_by=day` — точки по дням (с заполнением пропущенных нулями);
+  - `group_by=source` — точки по источникам;
+  - `group_by=severity` — точки по уровням важности.
+- ✅ Frontend: библиотека `recharts@^2.15.0`.
+- ✅ 3 графика в сворачиваемой карточке:
+  - Line chart «События по дням»;
+  - Bar chart «По источникам»;
+  - Bar chart «По важности».
+- ✅ Нулевые категории в bar-charts скрыты (нет визуального «шума»).
+- ✅ Дашборд сворачивается кнопкой `▲/▼`, состояние в `localStorage`
+  (ключ `aps_audit_dashboard_open`).
+- ✅ При свёрнутом дашборде в заголовке показывается компактная сводка
+  `RESCHEDULE: 2 · Инфо: 2`.
+
+**5. Экспорт в Excel (16.4):**
+- ✅ Новый эндпоинт `POST /api/v1/audit/export.xlsx`.
+- ✅ Генерация на backend через `openpyxl` (добавлен в `requirements.txt`).
+- ✅ Заголовки: `Время | Источник | Важность | Тип | Заголовок | Описание |
+  Сущность | Автор | Детали`.
+- ✅ Фильтры те же, что у `/log` (`AuditFilterSpec`).
+- ✅ Параметр `max_rows` (default 10 000) — защита от гигантских выгрузок.
+- ✅ StreamingResponse с `Content-Disposition: attachment`.
+- ✅ Frontend: кнопка «Экспорт в Excel» рядом с «Обновить».
+
+**6. UX-полировка страницы «Аудит» (16.5):**
+- ✅ Дашборд вынесен в сворачиваемую карточку — экономия до 400px
+  вертикали при свёрнутом виде.
+- ✅ Фильтры сжаты в одну карточку с двумя рядами (базовые + расширенные),
+  `flexShrink: 0` — не «уезжают» на маленьких экранах.
+- ✅ Пресеты дат (`День/Неделя/Месяц`) + «Сбросить» сгруппированы справа.
+- ✅ Графики уменьшены до 140px по высоте, читаемы и на 1366×768.
+- ✅ Скроллбар списка событий корректно растягивается (`minHeight: 0` на
+  всех flex-обёртках).
+- ✅ Все фильтры синхронизируются с URL (шаринг ссылок, history back/forward).
+
+**7. Тесты:**
+- ✅ `test_audit.py` — **+35** новых структурных тестов (расширенные
+  фильтры, saved views CRUD, series, экспорт, права, регрессия).
+- ✅ `test_audit_models.py` — **+27** новых тестов Pydantic-моделей
+  (`AuditFilterSpec`, `AuditSavedView*`, `AuditStatsSeriesResponse`,
+  `AuditExportRequest`).
+- ✅ Существующие 17 + 9 тестов не сломаны.
+- ✅ **Итого: 789 passed, 0 skipped** (все интеграционные тесты
+  прогнаны на реальной PostgreSQL после применения `add_28.sql`).
+
+**Ключевые гарантии:**
+- ✅ **Обратная совместимость** — `GET /log`, `GET /stats`, `GET /sources`
+  работают как раньше, старые query-параметры сохранены.
+- ✅ **Per-user изоляция** — представления не пересекаются между
+  пользователями, даже в одной организации.
+- ✅ **Открытый формат** — экспорт в xlsx читается Excel, LibreOffice, pandas.
+- ✅ **Мульти-тенантность** — все эндпоинты привязаны к `organization_id`.
+- ✅ **Идемпотентные миграции** — `add_28.sql` можно применять повторно.
+
+### Changed
+
+- Версия проекта: `4.8.0` → `4.9.0`.
+- `backend/app/main.py` — `FastAPI(version="4.9.0")`, `health` возвращает
+  `APP_VERSION` из константы.
+- `backend/app/api/v1/audit.py` — расширены `_fetch_*_events`, добавлены
+  `_post_filter`, `_collect_events`, `_json_dumps`, `_build_xlsx`,
+  `export_audit_xlsx`, `get_audit_stats_series`, 4 эндпоинта saved-views.
+- `backend/app/api/v1/audit_models.py` — 8 новых моделей.
+- `backend/requirements.txt` — добавлен `openpyxl>=3.1.0`.
+- `frontend/package.json` — добавлен `recharts@^2.15.0`.
+- `frontend/src/App.tsx` — роут `/audit`.
+- `frontend/src/components/layout/MainLayout.tsx` — пункт меню «Аудит».
+- `frontend/src/services/api.ts` — `auditApi` расширен 8 методами.
+- `frontend/src/types/index.ts` — 9 новых типов.
+- `frontend/src/pages/AuditPage.tsx` — полный рефакторинг UI.
+
+### Fixed
+
+- **Аудит снова доступен в UI** (Итерация 13.16 временно скрыла пункт
+  меню). Теперь страница открывается из бокового меню.
+- **Дашборд и фильтры не «уезжают» на экранах 1366×768** — исправлено
+  через `flexShrink: 0` и `minHeight: 0` на промежуточных flex-контейнерах.
+- **Скроллбар списка событий** — корректно растягивается до низа окна.
+- **Дублирование нулевых категорий в bar-charts** — устранено.
 
 ---
 

@@ -877,31 +877,6 @@ export const whatifApi = {
 };
 
 // ==========================================
-// Audit API (Итерация 13.3)
-// ==========================================
-export const auditApi = {
-    getLog: async (params?: {
-        sources?: string;
-        date_from?: string;
-        date_to?: string;
-        severity?: string;
-        search?: string;
-        limit?: number;
-    }): Promise<import('../types').AuditListResponse> => {
-        const response = await api.get('/api/v1/audit/log', { params });
-        return response.data;
-    },
-    getStats: async (days: number = 7): Promise<import('../types').AuditStatsResponse> => {
-        const response = await api.get('/api/v1/audit/stats', { params: { days } });
-        return response.data;
-    },
-    getSources: async (): Promise<{ sources: import('../types').AuditSourceInfo[] }> => {
-        const response = await api.get('/api/v1/audit/sources');
-        return response.data;
-    },
-};
-
-// ==========================================
 // Help API (Итерация 15.1 + 15.2 + 15.5)
 // ==========================================
 
@@ -994,6 +969,198 @@ export const helpApi = {
      */
     getHints: async (): Promise<import('../types').HelpHintsResponse> => {
         const response = await api.get('/api/v1/help/hints');
+        return response.data;
+    },
+};
+
+// ==========================================
+// Audit API (Итерация 13.3 + 16)
+// ==========================================
+
+/**
+ * Преобразует AuditFilterSpec в плоские query-параметры бэкенда.
+ *
+ * Бэкенд GET /api/v1/audit/log ждёт:
+ *   sources=STOCK,LAB     (строка через запятую)
+ *   severity=WARNING
+ *   date_from=...
+ *   date_to=...
+ *   search=...
+ *   actor_id=...
+ *   entity_type=...
+ *   delta_qty_from=...
+ *   delta_qty_to=...
+ *   limit=200
+ */
+function _filtersToQuery(filters: import('../types').AuditFilterSpec): Record<string, any> {
+    const q: Record<string, any> = {};
+
+    if (filters.sources && filters.sources.length > 0) {
+        q.sources = filters.sources.join(',');
+    }
+    if (filters.severity) q.severity = filters.severity;
+    if (filters.date_from) q.date_from = filters.date_from;
+    if (filters.date_to) q.date_to = filters.date_to;
+    if (filters.search) q.search = filters.search;
+    if (filters.actor_id) q.actor_id = filters.actor_id;
+    if (filters.entity_type) q.entity_type = filters.entity_type;
+    if (filters.delta_qty_from != null) q.delta_qty_from = filters.delta_qty_from;
+    if (filters.delta_qty_to != null) q.delta_qty_to = filters.delta_qty_to;
+    if (filters.limit != null) q.limit = filters.limit;
+
+    return q;
+}
+
+export const auditApi = {
+    /**
+     * GET /api/v1/audit/log — журнал событий.
+     *
+     * Поддерживает два формата (для обратной совместимости):
+     *   1. Плоские параметры: { sources: "STOCK,LAB", severity: "WARNING", ... }
+     *   2. Расширенные фильтры: { filters: { sources: ["STOCK", "LAB"], ... } }
+     *
+     * Итерация 16.1: добавлены actor_id, entity_type, delta_qty_from/to.
+     */
+    getLog: async (params?: {
+        // Старый формат (плоский)
+        sources?: string;
+        date_from?: string;
+        date_to?: string;
+        severity?: string;
+        search?: string;
+        limit?: number;
+        // Итерация 16.1: расширенные фильтры
+        actor_id?: string;
+        entity_type?: string;
+        delta_qty_from?: number;
+        delta_qty_to?: number;
+        // Или — единый объект
+        filters?: import('../types').AuditFilterSpec;
+    }): Promise<import('../types').AuditListResponse> => {
+        // Если передан filters — конвертируем его в query-параметры.
+        const query: Record<string, any> = params?.filters
+            ? _filtersToQuery(params.filters)
+            : {
+                sources: params?.sources,
+                date_from: params?.date_from,
+                date_to: params?.date_to,
+                severity: params?.severity,
+                search: params?.search,
+                limit: params?.limit,
+                actor_id: params?.actor_id,
+                entity_type: params?.entity_type,
+                delta_qty_from: params?.delta_qty_from,
+                delta_qty_to: params?.delta_qty_to,
+            };
+
+        // Убираем undefined — иначе axios сериализует их в строку "undefined".
+        Object.keys(query).forEach(
+            (k) => query[k] === undefined && delete query[k]
+        );
+
+        const response = await api.get('/api/v1/audit/log', { params: query });
+        return response.data;
+    },
+
+    /**
+     * GET /api/v1/audit/stats — сводка по источникам за N дней.
+     */
+    getStats: async (
+        days: number = 7,
+    ): Promise<import('../types').AuditStatsResponse> => {
+        const response = await api.get('/api/v1/audit/stats', {
+            params: { days },
+        });
+        return response.data;
+    },
+
+    /**
+     * Итерация 16.3: GET /api/v1/audit/stats/series — серии для дашборда.
+     *
+     * group_by='day' | 'source' | 'severity'.
+     */
+    getStatsSeries: async (
+        group_by: import('../types').AuditGroupBy = 'day',
+        days: number = 7,
+    ): Promise<import('../types').AuditStatsSeriesResponse> => {
+        const response = await api.get('/api/v1/audit/stats/series', {
+            params: { group_by, days },
+        });
+        return response.data;
+    },
+
+    /**
+     * GET /api/v1/audit/sources — список источников для UI.
+     */
+    getSources: async (): Promise<{ sources: import('../types').AuditSourceInfo[] }> => {
+        const response = await api.get('/api/v1/audit/sources');
+        return response.data;
+    },
+
+    // ==========================================
+    // ИТЕРАЦИЯ 16.2: СОХРАНЁННЫЕ ПРЕДСТАВЛЕНИЯ
+    // ==========================================
+
+    /**
+     * GET /api/v1/audit/saved-views — мои представления.
+     */
+    listSavedViews: async (): Promise<import('../types').AuditSavedViewsListResponse> => {
+        const response = await api.get('/api/v1/audit/saved-views');
+        return response.data;
+    },
+
+    /**
+     * POST /api/v1/audit/saved-views — создать представление.
+     */
+    createSavedView: async (
+        payload: import('../types').AuditSavedViewCreate,
+    ): Promise<import('../types').AuditSavedView> => {
+        const response = await api.post('/api/v1/audit/saved-views', payload);
+        return response.data;
+    },
+
+    /**
+     * PUT /api/v1/audit/saved-views/{id} — обновить представление.
+     */
+    updateSavedView: async (
+        id: string,
+        payload: import('../types').AuditSavedViewUpdate,
+    ): Promise<import('../types').AuditSavedView> => {
+        const response = await api.put(
+            `/api/v1/audit/saved-views/${id}`,
+            payload,
+        );
+        return response.data;
+    },
+
+    /**
+     * DELETE /api/v1/audit/saved-views/{id} — удалить представление.
+     */
+    deleteSavedView: async (
+        id: string,
+    ): Promise<import('../types').AuditSavedViewDeleteResponse> => {
+        const response = await api.delete(`/api/v1/audit/saved-views/${id}`);
+        return response.data;
+    },
+
+    // ==========================================
+    // ИТЕРАЦИЯ 16.4: ЭКСПОРТ В XLSX
+    // ==========================================
+
+    /**
+     * POST /api/v1/audit/export.xlsx — выгрузить события в Excel.
+     *
+     * Возвращает Blob (xlsx). Фронт сам решает, что с ним делать:
+     * сохранить через URL.createObjectURL или отдать пользователю.
+     */
+    exportAudit: async (
+        payload: import('../types').AuditExportRequest,
+    ): Promise<Blob> => {
+        const response = await api.post(
+            '/api/v1/audit/export.xlsx',
+            payload,
+            { responseType: 'blob' },
+        );
         return response.data;
     },
 };

@@ -29,6 +29,7 @@ import {
     Edit as EditIcon,
     Factory as FactoryIcon,
     HelpOutlined as HelpOutlineIcon,
+    History as HistoryIcon,
     Inventory as InventoryIcon,
     Lock as LockIcon,
     Logout as LogoutIcon,
@@ -64,7 +65,8 @@ const MENU_ITEMS = [
     { path: '/personnel', label: 'Персонал', icon: <PersonIcon /> },
     { path: '/cz', label: 'Честный Знак', icon: <QrCodeScannerIcon /> },
     { path: '/whatif', label: 'What-if', icon: <ScienceIcon /> },
-    // Итерация 13.16: пункт «Аудит» временно скрыт — страница в разработке.
+    // Итерация 16.0: пункт «Аудит» возвращён в меню
+    { path: '/audit', label: 'Аудит', icon: <HistoryIcon /> },
     { path: '/settings', label: 'Настройки', icon: <SettingsIcon /> },
     { path: '/help', label: 'Помощь', icon: <HelpOutlineIcon /> },
 ];

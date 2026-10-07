@@ -1079,7 +1079,7 @@ export interface HelpArticleDeleteResponse {
 /**
  * Одна контекстная подсказка.
  *
- * Используется через <Hint id="hint_key"/>.
+ * Используется через <Hint id="hint_key"/>.ы
  */
 export interface HelpHint {
     hint_key: string;
@@ -1097,4 +1097,156 @@ export interface HelpHint {
 export interface HelpHintsResponse {
     hints: Record<string, HelpHint>;
     total: number;
+}
+
+// ==========================================
+// ИТЕРАЦИЯ 16.1: РАСШИРЕННЫЕ ФИЛЬТРЫ АУДИТА
+// ==========================================
+
+/**
+ * Расширенная спецификация фильтров аудита.
+ *
+ * Используется в:
+ *   - auditApi.getLog(params)           — GET /log;
+ *   - auditApi.exportAudit(payload)     — POST /export.xlsx;
+ *   - AuditSavedView.filters            — сохранённые представления.
+ *
+ * Все поля опциональны. Отсутствие поля = «фильтр не применён».
+ */
+export interface AuditFilterSpec {
+    sources?: AuditSource[];
+    date_from?: string | null;
+    date_to?: string | null;
+    severity?: AuditSeverity | null;
+    search?: string | null;
+    /** Итерация 16.1: ID автора события. */
+    actor_id?: string | null;
+    /** Итерация 16.1: тип сущности (material | batch | schedule_version). */
+    entity_type?: string | null;
+    /** Итерация 16.1: минимальное изменение qty (только STOCK). */
+    delta_qty_from?: number | null;
+    /** Итерация 16.1: максимальное изменение qty (только STOCK). */
+    delta_qty_to?: number | null;
+    limit?: number;
+}
+
+// ==========================================
+// ИТЕРАЦИЯ 16.3: СЕРИИ ДЛЯ ДАШБОРДА
+// ==========================================
+
+export type AuditGroupBy = 'day' | 'source' | 'severity';
+
+/**
+ * Одна точка серии.
+ */
+export interface AuditStatsSeriesPoint {
+    label: string;
+    count: number;
+}
+
+/**
+ * Ответ GET /api/v1/audit/stats/series.
+ *
+ * points — массив точек, отсортирован в порядке:
+ *   - для group_by='day'      — по возрастанию даты;
+ *   - для group_by='source'   — STOCK, RESCHEDULE, LAB, CZ;
+ *   - для group_by='severity' — INFO, WARNING, CRITICAL.
+ */
+export interface AuditStatsSeriesResponse {
+    group_by: AuditGroupBy;
+    date_from: string;
+    date_to: string;
+    total: number;
+    points: AuditStatsSeriesPoint[];
+}
+
+// ==========================================
+// ИТЕРАЦИЯ 16.2: СОХРАНЁННЫЕ ПРЕДСТАВЛЕНИЯ
+// ==========================================
+
+/**
+ * Фильтры внутри сохранённого представления.
+ *
+ * Полностью совпадает с AuditFilterSpec, но:
+ *   - поля могут быть null;
+ *   - date_from/date_to — ISO-строки.
+ */
+export interface AuditSavedViewFilters {
+    sources?: AuditSource[] | null;
+    severity?: AuditSeverity | null;
+    date_from?: string | null;
+    date_to?: string | null;
+    search?: string | null;
+    limit?: number | null;
+    actor_id?: string | null;
+    entity_type?: string | null;
+    delta_qty_from?: number | null;
+    delta_qty_to?: number | null;
+}
+
+/**
+ * Одно сохранённое представление.
+ */
+export interface AuditSavedView {
+    id: string;
+    name: string;
+    comment?: string | null;
+    filters: AuditSavedViewFilters;
+    is_default: boolean;
+    display_order: number;
+    created_at: string;
+    updated_at: string;
+}
+
+/**
+ * Список сохранённых представлений.
+ */
+export interface AuditSavedViewsListResponse {
+    views: AuditSavedView[];
+    total: number;
+}
+
+/**
+ * Тело запроса на создание представления.
+ */
+export interface AuditSavedViewCreate {
+    name: string;
+    comment?: string | null;
+    filters: AuditSavedViewFilters;
+    is_default?: boolean;
+    display_order?: number;
+}
+
+/**
+ * Тело запроса на обновление представления.
+ * Все поля опциональны — передавайте только изменяемые.
+ */
+export interface AuditSavedViewUpdate {
+    name?: string;
+    comment?: string | null;
+    filters?: AuditSavedViewFilters;
+    is_default?: boolean;
+    display_order?: number;
+}
+
+/**
+ * Ответ на удаление представления.
+ */
+export interface AuditSavedViewDeleteResponse {
+    status: string;
+    id: string;
+    message: string;
+}
+
+// ==========================================
+// ИТЕРАЦИЯ 16.4: ЭКСПОРТ В XLSX
+// ==========================================
+
+/**
+ * Тело POST /api/v1/audit/export.xlsx.
+ */
+export interface AuditExportRequest {
+    filters: AuditFilterSpec;
+    title?: string | null;
+    max_rows?: number;
 }

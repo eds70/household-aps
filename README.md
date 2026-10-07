@@ -2,7 +2,7 @@
 
 **Система автоматического планирования производства на базе OR-Tools CP-SAT**
 
-Версия: **4.8.0** (Итерации 0–15.6 завершены)
+Версия: **4.9.0** (Итерации 0–16 завершены)
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -66,6 +66,7 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 - **Интерактивного туториала** (Итерация 15.3) — пошаговое обучение по 3 сценариям
 - **FAQ** (Итерация 15.4) — 15 статей «Симптом → Причина → Что делать»
 - **Редактирования статей справки в UI** (Итерация 15.5) — CRUD-эндпоинты и редактор на фронтенде
+- **Расширенного аудита и отчётов** (Итерация 16) — фильтры, дашборд с графиками, сохранённые представления, экспорт в Excel
 
 ## 📚 Документация
 
@@ -101,6 +102,7 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 | asyncpg | 0.31+ | Async драйвер PostgreSQL |
 | Pydantic | 2.13+ | Валидация данных |
 | python-jose / bcrypt | latest | JWT авторизация |
+| openpyxl | 3.1+ | Экспорт в Excel |
 
 ### База данных
 | Компонент | Версия | Назначение |
@@ -121,6 +123,7 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 | react-markdown | 9.x | Рендер markdown в UI |
 | remark-gfm | 4.x | GFM-расширения (таблицы, чекбоксы) |
 | react-joyride | 3.x | Интерактивный туториал |
+| recharts | 2.x | Графики на дашборде аудита |
 
 ## 📁 Структура проекта
 
@@ -153,6 +156,7 @@ household-aps/
 │   │   │   ├── plan_settings.py
 │   │   │   ├── whatif.py
 │   │   │   ├── audit.py
+│   │   │   ├── audit_models.py
 │   │   │   ├── help.py
 │   │   │   ├── help_models.py
 │   │   │   ├── help_docs.py
@@ -198,6 +202,7 @@ household-aps/
 │   │   ├── add_26_seed_2.sql   # FAQ: гант, смены, what-if, ЧЗ (5)
 │   │   ├── add_26_seed_3.sql   # FAQ: лаборатория, advisor (5)
 │   │   ├── add_27_seed_1.sql   # Туториал (15.3)
+│   │   ├── add_28.sql          # audit_saved_view (16.2)
 │   │   ├── fix_versions_hotfix.sql
 │   │   └── fix_shift_names.sql
 │   ├── .env
@@ -367,6 +372,7 @@ docker cp backend\migrations\add_26_seed_1.sql aps_postgres:/tmp/add_26_seed_1.s
 docker cp backend\migrations\add_26_seed_2.sql aps_postgres:/tmp/add_26_seed_2.sql
 docker cp backend\migrations\add_26_seed_3.sql aps_postgres:/tmp/add_26_seed_3.sql
 docker cp backend\migrations\add_27_seed_1.sql aps_postgres:/tmp/add_27_seed_1.sql
+docker cp backend\migrations\add_28.sql aps_postgres:/tmp/add_28.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_21.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_23.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_24.sql
@@ -379,6 +385,7 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_1.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_2.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_3.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_27_seed_1.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_28.sql
 ```
 
 #### Шаг 3: Создание администратора
@@ -411,7 +418,7 @@ cd backend
 pytest tests/ -v
 ```
 
-**Текущее состояние:** **672 passed**, 66 skipped (требуют PostgreSQL).
+**Текущее состояние:** **789 passed**, 0 skipped.
 
 Подробнее о тестировании — в [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#запуск-тестов).
 
@@ -438,8 +445,8 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/seed_demo_data.sql
 
 ### Применить SQL-миграцию (правильный способ)
 ```
-docker cp backend\migrations\add_27_seed_1.sql aps_postgres:/tmp/add_27_seed_1.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_27_seed_1.sql
+docker cp backend\migrations\add_28.sql aps_postgres:/tmp/add_28.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_28.sql
 ```
 
 ### Проверить статьи справки по категориям (Итерация 15.1 + 15.4)
@@ -456,46 +463,26 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT slug, title FROM
 
 **Ожидаемо:** 15 статей с префиксом `faq-`.
 
-### Проверить статью туториала (Итерация 15.3)
-```
-docker exec -i aps_postgres psql -U aps -d household -c "SELECT slug, title FROM help_article WHERE slug = 'tutorial-interactive';"
-```
-
-**Ожидаемо:** 1 статья `tutorial-interactive`.
-
 ### Проверить контекстные подсказки (Итерация 15.2)
 ```
 docker exec -i aps_postgres psql -U aps -d household -c "SELECT hint_key, title, article_slug FROM help_hint WHERE is_published = TRUE ORDER BY display_order;"
 ```
 
+### Проверить таблицу сохранённых представлений аудита (Итерация 16.2)
+```
+docker exec -i aps_postgres psql -U aps -d household -c "\d audit_saved_view"
+```
+
+**Ожидаемо:** 10 колонок, 4 индекса, 1 триггер.
+
+### Проверить свои сохранённые представления (Итерация 16.2)
+```
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT name, is_default, display_order, created_at FROM audit_saved_view ORDER BY display_order, name;"
+```
+
 ### Проверить архивные версии (Итерация 13.21)
 ```
 docker exec -i aps_postgres psql -U aps -d household -c "SELECT COUNT(*) FILTER (WHERE is_archived = TRUE) AS archived, COUNT(*) FILTER (WHERE is_active = TRUE) AS active FROM schedule_version WHERE organization_id = '00000000-0000-0000-0000-000000000001';"
-```
-
-### Проверить настройку auto_archive_on_recalc (Итерация 13.21)
-```
-docker exec -i aps_postgres psql -U aps -d household -c "SELECT setting_key, setting_value FROM app_settings WHERE setting_key = 'auto_archive_on_recalc';"
-```
-
-### Проверить пулы ресурсов
-```
-docker exec -i aps_postgres psql -U aps -d household -c "SELECT type, capacity FROM resource_pool ORDER BY type;"
-```
-
-### Проверить настройки режима смен (Итерация 11)
-```
-docker exec -i aps_postgres psql -U aps -d household -c "SELECT setting_key, setting_value FROM app_settings WHERE setting_key IN ('shift_mode', 'shift_intervals', 'shift_duration_hours', 'allow_weekend_work') ORDER BY setting_key;"
-```
-
-### Проверить снапшоты конкретного плана (Итерация 13.15)
-```
-docker exec -i aps_postgres psql -U aps -d household -c "SELECT sv.name, (SELECT COUNT(*) FROM product_snapshot WHERE version_id = sv.id) AS products, (SELECT COUNT(*) FROM equipment_snapshot WHERE version_id = sv.id) AS equipment FROM schedule_version sv ORDER BY sv.created_at DESC LIMIT 5;"
-```
-
-### Проверить связь подсказок со статьями (Итерация 15.2)
-```
-docker exec -i aps_postgres psql -U aps -d household -c "SELECT h.hint_key, h.article_slug, CASE WHEN a.slug IS NULL THEN '❌ NOT FOUND' ELSE '✅ OK' END AS status FROM help_hint h LEFT JOIN help_article a ON a.slug = h.article_slug WHERE h.article_slug IS NOT NULL ORDER BY h.hint_key;"
 ```
 
 ## ⚠️ Известные ограничения
@@ -517,6 +504,9 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT h.hint_key, h.ar
 - **Туториал (15.3):** нет аналитики прохождения (какие шаги пропускаются).
 - **FAQ (15.4):** 15 статей покрывают топ-15 проблем. Дополнения — через seed-миграции.
 - **Справка (15.5):** редактирование статей доступно только роли ADMIN. Остальные роли получают 403.
+- **Аудит (16):** серии для дашборда собираются в памяти (без SQL-агрегации) — при 10k+ событий за период может замедлиться.
+- **Аудит (16):** экспорт в Excel ограничен `max_rows = 10000` (защита от гигантских выгрузок).
+- **Аудит (16):** сохранённые представления **per-user**, не шарятся между пользователями одной организации.
 
 ## 🐛 Troubleshooting
 
@@ -532,13 +522,13 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT h.hint_key, h.ar
 - **Справка не открывается (15.1)** → проверить, что применены миграции `add_24.sql` и seed-файлы.
 - **Подсказки не показываются (15.2)** → проверить, что применены миграции `add_25.sql` и `add_25_seed.sql`, а также перезагрузить страницу (Ctrl+F5).
 - **Popover подсказки пустой (15.2)** → проверить `body_md` в `help_hint` для нужного `hint_key`.
-- **«Читать подробнее» ведёт на 404 (15.2)** → проверить связь `help_hint.article_slug` ↔ `help_article.slug`.
 - **Туториал не запускается (15.3)** → проверить, что установлен `react-joyride`, очистить `node_modules/.vite`, перезагрузить страницу.
-- **Туториал не подсвечивает элемент (15.3)** → проверить, что у элемента есть `data-tour-id`, совпадающий с `target` в `tours.ts`.
-- **Туториал показывается повторно (15.3)** → проверить `localStorage` ключ `aps_tutorial_completed_<tour_id>`, сбросить через кнопку «Пройти заново».
 - **FAQ-статьи не появились (15.4)** → проверить, что применены миграции `add_26_seed_1/2/3.sql`.
-- **FAQ-категория не отображается (15.4)** → перезапустить backend после правки `help.py`.
 - **Не удаётся создать/отредактировать статью (15.5)** → проверить, что у пользователя роль ADMIN.
+- **Аудит не открывается (16.0)** → проверить, что пункт меню раскомментирован в `MainLayout.tsx` и роут `/audit` есть в `App.tsx`.
+- **Дашборд на аудите пустой (16.3)** → проверить, что установлен `recharts`: `npm ls recharts`.
+- **Экспорт в Excel падает (16.4)** → проверить, что `openpyxl` установлен: `python -c "import openpyxl"`.
+- **Сохранённые представления не появляются (16.2)** → проверить, что применена миграция `add_28.sql`: `\d audit_saved_view`.
 
 ## 🗺️ Roadmap
 
@@ -577,7 +567,7 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT h.hint_key, h.ar
 | 15.5 | Редактирование статей в UI | 3 дня | 🟡 | ✅ |
 | 15.6 | Улучшение workflow с AI-ассистентом | 1 день | 🟢 | ✅ |
 | 15.7 | Аудит документации (`check_docs.py`) | 1 день | 🟢 | ✅ |
-| 16 | Расширенный аудит и отчёты | 2 нед | 🟡 | ⏳ |
+| 16 | Расширенный аудит и отчёты | 2 нед | 🟡 | ✅ |
 | 17 | Резерв | — | — | ⏳ |
 
 Полный Roadmap — в [docs/ROADMAP.md](docs/ROADMAP.md).
@@ -588,4 +578,4 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT h.hint_key, h.ar
 
 ---
 
-Итерации 0–15.6 завершены. Следующая — Итерация 16: Расширенный аудит и отчёты (⏳).
+Итерации 0–16 завершены. Следующая — Итерация 17: Резерв (⏳).

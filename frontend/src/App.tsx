@@ -23,6 +23,7 @@ import PersonnelPage from './pages/PersonnelPage';
 import CzPage from './pages/CzPage';
 import SettingsPage from './pages/SettingsPage';
 import WhatIfPage from './pages/WhatIfPage';
+import AuditPage from './pages/AuditPage'; // ← НОВОЕ (Итерация 16.0)
 import HelpPage from './pages/HelpPage';
 import {Box, CircularProgress} from '@mui/material';
 import {COMMON_TOUR_OPTIONS} from './tutorial/tours';
@@ -261,6 +262,8 @@ const AppRoutes: React.FC = () => {
                 <Route path="personnel" element={<PersonnelPage />} />
                 <Route path="cz" element={<CzPage />} />
                 <Route path="whatif" element={<WhatIfPage />} />
+                {/* Итерация 16.0: возврат страницы аудита в UI */}
+                <Route path="audit" element={<AuditPage />} />
                 <Route path="settings" element={<SettingsPage />} />
                 <Route path="help" element={<HelpPage />} />
                 <Route path="help/:slug" element={<HelpPage />} />

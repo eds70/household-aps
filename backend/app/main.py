@@ -18,7 +18,7 @@ from app.api.v1.materials import router as materials_router
 from app.api.v1.operations import router as operations_router
 from app.api.v1.orders import router as orders_router
 from app.api.v1.personnel import router as personnel_router
-from app.api.v1.plan_settings import router as plan_settings_router  # ← НОВОЕ
+from app.api.v1.plan_settings import router as plan_settings_router
 from app.api.v1.products import router as products_router
 from app.api.v1.recipes import router as recipes_router
 from app.api.v1.reschedule import router as reschedule_router
@@ -27,6 +27,8 @@ from app.api.v1.settings import router as settings_router
 from app.api.v1.shift import router as shift_router
 from app.api.v1.whatif import router as whatif_router
 from app.core.config import settings
+
+APP_VERSION = "4.9.0"
 
 tags_metadata = [
     {"name": "Авторизация"},
@@ -46,7 +48,7 @@ tags_metadata = [
     {"name": "Персонал"},
     {"name": "Честный Знак"},
     {"name": "Настройки"},
-    {"name": "Настройки плана"},        # ← НОВОЕ
+    {"name": "Настройки плана"},
     {"name": "What-if сценарии"},
     {"name": "Аудит"},
     {"name": "Система"},
@@ -59,7 +61,7 @@ app = FastAPI(
         "REST API для построения оптимальных планов производства "
         "с использованием OR-Tools CP-SAT."
     ),
-    version="3.0.0",
+    version=APP_VERSION,
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_tags=tags_metadata,
@@ -91,18 +93,18 @@ app.include_router(lab_router)
 app.include_router(personnel_router)
 app.include_router(cz_router)
 app.include_router(settings_router)
-app.include_router(plan_settings_router)   # ← НОВОЕ
+app.include_router(plan_settings_router)
 app.include_router(whatif_router)
 app.include_router(audit_router)
-app.include_router(help_router)         # ← НОВОЕ
-app.include_router(help_docs_router)    # ← НОВОЕ
+app.include_router(help_router)
+app.include_router(help_docs_router)
 
 
 @app.get("/health", tags=["Система"])
 async def health_check():
     return {
         "status": "healthy",
-        "version": "3.0.0",
+        "version": APP_VERSION,
         "timestamp": datetime.now().isoformat(),
     }
 
@@ -111,6 +113,7 @@ async def health_check():
 async def root():
     return {
         "message": "APS Production Scheduler API",
+        "version": APP_VERSION,
         "docs": "/docs",
         "auth": "/api/v1/auth/login",
     }
