@@ -6,10 +6,11 @@
 окружения из файла .env с валидацией типов и значениями по умолчанию.
 """
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, field_validator
 from typing import List
 from uuid import UUID
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -71,7 +72,7 @@ class Settings(BaseSettings):
     )
 
     APP_VERSION: str = Field(
-        default="1.2.0",
+        default="4.9.0feаутшч",
         description="Версия приложения",
     )
 

@@ -23,6 +23,7 @@
 - [FAQ (Итерация 15.4)](#faq-итерация-154)
 - [Редактирование статей в UI (Итерация 15.5)](#редактирование-статей-в-ui-итерация-155)
 - [Общие UI-компоненты](#общие-ui-компоненты)
+- [Развёртывание (Docker)](#развёртывание-docker)
 - [Известные ограничения](#известные-ограничения)
 
 ---
@@ -1193,6 +1194,216 @@ FAQ — это **не новая таблица**, а **новая катего�
 **`frontend/src/components/common/AppAgGrid.tsx`**
 
 Обёртка над `AgGridReact` с предустановленной темой (`agGridTheme`) и русской локализацией (`AG_GRID_LOCALE_RU`). Используется во всех таблицах.
+
+---
+
+## Развёртывание (Docker)
+
+Архитектура развёртывания в production (облако, удалённая VM). Развёртывание локально (dev) — см. [README.md](../README.md).
+
+### Схема развёртывания
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│ Хост (Ubuntu 22.04 LTS, 2 vCPU, 4 GB RAM)                            │
+│                                                                       │
+│ ┌───────────────────────────────────────────────────────────────┐    │
+│ │ Docker-сеть: aps_network (bridge)                             │    │
+│ │                                                                │    │
+│ │  ┌───────────────────────┐                                    │    │
+│ │  │  aps_nginx            │  ← единственный вход из интернета │    │
+│ │  │  nginx:alpine         │    порты 80, 443                  │    │
+│ │  │  Reverse-proxy        │                                    │    │
+│ │  └────┬─────────────┬────┘                                    │    │
+│ │       │             │                                          │    │
+│ │       │ /api/*      │ /                                        │    │
+│ │       │ /docs       │                                          │    │
+│ │       │ /health     │                                          │    │
+│ │       ▼             ▼                                          │    │
+│ │  ┌─────────┐   ┌──────────────────┐                          │    │
+│ │  │ backend │   │ frontend         │                          │    │
+│ │  │ FastAPI │   │ nginx:alpine +   │                          │    │
+│ │  │ :8000   │   │ SPA-статика      │                          │    │
+│ │  │         │   │ :80              │                          │    │
+│ │  └────┬────┘   └──────────────────┘                          │    │
+│ │       │                                                         │    │
+│ │       ▼                                                         │    │
+│ │  ┌──────────────┐                                             │    │
+│ │  │  postgres    │  ← порт НЕ пробрасывается наружу           │    │
+│ │  │  postgres:17 │                                             │    │
+│ │  │  :5432       │                                             │    │
+│ │  │  volume:     │                                             │    │
+│ │  │  pgdata      │                                             │    │
+│ │  └──────────────┘                                             │    │
+│ └───────────────────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+### 4 сервиса
+
+| Сервис | Образ | Порт (host) | Порт (внутри) | Роль |
+|--------|-------|-------------|---------------|------|
+| `postgres` | `postgres:17` | ❌ не пробрасывается | `5432` | Хранилище |
+| `backend` | собственный (`backend/Dockerfile`) | ❌ не пробрасывается | `8000` | FastAPI + OR-Tools |
+| `frontend` | собственный (`frontend/Dockerfile`) | ❌ не пробрасывается | `80` | nginx:alpine + SPA |
+| `nginx` | `nginx:alpine` | **80, 443** | `80, 443` | Reverse-proxy |
+
+**Ключевое архитектурное решение:** только `nginx` виден из интернета. Остальные сервисы — только во внутренней Docker-сети `aps_network`. Это гарантирует:
+- **PostgreSQL недоступен из интернета** — защита от брутфорса и инъекций на уровне БД.
+- **Backend и frontend не имеют публичных IP** — атаковать можно только через nginx.
+- **Единственная точка входа** — весь трафик логируется в одном месте.
+
+### Маршрутизация запросов
+
+```
+Браузер → aps_nginx (внешний) → 
+    ├── /api/*, /docs, /redoc, /openapi.json, /health → aps_backend:8000
+    └── /                                             → aps_frontend:80
+                                                         (внутренний nginx)
+                                                         ├── /assets/* → отдаёт файл
+                                                         └── /<route>  → index.html (SPA-fallback)
+```
+
+**Ключевая деталь — два nginx.** Не путать:
+
+| | Внешний | Внутренний |
+|---|---------|-----------|
+| Файл | `nginx/nginx.conf` (корень) | `frontend/nginx.conf` (в образе) |
+| Контейнер | `aps_nginx` | `aps_frontend` |
+| Роль | Reverse-proxy: маршрутизация `/api/*` vs `/` | Отдача SPA-статики + fallback на `index.html` |
+| Порт | `80`, `443` (публичный) | `80` (только внутренняя сеть) |
+
+**Почему два, а не один:**
+- **Разделение ответственности**: внешний nginx — маршрутизация и TLS, внутренний — отдача статики и SPA-fallback.
+- **Пересборка frontend не трогает внешний nginx**: обновили `dist/` — просто перезапустили `aps_frontend`, `aps_nginx` продолжает работать.
+- **HTTPS-терминация только на внешнем**: сертификаты монтируются в один контейнер.
+
+**SPA-fallback (важно):** внутренний nginx делает `try_files $uri $uri/ /index.html`. Без этого прямой переход на `/audit` или F5 на `/help/faq-xxx` вернёт 404. Подробнее — в [TROUBLESHOOTING.md](TROUBLESHOOTING.md), п. 132.
+
+### Поток данных HTTP-запроса
+
+Рассмотрим полный путь запроса `GET /api/v1/schedule/versions` от браузера до PostgreSQL и обратно:
+
+```
+1. Браузер
+   └─ axios.get(`${VITE_API_URL}/api/v1/schedule/versions`)
+      Authorization: Bearer <JWT>
+
+2. DNS + TLS (если HTTPS)
+   └─ Резолв домена → IP VM
+
+3. aps_nginx (внешний)
+   ├─ location /api/ → proxy_pass http://aps_backend:8000
+   ├─ Заголовки: Host, X-Real-IP, X-Forwarded-For, X-Forwarded-Proto
+   └─ proxy_read_timeout 900s (для долгих solver-запросов)
+
+4. aps_backend (FastAPI)
+   ├─ auth/dependencies.py: get_current_user → декодирование JWT
+   ├─ get_current_org_id → org_id из токена
+   ├─ Роутер schedule.py: функция list_versions
+   └─ db.execute(text("SELECT ... FROM schedule_version WHERE organization_id = :org_id"))
+       │
+       ▼
+5. aps_postgres
+   ├─ Принимает соединение по внутренней сети (asyncpg pool)
+   ├─ SELECT с фильтром organization_id (мульти-тенантность)
+   └─ Возвращает rows
+       │
+       ▼
+6. aps_backend
+   ├─ Маппинг rows → Pydantic-модели
+   └─ FastAPI сериализует в JSON
+
+7. aps_nginx
+   └─ Проксирует ответ обратно в браузер
+
+8. Браузер
+   └─ axios получает JSON, React рендерит
+```
+
+**Ключевые моменты:**
+
+- **Прокси-заголовки критичны**: backend по `X-Real-IP` видит **реальный IP клиента**, а не `172.20.0.x` из Docker-сети. Логи и аудит корректны.
+- **`X-Forwarded-Proto`** = `http` или `https` текущего запроса. Backend использует его для генерации ссылок в Swagger UI.
+- **JWT** проверяется на каждом запросе. `organization_id` берётся **из токена**, не из URL — защита от меж-организационного доступа.
+- **`proxy_read_timeout 900s`**: solver может работать до 10 минут. Дефолтный таймаут nginx — 60 сек — вернул бы 504.
+
+### Переменные окружения: build-time vs runtime
+
+**Критично для понимания архитектуры:** в проекте используются **два типа** переменных.
+
+#### Runtime (backend)
+
+Читаются `backend/app/core/config.py` (`pydantic-settings`) при старте контейнера.
+
+- `DATABASE_URL`, `SECRET_KEY`, `ALLOWED_ORIGINS`, `ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES`, `DEFAULT_ORG_ID`, `APP_NAME`, `APP_VERSION`, `DEBUG`.
+- **Пробрасываются через `environment:` в `docker-compose.prod.yml`.**
+- **`.env` в образ не копируется** — исключён в `backend/.dockerignore`.
+- **Изменение**: перезапуск контейнера (`docker compose up -d backend`).
+
+#### Build-time (frontend)
+
+Читаются Vite **при сборке образа frontend**.
+
+- `VITE_API_URL` — единственная build-time переменная.
+- **Вшивается в JS-бандл** в `dist/assets/*.js`.
+- **Изменение**: пересборка образа frontend (`docker compose build frontend`), затем `up -d`.
+
+**Почему два типа:**
+- **Backend** — Python-приложение, читает env в runtime. Можно менять без пересборки.
+- **Frontend** — статика. Vite заменяет `import.meta.env.VITE_API_URL` на **литерал** в JS-коде при сборке. После сборки переменной в бандле **нет** — есть уже подставленная строка.
+
+**Следствие:** после изменения `VITE_API_URL` в `.env` — обязательно `docker compose build frontend`. Без этого frontend будет стучаться на старый URL. Подробнее — в [CONFIGURATION.md](CONFIGURATION.md) и [TROUBLESHOOTING.md](TROUBLESHOOTING.md), п. 123 и 130.
+
+### Volumes
+
+Единственный **персистентный** volume — `pgdata` (данные PostgreSQL).
+
+| Volume | Где монтируется | Назначение | Размер |
+|--------|-----------------|------------|--------|
+| `pgdata` | `/var/lib/postgresql/data` (в `aps_postgres`) | БД | 40–200 MB |
+
+**Что НЕ в volume:**
+- Статика frontend — внутри образа, пересобирается при деплое.
+- Логи — в stdout/stderr, ограничены `logging: max-size`.
+- Сертификаты HTTPS — bind mount `./nginx/certs/` на хосте.
+
+**Критично:** `docker compose down -v` **удалит volume** `pgdata` → потеря БД. Безопасная остановка — `docker compose down` (без `-v`). Подробнее — в [DEPLOYMENT.md](DEPLOYMENT.md), шаг 11, и [TROUBLESHOOTING.md](TROUBLESHOOTING.md), п. 121.
+
+### Dev vs Prod
+
+| Аспект | Dev (`docker/docker-compose.yml`) | Prod (`docker-compose.prod.yml`) |
+|--------|-----------------------------------|-----------------------------------|
+| Где лежит | `docker/` | корень |
+| Что запускает | Только PostgreSQL | 4 сервиса |
+| Backend | На хосте (`python run_server.py`) | В контейнере `aps_backend` |
+| Frontend | На хосте (`npm run dev`) | В контейнере `aps_frontend` |
+| Nginx | ❌ | ✅ (`aps_nginx`) |
+| Hot-reload | ✅ (uvicorn `--reload`, Vite HMR) | ❌ (пересборка образа) |
+| Порты наружу | `5432:5432` (БД на хосте) | **80, 443** (только nginx) |
+| `.env` | `backend/.env` | `.env` в корне |
+| DB host | `localhost:5432` | `postgres:5432` (имя сервиса) |
+
+**Ключевое:** в prod **весь стек изолирован в Docker**. Хост-VM содержит только Docker engine и папку с проектом.
+
+### Почему именно так
+
+| Решение | Альтернатива | Почему выбрано |
+|---------|--------------|----------------|
+| **Docker Compose** | Kubernetes, Docker Swarm, Nomad | Для 1 VM и 4 сервисов — избыточно. Compose проще, без control-plane. |
+| **Два nginx** | Один nginx с обеими ролями | Разделение ответственности, пересборка frontend без трогания внешнего. |
+| **Build-time VITE_API_URL** | Runtime-конфиг через `window.APP_CONFIG` | Стандарт Vite. Альтернатива сложна и добавляет JS-загрузку конфига. |
+| **Non-root user в backend** | Root | Безопасность. При компрометации backend — ограниченные привилегии. |
+| **`--workers 2`** | `--workers 1` или `--workers 4` | Компромисс для 2-vCPU VM. `2` даёт параллелизм, `1` — простоту, `4` — перегруз. |
+| **Volume `pgdata` named** | Bind mount на хост | Портативность. `docker compose down` не удаляет данные. |
+
+### Связанные документы
+
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** — пошаговое развёртывание в облаке (VM, Docker, HTTPS, бэкапы).
+- **[DOCKER.md](DOCKER.md)** — детали Docker-инфраструктуры (Dockerfile, отладка, обновление).
+- **[CONFIGURATION.md](CONFIGURATION.md)** — переменные окружения (dev vs prod).
+- **[OPERATIONS.md](OPERATIONS.md)** — операции с БД в Docker.
+- **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** — проблемы Docker / облака (пп. 120–146).
 
 ---
 

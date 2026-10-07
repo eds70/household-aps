@@ -26,6 +26,7 @@
 - [Интерактивный туториал (15.3)](#интерактивный-туториал-153)
 - [FAQ (15.4)](#faq-154)
 - [Редактирование статей через UI (15.5)](#редактирование-статей-через-ui-155)
+- [Docker / облако (production)](#docker--облако-production)
 - [Диагностика](#диагностика)
 
 ---
@@ -119,6 +120,11 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_XX.sql
 | `is_archived` | `add_23.sql` |
 | `help_article` (таблица) | `add_24.sql` |
 | `help_hint` (таблица) | `add_25.sql` |
+| `audit_saved_view` (таблица) | `add_28.sql` |
+
+> **Замечание:** если разворачиваете с нуля через `backend/init_schema_v4.9.sql`
+> + `init_schema_v4.9_seed.sql` — **все эти миграции уже включены**. Проблема
+    > возникает только при апгрейде старой БД.
 
 ---
 
@@ -270,9 +276,9 @@ taskkill /PID <pid> /F
 
 **Симптом:** `401 Unauthorized` после некоторого времени работы.
 
-**Причина:** `JWT_EXPIRES_MINUTES` (по умолчанию 60).
+**Причина:** `ACCESS_TOKEN_EXPIRE_MINUTES` (по умолчанию 1440 = 24 часа).
 
-**Решение:** войти заново или увеличить `JWT_EXPIRES_MINUTES` в `.env`.
+**Решение:** войти заново или увеличить `ACCESS_TOKEN_EXPIRE_MINUTES` в `.env`.
 
 ---
 
@@ -485,7 +491,7 @@ npm install
 **Решение:**
 
 1. Проверить, что backend запущен: `curl http://localhost:8000/docs`.
-2. Проверить `CORS_ORIGINS` в `.env`.
+2. Проверить `ALLOWED_ORIGINS` в `.env`.
 3. Проверить `vite.config.ts` (proxy).
 
 ---
@@ -496,7 +502,7 @@ npm install
 
 **Причина:** `has_snapshot = false` — снапшоты справочников не заполнены.
 
-**Решение:** см. пункт 33 (в разделе «Снапшоты справочников»).
+**Решение:** см. пункт 59 (в разделе «Снапшоты справочников»).
 
 ---
 
@@ -506,7 +512,7 @@ npm install
 
 **Причина:** `currentPlanHasSnapshot === false` в `PlanContext`.
 
-**Решение:** см. пункт 33.
+**Решение:** см. пункт 59.
 
 ---
 
@@ -514,9 +520,25 @@ npm install
 
 **Симптом:** в левом сайдбаре нет пункта «Аудит».
 
-**Причина:** это **by design** — в Итерации 13.16 раздел «Аудит» временно скрыт из меню.
+**Причина:** в **старых версиях** (до Итерации 16) — by design, раздел был временно скрыт. **С версии 4.9.0** — пункт меню должен быть виден.
 
-**Решение (если нужна отладка):** открыть страницу по прямой ссылке: http://localhost:5173/audit
+**Решение:**
+
+1. Проверить, что `frontend/src/components/layout/MainLayout.tsx` содержит:
+   ```tsx
+   { path: '/audit', label: 'Аудит', icon: <HistoryIcon /> },
+   ```
+2. Проверить, что `frontend/src/App.tsx` содержит:
+   ```tsx
+   <Route path="audit" element={<AuditPage />} />
+   ```
+3. Если оба на месте, но пункта нет — очистить кэш:
+   ```bash
+   cd frontend
+   Remove-Item -Recurse -Force node_modules\.vite
+   npm run dev
+   ```
+4. Пока — открыть по прямой ссылке: http://localhost:5173/audit
 
 ---
 
@@ -605,7 +627,7 @@ docker run --name aps_postgres \
   -e POSTGRES_PASSWORD=aps_secret \
   -e POSTGRES_DB=household \
   -p 5432:5432 \
-  -d postgres:16
+  -d postgres:17
 ```
 
 ---
@@ -619,9 +641,11 @@ docker run --name aps_postgres \
 **Решение:** применять через `docker cp` + `psql -f`:
 
 ```bash
-docker cp backend/init_schema.sql aps_postgres:/tmp/init_schema.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema.sql
+docker cp backend/init_schema_v4.9.sql aps_postgres:/tmp/init_schema_v4.9.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema_v4.9.sql
 ```
+
+**Для production (Docker):** см. пункт 127 в разделе «Docker / облако».
 
 ---
 
@@ -649,6 +673,7 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema.sql
 | `equipment_snapshot (id, version_id)` | Дубль снапшота | `ON CONFLICT DO NOTHING` (by design) |
 | `help_article (slug)` | Дубль статьи | `ON CONFLICT (slug) DO NOTHING` |
 | `help_hint (hint_key)` | Дубль подсказки | `ON CONFLICT (hint_key) DO NOTHING` |
+| `audit_saved_view (organization_id, user_id, name)` | Дубль имени представления | Выбрать другое имя |
 
 ---
 
@@ -669,7 +694,7 @@ docker run --name aps_postgres \
   -e POSTGRES_PASSWORD=aps_secret \
   -e POSTGRES_DB=household \
   -p 5432:5432 \
-  -d postgres:16
+  -d postgres:17
 ```
 
 ---
@@ -1517,6 +1542,9 @@ SELECT COUNT(*) FROM help_article;
 
 Должно быть **31** (после Итерации 15.3).
 
+> **Альтернатива:** если разворачиваете через `init_schema_v4.9.sql` +
+> `init_schema_v4.9_seed.sql` — все статьи уже внутри.
+
 ---
 
 ### 85. Статья не открывается (404)
@@ -2057,8 +2085,7 @@ ORDER BY display_order;
 
 Должно быть 15 строк с префиксом `faq-`.
 
-**Шаг 3. Перезагрузить страницу** (`Ctrl+F5`) — если FAQ-статьи добавлены
-уже после открытия страницы.
+**Шаг 3. Перезагрузить страницу** (`Ctrl+F5`).
 
 **Шаг 4. Проверить через API:**
 
@@ -2123,8 +2150,6 @@ curl -s http://localhost:8000/api/v1/help/categories \
   "article_count": 15
 }
 ```
-
-Если ответ пустой — backend не видит FAQ-статьи в БД (см. пункт 102).
 
 **Шаг 4. Hard reload на фронте** (`Ctrl+Shift+R`).
 
@@ -2250,9 +2275,6 @@ SELECT slug, title FROM help_article WHERE category = 'faq' ORDER BY display_ord
 
 Заголовки должны быть читаемыми на русском.
 
-**Профилактика:** никогда не применять SQL-файлы с кириллицей через
-`Get-Content | docker exec` — только `docker cp` + `psql -f`.
-
 ---
 
 ### 107. FAQ-статьи дублируются в поиске и категориях
@@ -2344,8 +2366,7 @@ WHERE slug = 'faq-xxx';
 "
 ```
 
-Полная проверка ссылок — в тестах `tests/test_help_faq.py`
-(`test_faq_articles_link_to_existing_slugs`).
+Полная проверка ссылок — в тестах `tests/test_help_faq.py`.
 
 ---
 
@@ -2545,9 +2566,777 @@ SELECT DISTINCT category FROM help_article ORDER BY category;
 
 ---
 
+## Docker / облако (production)
+
+Проблемы при развёртывании через `docker-compose.prod.yml`.
+
+### 120. `curl` в PowerShell ведёт себя странно
+
+**Симптом:** команда `curl -I http://localhost/health` в PowerShell
+выдаёт `Invoke-WebRequest : Укажите значения для следующих параметров: Uri`.
+
+**Причина:** в PowerShell `curl` — это **алиас** для `Invoke-WebRequest`,
+а не настоящий curl из Linux. Флаги `-I`, `-X`, `-d` работают иначе.
+
+**Решение:** использовать **`curl.exe`** (настоящий curl из `System32`):
+
+```powershell
+curl.exe -I http://your-server-ip/health
+```
+
+Или PowerShell-нативный вариант:
+
+```powershell
+(Invoke-WebRequest -Uri http://your-server-ip/health -UseBasicParsing).Content
+```
+
+**Правило:** в PowerShell `curl` без `.exe` — **всегда** `Invoke-WebRequest`.
+
+---
+
+### 121. `docker compose down -v` удалил базу данных
+
+**Симптом:** после `docker compose -f docker-compose.prod.yml down -v`
+БД пуста, все данные потеряны.
+
+**Причина:** флаг `-v` **удаляет именованные volumes**, включая `pgdata`.
+
+**Решение:**
+
+**Шаг 1.** Если есть бэкап — восстановить:
+```bash
+gunzip -c backup_YYYYMMDD_HHMMSS.sql.gz | \
+    docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U aps -d household
+```
+
+**Шаг 2.** Если бэкапа нет — БД пересоздать:
+```bash
+./scripts/deploy_init.sh   # или .ps1
+```
+
+**Профилактика:**
+- **Никогда** не использовать `down -v` без явного намерения удалить данные.
+- Настроить cron-бэкап (см. [DEPLOYMENT.md](DEPLOYMENT.md), шаг 11).
+- Остановка — только `docker compose -f docker-compose.prod.yml down`.
+
+---
+
+### 122. Backend падает с `connection refused` (PostgreSQL)
+
+**Симптом:** `docker compose logs backend` показывает `ConnectionRefusedError:
+[Errno 111] Connection refused`.
+
+**Причина:** backend стартует **раньше**, чем PostgreSQL готов принимать
+соединения.
+
+**Решение:**
+
+**Шаг 1.** Проверить `docker-compose.prod.yml`:
+```yaml
+depends_on:
+  postgres:
+    condition: service_healthy
+```
+
+**Шаг 2.** Проверить, что у `postgres` есть `healthcheck`:
+```yaml
+healthcheck:
+  test: ["CMD-SHELL", "pg_isready -U aps -d household"]
+  interval: 5s
+  timeout: 5s
+  retries: 12
+  start_period: 20s
+```
+
+**Шаг 3.** Проверить статус:
+```bash
+docker compose -f docker-compose.prod.yml ps
+```
+
+`aps_postgres` должен быть `Up (healthy)`.
+
+**Если проблема есть при правильном конфиге** — перезапустить:
+```bash
+docker compose -f docker-compose.prod.yml restart backend
+```
+
+---
+
+### 123. Frontend стучится на `localhost:8000` вместо домена
+
+**Симптом:** страница открывается, но запросы к API идут на
+`http://localhost:8000` → `Network Error`.
+
+**Причина:** `VITE_API_URL` не задан при **сборке** frontend.
+
+**Ключевое:** Vite вшивает переменные `VITE_*` в бандл **на этапе сборки**,
+не в runtime.
+
+**Решение:**
+
+**Шаг 1.** Проверить `.env` в корне:
+```bash
+grep VITE_API_URL .env
+```
+
+**Шаг 2.** Пересобрать frontend:
+```bash
+docker compose -f docker-compose.prod.yml build --no-cache frontend
+docker compose -f docker-compose.prod.yml up -d frontend
+```
+
+**Шаг 3.** Проверить в браузере: DevTools → Network → запросы должны
+идти на `https://your-domain.com/api/v1/...`.
+
+---
+
+### 124. CORS-ошибка: `No 'Access-Control-Allow-Origin'`
+
+**Симптом:** в браузере `Access to XMLHttpRequest at 'http://your-server-ip/api/v1/...'
+from origin 'http://your-server-ip' has been blocked by CORS policy`.
+
+**Причина:** домен/IP облака не в `ALLOWED_ORIGINS`.
+
+**Решение:**
+
+**Шаг 1.** Проверить `.env`:
+```bash
+grep ALLOWED_ORIGINS .env
+# Ожидаемо: ALLOWED_ORIGINS=http://your-server-ip,https://your-domain.com
+```
+
+**Шаг 2.** Перезапустить backend:
+```bash
+docker compose -f docker-compose.prod.yml restart backend
+```
+
+**Частая ошибка:** `ALLOWED_ORIGINS` с пробелами (`a, b`) — использовать
+**без пробелов**.
+
+---
+
+### 125. `Port is already allocated` при `up -d`
+
+**Симптом:** `docker compose up -d` падает с
+`Error response from daemon: Ports are not available: exposing port TCP 0.0.0.0:80
+-> 0.0.0.0:0: listen tcp 0.0.0.0:80: bind: address already in use`.
+
+**Причина:** порт 80 (или 443) занят другим процессом.
+
+**Решение:**
+
+**Шаг 1.** Найти занятый порт:
+```bash
+sudo lsof -i :80
+# или
+sudo netstat -tlnp | grep :80
+```
+
+**Шаг 2.** Остановить конфликтующий сервис:
+```bash
+sudo systemctl stop nginx
+sudo systemctl disable nginx
+```
+
+**Шаг 3.** Проверить, что порты свободны:
+```bash
+sudo lsof -i :80
+sudo lsof -i :443
+```
+
+**Шаг 4.** Запустить снова:
+```bash
+docker compose -f docker-compose.prod.yml up -d
+```
+
+---
+
+### 126. `dependency failed to start: container aps_postgres is unhealthy`
+
+**Симптом:** `docker compose up -d` → `dependency failed to start`.
+
+**Причина:** PostgreSQL не может инициализироваться — обычно из-за прав
+доступа к volume `pgdata` или неправильных `POSTGRES_*` env.
+
+**Решение:**
+
+**Шаг 1.** Посмотреть логи postgres:
+```bash
+docker compose -f docker-compose.prod.yml logs postgres --tail=100
+```
+
+**Шаг 2.** Частые причины:
+- `POSTGRES_PASSWORD` не задан.
+- Volume `pgdata` повреждён (был создан с другим паролем).
+- Не хватает места на диске.
+
+**Шаг 3.** Если volume повреждён:
+```bash
+# ⚠️ ЭТО УДАЛИТ ДАННЫЕ. Только если БД не нужна.
+docker compose -f docker-compose.prod.yml down
+docker volume rm household-aps_pgdata
+docker compose -f docker-compose.prod.yml up -d
+```
+
+---
+
+### 127. Кириллица в БД превратилась в `????`
+
+**Симптом:** статьи справки, названия смен, имена пользователей —
+всё русское отображается как `????` или `ÐŸÑ€Ð¸Ð²ÐµÑ‚`.
+
+**Причина:** SQL-файл применён через **pipe**.
+
+**Решение:**
+
+**Шаг 1.** Понять, что испорчено:
+```bash
+docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U aps -d household -c "SELECT slug, title FROM help_article LIMIT 3;"
+```
+
+**Шаг 2.** Удалить испорченные seed-данные:
+```bash
+docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U aps -d household -c "DELETE FROM help_article WHERE category = 'faq';"
+```
+
+**Шаг 3.** Применить заново **правильным способом**:
+```bash
+docker compose -f docker-compose.prod.yml cp \
+    backend/init_schema_v4.9_seed.sql postgres:/tmp/init_schema_v4.9_seed.sql
+docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U aps -d household -f /tmp/init_schema_v4.9_seed.sql
+```
+
+**Правило:** SQL-файлы с кириллицей — **только** `docker cp` + `psql -f`.
+
+---
+
+### 128. `permission denied` при `docker ps` / `docker compose`
+
+**Симптом:** `permission denied while trying to connect to the Docker daemon
+socket at unix:///var/run/docker.sock`.
+
+**Причина:** пользователь не в группе `docker`.
+
+**Решение:**
+
+```bash
+sudo usermod -aG docker $USER
+newgrp docker
+```
+
+Затем перелогиниться (выйти и зайти снова по SSH).
+
+**Проверка:**
+```bash
+groups | grep docker
+docker ps
+```
+
+---
+
+### 129. `--workers 2` + `Too many connections` в PostgreSQL
+
+**Симптом:** в логах backend — `asyncpg.exceptions.TooManyConnectionsError:
+sorry, too many clients already`.
+
+**Причина:** 2 uvicorn worker'а создают **отдельный пул соединений** к БД.
+
+**Решение:**
+
+**Вариант 1 — уменьшить workers до 1:**
+```yaml
+command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+```
+
+**Вариант 2 — увеличить `max_connections` PostgreSQL:**
+```bash
+docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U aps -c "ALTER SYSTEM SET max_connections = 200;"
+docker compose -f docker-compose.prod.yml restart postgres
+```
+
+**Вариант 3 — настроить pool_size** в `backend/app/auth/dependencies.py`:
+```python
+_engine = create_async_engine(
+    settings.DATABASE_URL,
+    echo=False,
+    pool_size=3,
+    max_overflow=5,
+)
+```
+
+**Рекомендация:** для теста пользователем — `--workers 1`.
+
+---
+
+### 130. `VITE_API_URL` изменили, но frontend не обновился
+
+**Симптом:** поменяли `VITE_API_URL` в `.env`, перезапустили `up -d`, но
+frontend всё равно стучится на старый URL.
+
+**Причина:** `VITE_API_URL` вшивается **при сборке образа**.
+
+**Решение:**
+
+**Шаг 1.** Пересобрать frontend:
+```bash
+docker compose -f docker-compose.prod.yml build --no-cache frontend
+docker compose -f docker-compose.prod.yml up -d frontend
+```
+
+**Шаг 2.** Hard reload в браузере (`Ctrl+Shift+R`).
+
+**Шаг 3.** Проверить, что новый URL вшит:
+```bash
+docker compose -f docker-compose.prod.yml exec frontend \
+    grep -r "your-domain.com" /usr/share/nginx/html/assets/ | head -3
+```
+
+**Правило:** после изменения любой `VITE_*` переменной — пересобрать frontend.
+
+---
+
+### 131. Nginx выдаёт `502 Bad Gateway`
+
+**Симптом:** браузер → `502 Bad Gateway`, в логах nginx — `connect() failed
+(111: Connection refused)`.
+
+**Причина:** nginx не может достучаться до backend или frontend.
+
+**Решение:**
+
+**Шаг 1.** Проверить статус:
+```bash
+docker compose -f docker-compose.prod.yml ps
+```
+
+**Шаг 2.** Логи backend:
+```bash
+docker compose -f docker-compose.prod.yml logs backend --tail=50
+```
+
+**Шаг 3.** Проверить сеть:
+```bash
+docker compose -f docker-compose.prod.yml exec nginx \
+    ping -c 1 backend
+docker compose -f docker-compose.prod.yml exec nginx \
+    ping -c 1 frontend
+```
+
+**Шаг 4.** Проверить имена сервисов в `nginx/nginx.conf`:
+```nginx
+upstream aps_backend {
+    server backend:8000;   # ← должно быть "backend", не "aps_backend"
+}
+```
+
+---
+
+### 132. Nginx не отдаёт SPA-роуты (`/audit`, `/help/xxx`) — 404
+
+**Симптом:** главная работает, но прямой переход на `/audit` → 404.
+
+**Причина:** nginx не делает SPA-fallback. Проверить в **внутреннем**
+nginx (`frontend/nginx.conf`).
+
+**Решение:**
+
+**Шаг 1.** Проверить в `frontend/nginx.conf`:
+```nginx
+location / {
+    try_files $uri $uri/ /index.html;
+}
+```
+
+**Шаг 2.** Пересобрать frontend:
+```bash
+docker compose -f docker-compose.prod.yml build --no-cache frontend
+docker compose -f docker-compose.prod.yml up -d frontend
+```
+
+**Шаг 3.** Проверить:
+```bash
+curl.exe -I http://your-server-ip/audit
+# Ожидаемо: HTTP/1.1 200 OK
+```
+
+---
+
+### 133. Сайт работает по HTTP, но HTTPS не поднимается
+
+**Симптом:** после настройки certbot `https://your-domain.com` не
+открывается.
+
+**Возможные причины и решения:**
+
+| Причина | Решение |
+|---------|---------|
+| Сертификаты не скопированы в `nginx/certs/` | Проверить: `ls nginx/certs/` |
+| Порты 443 не проброшены | Раскомментировать `- "443:443"` в compose |
+| Порт 443 закрыт в firewall | `sudo ufw allow 443/tcp` |
+| Security Group облака блокирует 443 | Открыть 443 в консоли |
+| Опечатка в `server_name` | Проверить домен в `nginx/nginx.conf` |
+| Плейсхолдер `your-domain.com` не заменён | `grep -r "your-domain.com" nginx/` |
+
+**Проверка SSL:**
+```bash
+openssl s_client -connect your-domain.com:443 -servername your-domain.com < /dev/null
+```
+
+Должно быть `Verify return code: 0 (ok)`.
+
+---
+
+### 134. `504 Gateway Timeout` при построении плана
+
+**Симптом:** POST `/api/v1/schedule/build` возвращает 504 через 60 секунд.
+
+**Причина:** дефолтный `proxy_read_timeout` в nginx — 60 секунд.
+
+**Решение:**
+
+**Шаг 1.** В `nginx/nginx.conf` для `location /api/`:
+```nginx
+proxy_read_timeout 900s;
+proxy_send_timeout 900s;
+```
+
+**Шаг 2.** Перезапустить nginx:
+```bash
+docker compose -f docker-compose.prod.yml restart nginx
+```
+
+**Шаг 3.** Если не помогло — уменьшить `timeout_seconds`:
+
+**UI:** Настройки → Таймаут solver → `300`.
+
+**SQL:**
+```bash
+docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U aps -d household -c "
+UPDATE app_settings
+SET setting_value = '300'::jsonb
+WHERE setting_key = 'timeout_seconds';
+"
+```
+
+---
+
+### 135. Логи Docker занимают весь диск
+
+**Симптом:** `df -h` показывает 100% на `/var/lib/docker`.
+
+**Причина:** без ограничения размера логи растут неограниченно.
+
+**Решение:**
+
+**Шаг 1.** Проверить текущий размер:
+```bash
+sudo du -sh /var/lib/docker/containers/*/*-json.log
+```
+
+**Шаг 2.** Очистить логи:
+```bash
+sudo truncate -s 0 /var/lib/docker/containers/*/*-json.log
+```
+
+**Шаг 3.** Настроить ограничение в `docker-compose.prod.yml`:
+```yaml
+logging:
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+```
+
+**Шаг 4.** Пересоздать контейнеры:
+```bash
+docker compose -f docker-compose.prod.yml up -d
+```
+
+---
+
+### 136. `unsupported locale` при `psql`
+
+**Симптом:** `WARNING: database "household" has a collation version mismatch`.
+
+**Причина:** несовпадение локали хоста и контейнера.
+
+**Решение:**
+
+**Шаг 1.** Проверить кодировку:
+```bash
+docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U aps -d household -c "SHOW lc_collate; SHOW server_encoding;"
+```
+
+**Ожидаемо:**
+```
+lc_collate   | C
+server_encoding | UTF8
+```
+
+**Шаг 2.** Если не так — пересоздать БД (`deploy_init.sh` с
+`init_schema_v4.9.sql`).
+
+---
+
+### 137. `docker compose build` падает на `ortools` (долго)
+
+**Симптом:** при сборке backend `pip install ortools` занимает 5+ минут.
+
+**Причина:** `ortools` — большой пакет (~150 MB).
+
+**Решение:**
+
+**Шаг 1.** Увеличить timeout:
+```bash
+docker compose -f docker-compose.prod.yml build backend
+```
+
+**Шаг 2.** Проверить интернет:
+```bash
+curl -I https://pypi.org/simple/ortools/
+```
+
+**Ожидаемое время:** первая сборка — 5–10 минут.
+
+---
+
+### 138. `Hot reload` не работает в Docker (ожидаемо)
+
+**Симптом:** изменили код в `backend/app/`, но в контейнере — старая версия.
+
+**Причина:** это **by design** для prod.
+
+**Решение:**
+
+**Шаг 1.** Пересобрать образ:
+```bash
+docker compose -f docker-compose.prod.yml build backend
+docker compose -f docker-compose.prod.yml up -d backend
+```
+
+**Шаг 2.** Для dev — использовать dev-режим:
+```bash
+docker compose -f docker/docker-compose.yml up -d
+cd backend && python run_server.py
+```
+
+---
+
+### 139. Frontend отдаётся, но иконки/шрифты 404
+
+**Симптом:** UI отображается, но иконки (MUI) не грузятся.
+
+**Причина:** файлы не попали в финальный образ.
+
+**Решение:**
+
+**Шаг 1.** Проверить содержимое:
+```bash
+docker compose -f docker-compose.prod.yml exec frontend \
+    ls /usr/share/nginx/html/assets/ | head -10
+```
+
+**Шаг 2.** Проверить `frontend/nginx.conf`:
+```nginx
+location /assets/ {
+    try_files $uri =404;
+}
+```
+
+**Шаг 3.** Пересобрать:
+```bash
+docker compose -f docker-compose.prod.yml build --no-cache frontend
+docker compose -f docker-compose.prod.yml up -d frontend
+```
+
+---
+
+### 140. Контейнер backend `restarting` в цикле
+
+**Симптом:** `docker compose ps` показывает `aps_backend` в статусе
+`Restarting (1) X seconds ago`.
+
+**Причина:** приложение падает при старте.
+
+**Решение:**
+
+**Шаг 1.** Посмотреть логи:
+```bash
+docker compose -f docker-compose.prod.yml logs backend --tail=100
+```
+
+**Шаг 2.** Частые причины:
+
+| Ошибка в логах | Причина | Решение |
+|----------------|---------|---------|
+| `ModuleNotFoundError: app` | Неправильный `WORKDIR` | Проверить `WORKDIR /app` |
+| `pydantic_settings.errors.SettingsError` | Отсутствует env | Проверить `.env` |
+| `asyncpg.exceptions.InvalidPasswordError` | Неверный пароль | Синхронизировать `.env` |
+| `ImportError: snapshot` | Не применён `add_21.sql` | Применить миграции |
+| `SECRET_KEY слишком короткий` | `SECRET_KEY` < 32 символов | `openssl rand -hex 32` |
+
+**Шаг 3.** После исправления — перезапустить:
+```bash
+docker compose -f docker-compose.prod.yml restart backend
+```
+
+---
+
+### 141. Случайно удалили volume `pgdata`
+
+**Симптом:** `docker volume rm household-aps_pgdata` → БД пуста.
+
+**Решение:**
+
+**Если есть бэкап:**
+```bash
+docker compose -f docker-compose.prod.yml up -d postgres
+gunzip -c ~/backups/household_YYYYMMDD_HHMMSS.sql.gz | \
+    docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U aps -d household
+```
+
+**Если бэкапа нет:**
+1. Восстановить структуру через `deploy_init.sh`.
+2. Восстановить данные из других источников.
+
+**Профилактика:**
+- Cron-бэкап — **обязательно**.
+- Не удалять volume'ы вручную.
+- Не запускать `down -v`.
+
+---
+
+### 142. Долгий старт контейнеров (backoff)
+
+**Симптом:** `up -d` запускает сервисы, но первые 30–60 секунд `/health`
+возвращает 502.
+
+**Причина:** PostgreSQL инициализируется, backend грузит OR-Tools.
+
+**Решение:** это **нормально**. Подождать 30–60 секунд. В `backend` есть
+`healthcheck` с `start_period: 60s`.
+
+**Если 5+ минут** — проблема (см. другие пункты).
+
+---
+
+### 143. Бэкап не восстанавливается
+
+**Симптом:** `pg_restore` или `psql < backup.sql` падает с
+`ERROR: role "aps" does not exist`.
+
+**Причина:** при восстановлении **в новую БД** — роли и БД ещё не созданы.
+
+**Решение:**
+
+**Шаг 1.** Создать пользователя и БД:
+```bash
+docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U postgres -c "CREATE USER aps WITH PASSWORD 'aps_secret';"
+docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U postgres -c "CREATE DATABASE household OWNER aps;"
+```
+
+**Шаг 2.** Применить бэкап:
+```bash
+gunzip -c backup.sql.gz | \
+    docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U aps -d household
+```
+
+---
+
+### 144. После `down -v` остались volume'ы БД
+
+**Симптом:** сделали `docker compose down -v`, но `docker volume ls` показывает
+`household-aps_pgdata`.
+
+**Причина:** `-v` удаляет только volumes из **этого** compose-файла.
+
+**Решение:**
+
+**Шаг 1.** Посмотреть все volumes:
+```bash
+docker volume ls | grep pgdata
+```
+
+**Шаг 2.** Удалить ненужные:
+```bash
+docker volume rm household-aps_pgdata
+docker volume rm docker_pgdata
+```
+
+---
+
+### 145. Файлы `.env` случайно попали в git
+
+**Симптом:** `git log --all --full-history -- .env` показывает коммиты
+с реальным `SECRET_KEY`.
+
+**Решение:**
+
+**Шаг 1.** Удалить из истории:
+```bash
+git filter-branch --force --index-filter \
+    "git rm --cached --ignore-unmatch .env backend/.env" \
+    --prune-empty --tag-name-filter cat -- --all
+```
+
+**Шаг 2.** Force push:
+```bash
+git push origin --force --all
+```
+
+**Шаг 3.** **Обязательно** сменить все утекшие секреты:
+- `SECRET_KEY` — новый.
+- `POSTGRES_PASSWORD` — новый.
+- `CZ_API_KEY` — новый.
+
+**Шаг 4.** Добавить в `.gitignore`:
+```
+.env
+.env.local
+backend/.env
+```
+
+---
+
+### 146. Домен не резолвится / DNS не обновился
+
+**Симптом:** `curl https://your-domain.com` → `Could not resolve host`.
+
+**Причина:** DNS-запись ещё не обновилась, или не настроена.
+
+**Решение:**
+
+**Шаг 1.** Проверить DNS:
+```bash
+nslookup your-domain.com
+```
+
+**Шаг 2.** Настроить A-запись у DNS-провайдера:
+- Type: `A`
+- Name: `@`
+- Value: IP сервера
+- TTL: 300
+
+**Шаг 3.** Дождаться обновления (5–30 минут при TTL 300).
+
+**Пока DNS не работает** — использовать IP-адрес.
+
+---
+
 ## Диагностика
 
-### 117. Общая проверка системы
+### 147. Общая проверка системы
 
 ```bash
 # PostgreSQL
@@ -2609,6 +3398,11 @@ SELECT COUNT(*) AS faq_articles FROM help_article WHERE category = 'faq';
 docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT COUNT(*) AS tutorial_articles FROM help_article WHERE slug = 'tutorial-interactive';
 "
+
+# Сохранённые представления аудита
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT COUNT(*) AS saved_views FROM audit_saved_view;
+"
 ```
 
 **Ожидаемые значения:**
@@ -2621,10 +3415,13 @@ SELECT COUNT(*) AS tutorial_articles FROM help_article WHERE slug = 'tutorial-in
 | `tutorial_articles` | 1 |
 | `active` версия | 1 |
 | `plan_settings` активного плана | >0 |
+| `saved_views` | >= 0 |
 
 ---
 
-### 118. Полная очистка и пересоздание
+### 148. Полная очистка и пересоздание
+
+**Dev** (PostgreSQL в Docker):
 
 ```bash
 # 1. Снести контейнер
@@ -2636,46 +3433,48 @@ docker run --name aps_postgres \
   -e POSTGRES_PASSWORD=aps_secret \
   -e POSTGRES_DB=household \
   -p 5432:5432 \
-  -d postgres:16
+  -d postgres:17
 
-# 3. Применить схему
-docker cp backend/init_schema.sql aps_postgres:/tmp/init_schema.sql
+# 3. Применить схему v4.9.0
+docker cp backend/init_schema_v4.9.sql aps_postgres:/tmp/init_schema_v4.9.sql
+docker cp backend/init_schema_v4.9_seed.sql aps_postgres:/tmp/init_schema_v4.9_seed.sql
 docker cp backend/seed_demo_data.sql aps_postgres:/tmp/seed_demo_data.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema_v4.9.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema_v4.9_seed.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/seed_demo_data.sql
 
-# 4. Применить миграции
-$migrations = @("add_06.sql", "add_06b.sql", "add_07.sql", "add_08.sql",
-                "fix_versions_hotfix.sql",
-                "add_09.sql", "add_09b.sql", "add_09c.sql", "add_09d.sql",
-                "add_10.sql", "add_10b.sql", "add_11.sql", "add_12.sql",
-                "add_13.sql", "add_14.sql", "add_15.sql", "add_16.sql",
-                "add_17.sql", "add_18.sql", "add_19.sql", "add_20.sql",
-                "add_21.sql", "add_22.sql", "add_23.sql",
-                "add_24.sql", "add_24_seed_1.sql", "add_24_seed_2.sql", "add_24_seed_3.sql",
-                "add_25.sql", "add_25_seed.sql",
-                "add_26_seed_1.sql", "add_26_seed_2.sql", "add_26_seed_3.sql",
-                "add_27_seed_1.sql",
-                "fix_shift_names.sql", "fix_work_time.sql")
-foreach ($m in $migrations) {
-    docker cp "backend/migrations/$m" "aps_postgres:/tmp/$m"
-    docker exec -i aps_postgres psql -U aps -d household -f "/tmp/$m"
-}
-
-# 5. Создать админа
+# 4. Создать админа
 cd backend
 python -m scripts.create_admin_user
 
-# 6. Запустить backend и frontend
+# 5. Запустить backend и frontend
 python run_server.py
 cd ../frontend; npm run dev
 ```
 
+**Prod** (полный стек):
+
+```bash
+# 1. Остановить (БЕЗ -v!)
+docker compose -f docker-compose.prod.yml down
+
+# 2. Если нужно — удалить volume (⚠️ потеря данных)
+# docker volume rm household-aps_pgdata
+
+# 3. Запустить заново
+docker compose -f docker-compose.prod.yml up -d
+
+# 4. Инициализировать БД
+./scripts/deploy_init.sh    # или .ps1
+```
+
 ---
 
-### 119. Полезные ссылки
+### 149. Полезные ссылки
 
 - [README.md](../README.md) — основная документация.
+- [docs/DEPLOYMENT.md](DEPLOYMENT.md) — развёртывание в облаке.
+- [docs/DOCKER.md](DOCKER.md) — Docker: устройство и отладка.
 - [docs/OPERATIONS.md](OPERATIONS.md) — операции с БД.
 - [docs/CONFIGURATION.md](CONFIGURATION.md) — настройки.
 - [docs/ARCHITECTURE.md](ARCHITECTURE.md) — архитектура.

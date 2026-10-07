@@ -497,7 +497,17 @@ CONFIG_BLACKLIST = {
     # Параметры docker run PostgreSQL — не ENV приложения
     "postgres_user", "postgres_password", "postgres_db",
     "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB",
+    # Имена docker-сервисов — это НЕ setting_key (Итерация 16.x)
+    "backend", "frontend", "nginx", "postgres",
+    # Служебные слова в таблицах конфигурации
+    "service", "сервис", "компонент", "container", "контейнер",
+    "port", "порт", "host", "хост",
 }
+
+# Префиксы env-переменных frontend (не читаются backend'ом).
+# Используются в `docs/CONFIGURATION.md` для описания build-time
+# переменных Vite. Не проверяются против `config.py`.
+ENV_FRONTEND_PREFIXES: tuple[str, ...] = ("VITE_",)
 
 # JSONB-мусор: служебные поля audit-логов, snapshots, diff'ов.
 # Эти ключи встречаются в миграциях как "key": в теле INSERT,
@@ -730,8 +740,13 @@ def _collect_config_md_keys(root: Path) -> set[str]:
         for m in rx.finditer(text):
             keys.add(m.group(1))
     # Фильтр без учёта регистра: 'POSTGRES_USER' тоже исключаем,
-    # если в CONFIG_BLACKLIST есть 'postgres_user'
-    return {k for k in keys if k.lower() not in CONFIG_BLACKLIST}
+    # если в CONFIG_BLACKLIST есть 'postgres_user'.
+    # Дополнительно исключаем env-переменные frontend (VITE_*).
+    return {
+        k for k in keys
+        if k.lower() not in CONFIG_BLACKLIST
+           and not k.startswith(ENV_FRONTEND_PREFIXES)
+    }
 
 def check_config_keys(root: Path, report: Report, mode: str = "lenient") -> None:
     """
@@ -748,7 +763,10 @@ def check_config_keys(root: Path, report: Report, mode: str = "lenient") -> None
     app_keys = _collect_app_settings_keys(root)
     md_keys = _collect_config_md_keys(root)
 
-    md_env = {k for k in md_keys if k.isupper()}
+    md_env = {
+        k for k in md_keys
+        if k.isupper() and not k.startswith(ENV_FRONTEND_PREFIXES)
+    }
     md_lower = {k for k in md_keys if k.islower() or (k and k[0].islower())}
 
     report.stats["config_md_total"] = str(len(md_keys))

@@ -36,6 +36,16 @@ plan_settings  →  app_settings  →  .env  →  значения по умол
 - `read_settings_dict(db, org_id, keys, version_id=None)`.
 - `read_feature_flags(db, org_id, version_id=None)`.
 
+### Dev vs Prod (что где лежит)
+
+| Контекст | Файл `.env` | Назначение |
+|----------|-------------|------------|
+| **Dev** (локально) | `backend/.env` | Backend запускается на хосте, БД — в Docker на `localhost:5432` |
+| **Prod** (Docker) | `.env` в **корне** проекта | Все переменные пробрасываются в контейнеры через `docker-compose.prod.yml` |
+
+В **Dev** переменные читает `backend/app/core/config.py` (файл `backend/.env`).
+В **Prod** `backend/.env` **игнорируется** — переменные приходят из `environment:` в compose.
+
 ---
 
 ## app_settings
@@ -210,9 +220,19 @@ plan_settings  →  app_settings  →  .env  →  значения по умол
 
 ## .env
 
-**Файл `backend/.env`** — переменные окружения.
+Переменные окружения читаются через `backend/app/core/config.py` (класс `Settings`,
+`pydantic-settings`). Файл `.env` ищется в **директории запуска** приложения.
 
-### Пример
+### Два контекста
+
+| Контекст | Где лежит `.env` | Кто читает | Пример `DATABASE_URL` |
+|----------|------------------|-----------|----------------------|
+| **Dev** (локально) | `backend/.env` | `backend/app/core/config.py` | `postgresql+asyncpg://aps:aps_secret@localhost:5432/household` |
+| **Prod** (Docker) | `.env` в корне | `docker-compose.prod.yml` → `environment:` | `postgresql+asyncpg://aps:...@postgres:5432/household` (генерируется в compose) |
+
+**⚠️ Не коммитить ни один `.env`** — оба должны быть в `.gitignore`.
+
+### Dev: `backend/.env` (пример)
 
 ```env
 # Database
@@ -224,78 +244,152 @@ ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=1440
 
 # CORS
-ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
+ALLOWED_ORIGINS=http://localhost:5173,http://localhost:5174,http://localhost:3000
 
 # Application
 APP_NAME=APS Production Scheduler
-APP_VERSION=1.2.0
-DEBUG=false
+APP_VERSION=4.9.0
+DEBUG=true
 DEFAULT_ORG_ID=00000000-0000-0000-0000-000000000001
+```
+
+### Prod: `.env` в корне (пример)
+
+```env
+# PostgreSQL (для контейнера БД)
+POSTGRES_USER=aps
+POSTGRES_PASSWORD=change_me_strong_password_min_16_chars
+POSTGRES_DB=household
+
+# JWT
+SECRET_KEY=change_me_openssl_rand_hex_32_...
+ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=1440
+
+# CORS (домены/IP облака)
+ALLOWED_ORIGINS=https://your-domain.com,http://your-server-ip
+
+# Frontend (вшивается в бандл при сборке Vite, не читается backend'ом!)
+# После изменения — пересобрать: docker compose -f docker-compose.prod.yml build frontend
+VITE_API_URL=https://your-domain.com
+
+# Организация
+DEFAULT_ORG_ID=00000000-0000-0000-0000-000000000001
+
+# Application
+APP_NAME=APS Production Scheduler
+APP_VERSION=4.9.0
+DEBUG=false
+```
+
+**⚠️ Про `VITE_API_URL`:** вшивается в JS-бандл **при сборке frontend**. После изменения — **обязательно пересобрать** frontend:
+```bash
+docker compose -f docker-compose.prod.yml build frontend
+docker compose -f docker-compose.prod.yml up -d
 ```
 
 ### Переменные
 
-| Переменная | Обязательна | По умолчанию | Описание |
-|------------|-------------|--------------|----------|
-| `DATABASE_URL` | ✅ | — | Строка подключения к PostgreSQL |
-| `SECRET_KEY` | ✅ | — | Секрет для подписи JWT (мин. 32 символа) |
-| `ALGORITHM` | ❌ | `HS256` | Алгоритм JWT |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | ❌ | `1440` | Время жизни токена (мин) |
-| `ALLOWED_ORIGINS` | ❌ | `http://localhost:5173,http://localhost:3000` | CORS-источники через запятую |
-| `DEFAULT_ORG_ID` | ❌ | `00000000-0000-0000-0000-000000000001` | ID организации по умолчанию |
-| `APP_NAME` | ❌ | `APS Production Scheduler` | Название приложения |
-| `APP_VERSION` | ❌ | `1.2.0` | Версия приложения |
-| `DEBUG` | ❌ | `false` | Режим отладки |
+| Переменная | Обязательна (dev) | Обязательна (prod) | По умолчанию | Описание |
+|------------|-------------------|--------------------|--------------|----------|
+| `DATABASE_URL` | ✅ | ❌ (генерируется в compose) | `...@localhost:5432/household` | Строка подключения к PostgreSQL |
+| `SECRET_KEY` | ✅ | ✅ | `your-super-secret-key-...` | Секрет для подписи JWT (мин. 32 символа) |
+| `ALGORITHM` | ❌ | ❌ | `HS256` | Алгоритм JWT |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | ❌ | ❌ | `1440` | Время жизни токена (мин) |
+| `ALLOWED_ORIGINS` | ❌ | ✅ | `http://localhost:5173,...` | CORS-источники через запятую |
+| `DEFAULT_ORG_ID` | ❌ | ❌ | `00000000-...-0001` | ID организации по умолчанию |
+| `APP_NAME` | ❌ | ❌ | `APS Production Scheduler` | Название приложения |
+| `APP_VERSION` | ❌ | ❌ | `4.9.0` | Версия приложения |
+| `DEBUG` | ❌ | ❌ | `false` | Режим отладки (в prod — `false`) |
 
-**Читается через:** `backend/app/core/config.py` (класс `Settings`, `pydantic-settings`). Файл `.env` ищется в директории `backend/`. Регистр имён полей важен: `case_sensitive=True`.
+> **Про `VITE_API_URL`:** это **не backend env-переменная**, а build-time
+> переменная frontend. Читается Vite при сборке (`import.meta.env.VITE_API_URL`),
+> не backend'ом. Описана отдельно — в разделе «Prod: `.env` в корне (пример)»
+> и в [frontend/src/config.ts](../frontend/src/config.ts).
+
+**Регистр имён полей важен:** `case_sensitive=True` в `SettingsConfigDict`.
+
+**Сгенерировать `SECRET_KEY`:**
+```bash
+openssl rand -hex 32
+```
+
+**Сгенерировать `POSTGRES_PASSWORD`:**
+```bash
+openssl rand -base64 24
+```
 
 ---
 
 ## Docker-параметры
 
-### PostgreSQL
+### Dev: `docker/docker-compose.yml`
 
-Параметры `docker run` для контейнера PostgreSQL.
-
-> Эти переменные читает **PostgreSQL внутри контейнера**, а не приложение.
-> Приложение подключается к БД через `DATABASE_URL` (см. раздел `.env`).
+Только PostgreSQL. Порт пробрасывается на хост (`5432:5432`).
 
 ```bash
-docker run --name aps_postgres \
-  -e POSTGRES_USER=aps \
-  -e POSTGRES_PASSWORD=aps_secret \
-  -e POSTGRES_DB=household \
-  -p 5432:5432 \
-  -d postgres:16
+docker compose -f docker/docker-compose.yml up -d
 ```
 
 | Параметр | Значение | Описание |
 |----------|----------|----------|
+| Образ | `postgres:17` | |
 | `POSTGRES_USER` | `aps` | Пользователь БД |
-| `POSTGRES_PASSWORD` | `aps_secret` | Пароль |
+| `POSTGRES_PASSWORD` | `aps_secret` | Пароль (dev — упрощённый) |
 | `POSTGRES_DB` | `household` | Имя БД |
-| `-p` | `5432:5432` | Порт |
+| Порт | `5432:5432` | Пробрасывается на хост |
+| Volume | `pgdata` | Персистентные данные |
+
+### Prod: `docker-compose.prod.yml`
+
+4 сервиса: `postgres`, `backend`, `frontend`, `nginx` — все в Docker.
+Описание сервисов (образы, порты, volumes, зависимости) — в
+[docs/DOCKER.md](DOCKER.md).
+
+```bash
+docker compose -f docker-compose.prod.yml up -d
+```
+
+**Переменные для контейнера PostgreSQL** (читает сам образ `postgres:17`
+при инициализации):
+
+| Переменная | Обязательна | По умолчанию | Описание |
+|------------|-------------|--------------|----------|
+| `POSTGRES_USER` | ✅ | `aps` | Пользователь БД |
+| `POSTGRES_PASSWORD` | ✅ | — | Пароль БД (мин. 16 символов) |
+| `POSTGRES_DB` | ✅ | `household` | Имя БД |
+
+> **Эти переменные — НЕ для backend'а.** Они пробрасываются в контейнер
+> PostgreSQL через `environment:` в compose. Backend подключается к БД
+> через `DATABASE_URL`, который **автоматически** генерируется в compose
+> из этих трёх переменных с хостом `postgres` (имя сервиса).
+
+**⚠️ Не пробрасывайте `5432:5432`** для `postgres` — иначе БД будет
+доступна из интернета.
 
 ### Backend
 
 | Параметр | Значение | Описание |
 |----------|----------|----------|
-| Порт | `8000` | Uvicorn |
+| Порт | `8000` | Внутри контейнера |
 | Host | `0.0.0.0` | Слушает все интерфейсы |
-| Workers | `1` | Для async-приложения |
+| Workers | `2` (prod), `1` (dev) | Uvicorn workers |
+| Reload | `false` (prod), `true` (dev) | В prod — без файлового watcher |
 | Timeout | `600` | Solver timeout (по умолчанию) |
 
 ### Frontend
 
 | Параметр | Значение | Описание |
 |----------|----------|----------|
-| Порт | `5173` | Vite dev server |
-| Host | `localhost` | Локально |
-| API URL | `http://localhost:8000` | Backend |
+| Порт (host) | ❌ не пробрасывается | Только через nginx |
+| Порт (внутри) | `80` | nginx:alpine отдаёт статику |
+| API URL | `VITE_API_URL` | Вшивается при сборке |
 
 ---
 
 ## Приоритеты
+
+### Уровни настроек
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -323,6 +417,19 @@ docker run --name aps_postgres \
 │  └───────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+### Dev vs Prod (.env)
+
+| Переменная | В Dev | В Prod |
+|------------|-------|--------|
+| `DATABASE_URL` | Из `backend/.env` (`localhost:5432`) | **Генерируется** в compose (`postgres:5432`) |
+| `SECRET_KEY` | Из `backend/.env` (dev-значение) | Из `.env` в корне (**сильный**) |
+| `ALLOWED_ORIGINS` | `http://localhost:5173` | Домен/IP облака |
+| `VITE_API_URL` | Не задаётся (fallback `localhost:8000`) | Домен/IP облака |
+| `DEBUG` | `true` | `false` |
+| `APP_VERSION` | `4.9.0` | `4.9.0` |
+
+**Важно:** в Docker `backend/.env` **не читается** — переменные пробрасываются через `environment:` в compose. Файл `backend/.env` в образ **не копируется** (исключён в `backend/.dockerignore`).
 
 ---
 
@@ -478,11 +585,26 @@ seed-миграцию `add_27_seed_1.sql` (категория `getting-started`)
 
 **Дополнительных настроек** для туториала **не требуется**.
 
+### Docker (prod) — Итерация 16.x
+
+Для развёртывания в облаке добавлены:
+
+- **`.env.example`** (корень) — шаблон prod-переменных.
+- **`.env`** (корень) — реальные значения, не коммитится.
+- **`docker-compose.prod.yml`** (корень) — 4 сервиса.
+- **`backend/init_schema_v4.9.sql`** — полная схема v4.9.0.
+- **`backend/init_schema_v4.9_seed.sql`** — seed-статьи справки.
+- **`scripts/deploy_init.sh`** / **`.ps1`** — инициализация БД.
+
+Подробно — в [DEPLOYMENT.md](DEPLOYMENT.md) и [DOCKER.md](DOCKER.md).
+
 ---
 
 ## Ссылки
 
 - [README.md](../README.md) — основная документация.
+- [docs/DEPLOYMENT.md](DEPLOYMENT.md) — развёртывание в облаке.
+- [docs/DOCKER.md](DOCKER.md) — Docker: устройство и отладка.
 - [docs/ARCHITECTURE.md](ARCHITECTURE.md) — архитектура.
 - [docs/API.md](API.md) — описание API.
 - [docs/OPERATIONS.md](OPERATIONS.md) — операции с БД.

@@ -1,5 +1,5 @@
 // frontend/src/App.tsx
-import React, {useMemo} from 'react';
+import React, {useEffect, useMemo} from 'react';
 import {BrowserRouter, Navigate, Route, Routes, useNavigate} from 'react-router-dom';
 import {createTheme, ThemeProvider} from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
@@ -23,10 +23,11 @@ import PersonnelPage from './pages/PersonnelPage';
 import CzPage from './pages/CzPage';
 import SettingsPage from './pages/SettingsPage';
 import WhatIfPage from './pages/WhatIfPage';
-import AuditPage from './pages/AuditPage'; // ← НОВОЕ (Итерация 16.0)
+import AuditPage from './pages/AuditPage';
 import HelpPage from './pages/HelpPage';
 import {Box, CircularProgress} from '@mui/material';
 import {COMMON_TOUR_OPTIONS} from './tutorial/tours';
+import {APP_NAME} from './config'; // ← НОВОЕ
 
 const theme = createTheme({
     palette: {
@@ -279,6 +280,12 @@ const AppRoutes: React.FC = () => {
 // ==========================================
 
 const App: React.FC = () => {
+    // Итерация 16.x: устанавливаем title вкладки браузера.
+    // Значение берётся из config.ts (APP_NAME) — единый источник правды.
+    useEffect(() => {
+        document.title = APP_NAME;
+    }, []);
+
     return (
         <ThemeProvider theme={theme}>
             <CssBaseline />

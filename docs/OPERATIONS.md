@@ -6,7 +6,8 @@
 
 ## 📋 Содержание
 
-- [Все команды для БД](#все-команды-для-бд)
+- [Docker (production)](#docker-production)
+- [Все команды для БД (dev)](#все-команды-для-бд-dev)
 - [Применение миграций](#применение-миграций)
 - [Бэкапы и восстановление](#бэкапы-и-восстановление)
 - [Мониторинг](#мониторинг)
@@ -17,11 +18,188 @@
 - [Интерактивный туториал (Итерация 15.3)](#интерактивный-туториал-итерация-153)
 - [FAQ (Итерация 15.4)](#faq-итерация-154)
 - [Редактирование статей через UI (Итерация 15.5)](#редактирование-статей-через-ui-итерация-155)
+- [Проверка prod-развёртывания](#проверка-prod-развёртывания)
 - [Диагностика](#диагностика)
 
 ---
 
-## Все команды для БД
+## Docker (production)
+
+Всё взаимодействие с prod-развёртыванием — через `docker compose` с явным указанием файла `docker-compose.prod.yml`.
+
+### Псевдоним для удобства
+
+Все команды в этом разделе — из **корня проекта**. Чтобы не писать каждый раз `-f docker-compose.prod.yml`, можно завести псевдоним.
+
+**Bash / Git Bash:**
+```bash
+alias dcp="docker compose -f docker-compose.prod.yml"
+dcp ps
+dcp logs backend
+dcp exec postgres psql -U aps -d household
+```
+
+**PowerShell:**
+```powershell
+Set-Alias -Name dcp -Value "docker compose -f docker-compose.prod.yml"
+# Или — через функцию (потому что алиасы в PS не работают с аргументами)
+function dcp { docker compose -f docker-compose.prod.yml $args }
+```
+
+### Статус сервисов
+
+```bash
+docker compose -f docker-compose.prod.yml ps
+```
+
+**Ожидаемо:**
+```
+NAME            IMAGE                   STATUS
+aps_postgres    postgres:17             Up (healthy)
+aps_backend     <project>-backend       Up (healthy)
+aps_frontend    <project>-frontend      Up
+aps_nginx       nginx:alpine            Up
+```
+
+### Логи
+
+```bash
+# Все сервисы
+docker compose -f docker-compose.prod.yml logs -f
+
+# Только backend (последние 100 строк)
+docker compose -f docker-compose.prod.yml logs backend --tail=100
+
+# Только backend, фильтр по ошибкам
+docker compose -f docker-compose.prod.yml logs backend | grep ERROR
+
+# PostgreSQL
+docker compose -f docker-compose.prod.yml logs postgres --tail=50
+
+# nginx (access logs)
+docker compose -f docker-compose.prod.yml logs nginx -f
+```
+
+### Подключение к БД (production)
+
+```bash
+docker compose -f docker-compose.prod.yml exec postgres psql -U aps -d household
+```
+
+**Замечание:** `exec` (не `exec -it`) работает и в скриптах, и в терминале. Если нужен интерактивный psql — добавьте `-it`:
+```bash
+docker compose -f docker-compose.prod.yml exec -it postgres psql -U aps -d household
+```
+
+### Однократные SQL-запросы
+
+```bash
+docker compose -f docker-compose.prod.yml exec -T postgres psql -U aps -d household -c "SELECT COUNT(*) FROM help_article;"
+```
+
+Флаг `-T` отключает TTY (важно для скриптов и pipe).
+
+### Применение SQL-файла (в Docker)
+
+```bash
+# 1. Скопировать файл в контейнер
+docker compose -f docker-compose.prod.yml cp backend/init_schema_v4.9.sql postgres:/tmp/init_schema_v4.9.sql
+
+# 2. Применить
+docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U aps -d household -f /tmp/init_schema_v4.9.sql
+```
+
+**⚠️ Кириллица:** только через `cp` + `psql -f`, **не** через pipe (`Get-Content | docker compose exec ...` — испортит UTF-8).
+
+### Перезапуск сервисов
+
+```bash
+# Перезапустить backend
+docker compose -f docker-compose.prod.yml restart backend
+
+# Пересобрать backend (после правок кода)
+docker compose -f docker-compose.prod.yml build backend
+docker compose -f docker-compose.prod.yml up -d backend
+
+# Пересобрать frontend (после правок или изменения VITE_API_URL)
+docker compose -f docker-compose.prod.yml build frontend
+docker compose -f docker-compose.prod.yml up -d frontend
+
+# Перезагрузить nginx (после правки nginx/nginx.conf)
+docker compose -f docker-compose.prod.yml restart nginx
+```
+
+### Остановка и запуск
+
+```bash
+# Остановить (БЕЗ удаления volumes — БД сохраняется)
+docker compose -f docker-compose.prod.yml down
+
+# Запустить
+docker compose -f docker-compose.prod.yml up -d
+
+# ⚠️ ПОЛНАЯ ОЧИСТКА: удалит БД!
+# docker compose -f docker-compose.prod.yml down -v   # ❌ НЕ ДЕЛАТЬ БЕЗ БЭКАПА
+```
+
+### Обновление версии
+
+```bash
+cd household-aps
+
+# 1. Бэкап БД (см. ниже)
+~/backup_aps.sh
+
+# 2. Получить изменения
+git pull
+
+# 3. Пересобрать образы
+docker compose -f docker-compose.prod.yml build
+
+# 4. Применить новые миграции (если есть)
+docker compose -f docker-compose.prod.yml cp backend/migrations/add_29.sql postgres:/tmp/
+docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U aps -d household -f /tmp/add_29.sql
+
+# 5. Перезапустить сервисы
+docker compose -f docker-compose.prod.yml up -d
+
+# 6. Проверить
+docker compose -f docker-compose.prod.yml ps
+curl http://your-server-ip/health
+```
+
+### Мониторинг ресурсов
+
+```bash
+# Использование CPU/RAM контейнерами
+docker stats
+
+# Свободное место на диске
+df -h
+
+# Размер Docker-данных
+docker system df
+```
+
+### Полная первичная инициализация (production)
+
+```bash
+# Скрипт делает всё: схема + seed-статьи + демо-данные + админ
+./scripts/deploy_init.sh       # Linux / Git Bash
+.\scripts\deploy_init.ps1      # Windows PowerShell
+```
+
+Что делает скрипт — см. [DEPLOYMENT.md](DEPLOYMENT.md), раздел «Шаг 8. Инициализация БД».
+
+---
+
+## Все команды для БД (dev)
+
+**Dev-контекст:** PostgreSQL запущен через `docker/docker-compose.yml` (только БД) или через `docker run`. Backend и frontend — на хосте. Все команды — через `docker exec aps_postgres`.
+
+> Для **production** (всё в Docker) — см. раздел [Docker (production)](#docker-production).
 
 ### Проверить статус PostgreSQL
 
@@ -99,65 +277,98 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT pg_terminate_bac
 
 Применяйте SQL-файлы через `docker cp` + `psql -f`, а **не** через `Get-Content | docker exec` — иначе PowerShell испортит кириллицу.
 
-### Правильный способ
+### Консолидированные файлы v4.9.0
+
+Для **свежей установки** используйте:
+
+| Файл | Что делает |
+|------|-----------|
+| `backend/init_schema_v4.9.sql` | **Полная схема** v4.9.0 (включая миграции 13.14–16.2) |
+| `backend/init_schema_v4.9_seed.sql` | **31 статья справки** + **8 подсказок** |
+| `backend/seed_demo_data.sql` | Демо-данные (оборудование, партии, заказы) |
+
+Применяются в **этом порядке**:
 
 ```bash
-docker cp backend/migrations/add_27_seed_1.sql aps_postgres:/tmp/add_27_seed_1.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_27_seed_1.sql
+docker cp backend/init_schema_v4.9.sql aps_postgres:/tmp/init_schema_v4.9.sql
+docker cp backend/init_schema_v4.9_seed.sql aps_postgres:/tmp/init_schema_v4.9_seed.sql
+docker cp backend/seed_demo_data.sql aps_postgres:/tmp/seed_demo_data.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema_v4.9.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema_v4.9_seed.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/seed_demo_data.sql
+```
+
+**Плюс:** одно развёртывание → полностью рабочая БД с 31 статьёй справки.
+**Когда применять:** пустая БД, новая установка.
+
+### Базовая схема + миграции (для апгрейда)
+
+Если БД уже существует и развёрнута на версии до 4.0.0, используйте:
+
+1. `backend/init_schema.sql` — базовая схема v4.0.0.
+2. `backend/seed_demo_data.sql` — демо-данные.
+3. **Все миграции** из `backend/migrations/` по порядку.
+
+**Порядок миграций:**
+
+| Файл | Итерация | Описание |
+|------|----------|----------|
+| `add_history_0_2.sql` | 0–2 | Базовая схема (уже в `init_schema.sql`) |
+| `add_06.sql` | 3 | Сменное планирование |
+| `add_06b.sql` | 3 | Снапшот-таблицы |
+| `add_07.sql` | 4 | Перепланирование |
+| `fix_versions_hotfix.sql` | 5h | Деактивация старых версий |
+| `add_08.sql` | 5 | Лаборатория |
+| `add_09.sql` | 6 | Пулы операторов |
+| `add_09b.sql` | 6 | COOLING_ZONE, BOILER, LAB |
+| `add_09c.sql` | 6 | `resource_pool.updated_at` |
+| `add_09d.sql` | 6 | `scheduled_task.operator_pool` |
+| `add_10.sql` | 7 | Охлаждение с деградацией |
+| `add_10b.sql` | 7 | `scheduled_task.cooling_mode` |
+| `add_11.sql` | 8 | Честный Знак |
+| `add_12.sql` | 9 | `scheduled_task.operation_name` |
+| `add_13.sql` | 11 | `app_settings` |
+| `add_14.sql` | 11 | `allow_weekend_work` |
+| `add_15.sql` | 12 | Веса multi-objective |
+| `add_16.sql` | 12 | `whatif_scenario` |
+| `add_17.sql` | 13.1 | UNIQUE на `material_stock` |
+| `add_18.sql` | 13.2 | `material_stock_log` + триггер |
+| `add_19.sql` | 13.4 | TANK_2 |
+| `add_20.sql` | 13.6 | `depends_on_task_ids` |
+| `add_21.sql` | 13.14 | `plan_settings` + триггер |
+| `add_22.sql` | 13.17 | Индексы каскада |
+| `add_23.sql` | 13.21 | Архивация версий |
+| `add_24.sql` | 15.1 | `help_article` |
+| `add_24_seed_1.sql` | 15.1 | 3 статьи справки |
+| `add_24_seed_2.sql` | 15.1 | 5 статей справки |
+| `add_24_seed_3.sql` | 15.1 | 7 статей справки |
+| `add_25.sql` | 15.2 | `help_hint` |
+| `add_25_seed.sql` | 15.2 | 8 контекстных подсказок |
+| `add_26_seed_1.sql` | 15.4 | FAQ: планирование (5) |
+| `add_26_seed_2.sql` | 15.4 | FAQ: гант, смены, what-if, ЧЗ (5) |
+| `add_26_seed_3.sql` | 15.4 | FAQ: лаборатория, advisor (5) |
+| `add_27_seed_1.sql` | 15.3 | Туториал (`tutorial-interactive`) |
+| `add_28.sql` | 16.2 | `audit_saved_view` |
+| `fix_shift_names.sql` | — | Пересоздание смен с корректной кириллицей |
+| `fix_work_time.sql` | — | Исправление `work_start_time` / `work_end_time` |
+
+### Правильный способ применения миграции
+
+```bash
+docker cp backend/migrations/add_28.sql aps_postgres:/tmp/add_28.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_28.sql
 ```
 
 ### Неправильный способ (НЕ ИСПОЛЬЗОВАТЬ)
 
 ```bash
 # ❌ PowerShell испортит кириллицу
-Get-Content backend/migrations/add_27_seed_1.sql | docker exec -i aps_postgres psql -U aps -d household
+Get-Content backend/migrations/add_28.sql | docker exec -i aps_postgres psql -U aps -d household
 ```
 
-### История миграций
+### Применить все миграции по порядку (dev)
 
-| Файл | Итерация | Описание |
-|------|----------|----------|
-| `add_history_0_2.sql` | 0–2 | Базовая схема |
-| `add_06.sql` | 6 | Пулы операторов |
-| `add_06b.sql` | 6 | Дополнительные пулы |
-| `add_07.sql` | 4 | Перепланирование |
-| `add_08.sql` | 5 | Лаборатория |
-| `fix_versions_hotfix.sql` | 5h | Деактивация старых версий |
-| `add_09.sql` | 6 | Operator pool |
-| `add_09b.sql` | 6 | Operator pool (продолжение) |
-| `add_09c.sql` | 6 | Operator pool (продолжение) |
-| `add_09d.sql` | 6 | Operator pool (продолжение) |
-| `add_10.sql` | 7 | Охлаждение |
-| `add_10b.sql` | 7 | `cooling_mode` |
-| `add_11.sql` | 8 | Честный Знак |
-| `add_12.sql` | 10 | `operation_name` |
-| `add_13.sql` | 11 | `app_settings` |
-| `add_14.sql` | 11 | `allow_weekend_work` |
-| `add_15.sql` | 12 | Веса optimization |
-| `add_16.sql` | 12 | `whatif_scenario` |
-| `add_17.sql` | 13.1 | UNIQUE на `material_stock` |
-| `add_18.sql` | 13.2 | Журнал `material_stock_log` |
-| `add_19.sql` | 13.4 | TANK_2 |
-| `add_20.sql` | 13.6 | `depends_on_task_ids` |
-| `add_21.sql` | 13.14 | `plan_settings` |
-| `add_22.sql` | 13.17 | Индексы для каскадного сдвига |
-| `add_23.sql` | 13.21 | Архивация версий планов |
-| `add_24.sql` | 15.1 | Таблица `help_article` |
-| `add_24_seed_1.sql` | 15.1 | 3 статьи справки |
-| `add_24_seed_2.sql` | 15.1 | 5 статей справки |
-| `add_24_seed_3.sql` | 15.1 | 7 статей справки |
-| `add_25.sql` | 15.2 | Таблица `help_hint` |
-| `add_25_seed.sql` | 15.2 | 8 контекстных подсказок |
-| `add_26_seed_1.sql` | 15.4 | FAQ: планирование (5 статей) |
-| `add_26_seed_2.sql` | 15.4 | FAQ: гант, смены, what-if, ЧЗ (5 статей) |
-| `add_26_seed_3.sql` | 15.4 | FAQ: лаборатория, advisor (5 статей) |
-| **`add_27_seed_1.sql`** | **15.3** | **Туториал: статья `tutorial-interactive`** |
-| `fix_shift_names.sql` | — | Исправление имён смен |
-| `fix_work_time.sql` | — | Исправление work_start/end_time |
-
-### Применить все миграции по порядку
-
-```bash
+```powershell
 $migrations = @(
     "add_06.sql", "add_06b.sql", "add_07.sql", "add_08.sql",
     "fix_versions_hotfix.sql",
@@ -169,7 +380,7 @@ $migrations = @(
     "add_24.sql", "add_24_seed_1.sql", "add_24_seed_2.sql", "add_24_seed_3.sql",
     "add_25.sql", "add_25_seed.sql",
     "add_26_seed_1.sql", "add_26_seed_2.sql", "add_26_seed_3.sql",
-    "add_27_seed_1.sql",
+    "add_27_seed_1.sql", "add_28.sql",
     "fix_shift_names.sql", "fix_work_time.sql"
 )
 
@@ -207,34 +418,26 @@ SELECT EXISTS (
 "
 ```
 
-Для `add_25.sql` (подсказки):
+Для `add_28.sql` (аудит — сохранённые представления):
 
 ```bash
 docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT EXISTS (
     SELECT 1 FROM information_schema.tables
-    WHERE table_name = 'help_hint'
+    WHERE table_name = 'audit_saved_view'
 );
 "
 ```
 
-Для `add_27_seed_1.sql` (туториал):
-
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT EXISTS (
-    SELECT 1 FROM help_article WHERE slug = 'tutorial-interactive'
-);
-"
-```
-
-### Пересоздать БД с нуля
+### Пересоздать БД с нуля (v4.9.0)
 
 ```bash
 docker exec aps_postgres psql -U aps -d household -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
-docker cp backend/init_schema.sql aps_postgres:/tmp/init_schema.sql
+docker cp backend/init_schema_v4.9.sql aps_postgres:/tmp/init_schema_v4.9.sql
+docker cp backend/init_schema_v4.9_seed.sql aps_postgres:/tmp/init_schema_v4.9_seed.sql
 docker cp backend/seed_demo_data.sql aps_postgres:/tmp/seed_demo_data.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema_v4.9.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema_v4.9_seed.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/seed_demo_data.sql
 ```
 
@@ -252,7 +455,7 @@ docker rm -f aps_postgres
 
 ## Бэкапы и восстановление
 
-### Создать бэкап
+### Создать бэкап (dev)
 
 ```bash
 docker exec aps_postgres pg_dump -U aps household > backup.sql
@@ -289,14 +492,22 @@ docker cp backup.dump aps_postgres:/tmp/backup.dump
 docker exec -i aps_postgres pg_restore -U aps -d household --clean --if-exists /tmp/backup.dump
 ```
 
-### Восстановить в новую БД
+### Бэкап в Docker (production)
 
 ```bash
-docker exec aps_postgres psql -U aps -c "CREATE DATABASE household_restore;"
-docker exec -i aps_postgres psql -U aps -d household_restore < backup.sql
+docker compose -f docker-compose.prod.yml exec -T postgres \
+    pg_dump -U aps household | gzip > backup_$(date +%Y%m%d_%H%M%S).sql.gz
 ```
 
-### Автоматический бэкап (PowerShell)
+**Восстановление:**
+
+```bash
+gunzip -c backup_20261007_020000.sql.gz | \
+    docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U aps -d household
+```
+
+### Автоматический бэкап (dev, PowerShell)
 
 ```powershell
 $date = Get-Date -Format "yyyy-MM-dd_HH-mm"
@@ -313,27 +524,64 @@ Get-ChildItem $backupDir -Filter "*.dump" |
 Write-Host "Backup created: $backupDir/household_$date.dump"
 ```
 
+### Автоматический бэкап (production, cron)
+
+```bash
+# ~/backup_aps.sh
+#!/bin/bash
+DATE=$(date +%Y%m%d_%H%M%S)
+BACKUP_DIR=/home/user/backups
+mkdir -p $BACKUP_DIR
+
+docker compose -f /home/user/household-aps/docker-compose.prod.yml exec -T postgres \
+    pg_dump -U aps household | gzip > $BACKUP_DIR/household_$DATE.sql.gz
+
+find $BACKUP_DIR -name "*.sql.gz" -mtime +30 -delete
+```
+
+**Cron:**
+```bash
+crontab -e
+# Добавить:
+0 2 * * * /home/user/backup_aps.sh
+```
+
 ---
 
 ## Мониторинг
 
-### Проверить статус backend
+### Проверить статус backend (dev)
 
 ```bash
 curl http://localhost:8000/docs
 ```
 
-### Проверить статус frontend
+### Проверить статус frontend (dev)
 
 ```bash
 curl http://localhost:5173
 ```
 
+### Проверить статус prod
+
+```bash
+# Health endpoint
+curl http://your-server-ip/health
+
+# Ожидаемо:
+# {"status":"healthy","version":"4.9.0","timestamp":"..."}
+```
+
 ### Проверить логи backend
 
-Backend логирует в stdout. Если запущен в терминале — смотрите вывод.
+**Dev:** логи выводятся в терминал, где запущен `python run_server.py`.
 
-### Проверить логи PostgreSQL
+**Prod:**
+```bash
+docker compose -f docker-compose.prod.yml logs -f backend --tail=100
+```
+
+### Проверить логи PostgreSQL (dev)
 
 ```bash
 docker logs aps_postgres --tail 100
@@ -775,7 +1023,7 @@ LIMIT 20;
 
 ---
 
-### `audit` (Итерация 13.3)
+### `audit` (Итерация 13.3 + 16.2)
 
 **Количество событий в журналах-источниках:**
 
@@ -791,11 +1039,29 @@ SELECT 'cz_scan_log', COUNT(*) FROM cz_scan_log;
 "
 ```
 
+**Сохранённые представления аудита (Итерация 16.2):**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT id, user_id, name, is_default, display_order, created_at
+FROM audit_saved_view
+ORDER BY display_order, name;
+"
+```
+
+**Структура таблицы:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "\d audit_saved_view"
+```
+
+**Ожидаемо:** 10 колонок, 4 индекса, 1 триггер.
+
 ---
 
 ## Архивация версий планов (Итерация 13.21)
 
-Раздел посвящён операциям с архивацией версий. Все команды — через docker.
+Раздел посвящён операциям с архивацией версий.
 
 ### Проверка состояния архивации
 
@@ -815,8 +1081,6 @@ WHERE organization_id = '00000000-0000-0000-0000-000000000001';
 
 ### Разархивация через SQL (вручную)
 
-Если нужно разархивировать версию напрямую в БД (например, через CLI):
-
 ```bash
 docker exec -i aps_postgres psql -U aps -d household -c "
 UPDATE schedule_version
@@ -828,9 +1092,6 @@ WHERE id = '<version-uuid>'
 
 ### Массовая архивация всех неактивных версий
 
-Если нужно снова почистить список (например, после отключения
-`auto_archive_on_recalc` накопились версии):
-
 ```bash
 docker exec -i aps_postgres psql -U aps -d household -c "
 UPDATE schedule_version
@@ -841,14 +1102,9 @@ WHERE organization_id = '00000000-0000-0000-0000-000000000001'
 "
 ```
 
-**Вывод покажет количество затронутых строк:**
-```
-UPDATE 12
-```
+**Вывод покажет количество затронутых строк:** `UPDATE 12`.
 
 ### Массовая разархивация всех версий
-
-Если нужно вернуть все архивные версии в список:
 
 ```bash
 docker exec -i aps_postgres psql -U aps -d household -c "
@@ -897,21 +1153,7 @@ WHERE tablename = 'schedule_version'
 "
 ```
 
-**Ожидаемый вывод:**
-
-```
-indexname                        | indexdef
----------------------------------+-------------------------------------------
-idx_schedule_version_archived    | CREATE INDEX idx_schedule_version_archived
-                                 | ON public.schedule_version USING btree
-                                 | (organization_id, created_at DESC)
-                                 | WHERE (is_archived = false)
-```
-
 ### Очистка старых архивных версий
-
-Если архивных версий накопилось слишком много и они занимают место,
-можно удалить самые старые (старше 90 дней):
 
 ```bash
 # ⚠️ Сначала сделайте бэкап
@@ -927,9 +1169,7 @@ WHERE organization_id = '00000000-0000-0000-0000-000000000001'
 ```
 
 **CASCADE** удалит `scheduled_task`, `plan_settings`, снапшоты,
-`reschedule_log` записи с FK на эту версию.
-
-**Осторожно:** это необратимо.
+`reschedule_log` записи с FK на эту версию. **Осторожно:** это необратимо.
 
 ---
 
@@ -1007,29 +1247,27 @@ WHERE tablename = 'help_article' AND indexname = 'idx_help_article_tags';
 
 ### Добавить статью через SQL (вручную)
 
+**⚠️ Лучше — через UI (Итерация 15.5) или через отдельный `.sql`-файл + `docker cp`.**
+
+Для ad-hoc вставки через `-c`:
+
 ```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
+docker exec -i aps_postgres psql -U aps -d household << 'EOF'
 INSERT INTO help_article
     (organization_id, slug, title, category, content_md, tags,
      display_order, is_published)
 VALUES
     (NULL, 'my-new-article', 'Моя новая статья', 'getting-started',
-     \$md\$# Заголовок
+     $md$# Заголовок
 
-Текст статьи в markdown.\$md\$,
-     '[\"тег1\", \"тег2\"]'::jsonb,
+Текст статьи в markdown.$md$,
+     '["тег1", "тег2"]'::jsonb,
      100, TRUE)
 ON CONFLICT (slug) DO NOTHING;
-"
+EOF
 ```
 
-**⚠️ Внимание:** экранирование `$md$` в `-c` может быть проблематичным в PowerShell.
-Лучше создавать отдельный `.sql`-файл и применять через `docker cp` + `psql -f`.
-
 ### Почистить `\r\n` в контенте статей
-
-Если статьи добавлялись через PowerShell-пайп, в `content_md` могли попасть
-символы `\r`. Не критично для рендера, но можно почистить:
 
 ```bash
 docker exec -i aps_postgres psql -U aps -d household -c "
@@ -1131,7 +1369,7 @@ docker cp backend/migrations/add_27_seed_1.sql aps_postgres:/tmp/add_27_seed_1.s
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_27_seed_1.sql
 ```
 
-**Идемпотентно** — повторное применение безопасно (`ON CONFLICT (slug) DO NOTHING`).
+**Идемпотентно** — повторное применение безопасно.
 
 ### Проверить, что категория getting-started содержит туториал
 
@@ -1145,15 +1383,6 @@ ORDER BY display_order;
 ```
 
 **Ожидаемо:** 3 статьи (`intro-overview`, `intro-first-plan`, `tutorial-interactive`).
-
-### Проверить через API
-
-```bash
-curl -s http://localhost:8000/api/v1/help/articles/tutorial-interactive \
-  -H "Authorization: Bearer $TOKEN" | jq '.title'
-```
-
-**Ожидаемо:** `"Интерактивный туториал"`.
 
 ### Прогресс прохождения
 
@@ -1169,19 +1398,12 @@ localStorage.removeItem('aps_tutorial_completed_gantt-basics');
 localStorage.removeItem('aps_tutorial_completed_shift-management');
 ```
 
-**Или сбросить весь localStorage (осторожно — удалит и токен):**
-
-```javascript
-localStorage.clear();
-```
-
 ---
 
 ## FAQ (Итерация 15.4)
 
-FAQ — это **категория** в существующей таблице `help_article`, поэтому
-отдельных таблиц/индексов/триггеров **не создаётся**. Все проверки — через
-`help_article` (см. раздел «Встроенная справка»).
+FAQ — это **категория** в существующей таблице `help_article`. Отдельных
+таблиц/индексов/триггеров **не создаётся**.
 
 ### Проверить, что все 15 FAQ-статей на месте
 
@@ -1206,26 +1428,6 @@ ORDER BY display_order;
 "
 ```
 
-**Ожидаемый вывод (15 строк):**
-
-| slug | title |
-|------|-------|
-| `faq-plan-feasible-not-optimal` | План получился FEASIBLE, а не OPTIMAL — что делать? |
-| `faq-task-not-movable` | Задача не двигается на Ганте |
-| `faq-plan-is-empty` | План пуст (⚠) — что делать? |
-| `faq-plan-settings-empty` | «Настройки плана не заполнены» при пересчёте |
-| `faq-material-shortage` | Не хватает сырья — что делать? |
-| `faq-move-pinned-task` | Закреплённая задача не двигается — как открепить? |
-| `faq-old-version-not-archived` | Старая версия плана не архивируется |
-| `faq-shift-mode-change` | После смены режима смен задачи потеряли привязку |
-| `faq-whatif-running` | What-if сценарий завис в статусе RUNNING |
-| `faq-cz-orphan-scan` | Скан ЧЗ попал в «сироты» — что делать? |
-| `faq-lab-blocked-batch` | Партия заблокирована лабораторией — как разблокировать? |
-| `faq-route-mismatch` | Advisor: ROUTE_MISMATCH — что это значит? |
-| `faq-cooling-degradation` | Advisor: COOLING_DEGRADATION — что это значит? |
-| `faq-cz-incomplete` | Advisor: CZ_INCOMPLETE — что это значит? |
-| `faq-underload` | Advisor: UNDERLOAD — неполная загрузка реактора |
-
 ### Применить FAQ-миграции (если не применены)
 
 ```bash
@@ -1237,37 +1439,7 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_2.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_3.sql
 ```
 
-**Идемпотентно** — повторное применение безопасно (`ON CONFLICT (slug) DO NOTHING`).
-
-### Проверить ссылки из FAQ-статей на другие статьи
-
-FAQ-статьи содержат внутренние ссылки `/help/{slug}`. Проверим, что все
-они ведут на существующие статьи:
-
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT
-    slug AS faq_slug,
-    LENGTH(content_md) AS content_length
-FROM help_article
-WHERE category = 'faq'
-ORDER BY display_order;
-"
-```
-
-Полная проверка ссылок — в тестах (`tests/test_help_faq.py`).
-
-### Проверить, что FAQ-статьи глобальные (organization_id IS NULL)
-
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT COUNT(*) AS global_faq
-FROM help_article
-WHERE category = 'faq' AND organization_id IS NULL;
-"
-```
-
-**Ожидаемо:** `global_faq = 15`.
+**Идемпотентно** — повторное применение безопасно.
 
 ### Проверить, что API возвращает категорию faq
 
@@ -1297,8 +1469,7 @@ curl -s http://localhost:8000/api/v1/help/categories \
 **Через UI:**
 1. Открыть страницу **«Помощь»** (`/help`).
 2. Для новой статьи — кнопка **«Новая статья»** в шапке.
-3. Для правки существующей — кнопка **«Редактировать»** (карандаш)
-   над статьёй.
+3. Для правки существующей — кнопка **«Редактировать»** (карандаш) над статьёй.
 4. Форма с двумя вкладками: «Редактор» / «Предпросмотр».
 5. Сохранить.
 
@@ -1332,13 +1503,10 @@ curl -X DELETE http://localhost:8000/api/v1/help/articles/my-article \
 
 **Важно:**
 - Правки идут в `help_article` **напрямую** (не через seed-миграции).
-- Через UI редактируются **только статьи текущей организации**
-  (`organization_id = org_id`). Глобальные статьи (`organization_id IS NULL`)
-  по-прежнему правятся через seed-миграции.
-- **Мульти-тенантность:** ADMIN одной организации не может править
-  статьи другой.
-- **Остальные роли** (PLANNER, MASTER, LAB, VIEWER) при попытке
-  создания/правки получают `403`.
+- Через UI редактируются **только статьи текущей организации**.
+  Глобальные статьи (`organization_id IS NULL`) — через seed-миграции.
+- **Мульти-тенантность:** ADMIN одной организации не может править статью другой.
+- **Остальные роли** (PLANNER, MASTER, LAB, VIEWER) → `403`.
 
 ### Проверить, что статья создана через UI
 
@@ -1351,7 +1519,7 @@ WHERE slug = 'my-article';
 ```
 
 Если `organization_id = '00000000-0000-0000-0000-000000000001'` — статья
-создана через UI (привязана к организации). Если `NULL` — через seed-миграцию.
+создана через UI. Если `NULL` — через seed-миграцию.
 
 ### Массовые правки через SQL (когда UI недоступен)
 
@@ -1364,228 +1532,135 @@ WHERE slug = 'planning-build-plan';
 "
 ```
 
-**Осторожно:** `updated_at` обновится автоматически через триггер, если
-не задавать явно.
+---
+
+## Проверка prod-развёртывания
+
+Быстрая проверка после деплоя в облако.
+
+### 1. Контейнеры подняты
+
+```bash
+docker compose -f docker-compose.prod.yml ps
+```
+
+Ожидаемо: 4 сервиса `Up`. `postgres` и `backend` — `(healthy)`.
+
+### 2. Health endpoint
+
+```bash
+curl http://your-server-ip/health
+```
+
+Ожидаемо:
+```json
+{"status":"healthy","version":"4.9.0","timestamp":"2026-10-07T..."}
+```
+
+**В PowerShell** — использовать `curl.exe` (не алиас `curl`).
+
+### 3. Swagger UI
+
+```bash
+curl http://your-server-ip/docs
+```
+
+Ожидаемо: HTML Swagger.
+
+### 4. Frontend отдаётся
+
+```bash
+curl http://your-server-ip/
+```
+
+Ожидаемо: HTML с `<div id="root">`.
+
+### 5. SPA-fallback работает
+
+```bash
+curl -I http://your-server-ip/audit
+```
+
+Ожидаемо: `HTTP/1.1 200 OK`, `Content-Type: text/html`.
+
+### 6. API-прокси работает
+
+```bash
+curl http://your-server-ip/api/v1/health
+```
+
+Ожидаемо: то же, что `/health` (если маршрут существует).
+
+### 7. Статьи справки загружены
+
+```bash
+docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U aps -d household -c "SELECT COUNT(*) FROM help_article;"
+```
+
+Ожидаемо: `31`.
+
+### 8. Подсказки загружены
+
+```bash
+docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U aps -d household -c "SELECT COUNT(*) FROM help_hint WHERE is_published = TRUE;"
+```
+
+Ожидаемо: `8`.
+
+### 9. Админ существует
+
+```bash
+docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U aps -d household -c "SELECT COUNT(*) FROM app_user WHERE role = 'ADMIN';"
+```
+
+Ожидаемо: `>= 1`.
+
+### 10. Вход в UI
+
+Откройте `http://your-server-ip/` в браузере.
+Логин: `admin@household.ru` / `admin123`.
+**Сразу смените пароль** (Настройки → Профиль → Сменить пароль).
 
 ---
 
 ## Диагностика
 
-### Проверить активную версию плана
+### Общая проверка системы (dev)
 
 ```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT id, name, is_active, is_archived, created_at
-FROM schedule_version
-WHERE organization_id = '00000000-0000-0000-0000-000000000001'
-ORDER BY created_at DESC
-LIMIT 5;
-"
-```
-
-### Проверить, что только одна версия активна
-
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT COUNT(*)
-FROM schedule_version
-WHERE is_active = true
-  AND organization_id = '00000000-0000-0000-0000-000000000001';
-"
-```
-
-Должно быть `1`.
-
-### Проверить пересечения задач
-
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT a.id, b.id, a.equipment_id
-FROM scheduled_task a
-JOIN scheduled_task b ON a.equipment_id = b.equipment_id AND a.id < b.id
-WHERE a.schedule_version_id = b.schedule_version_id
-  AND a.schedule_version_id = (SELECT id FROM schedule_version WHERE is_active = true LIMIT 1)
-  AND a.start_at < b.end_at
-  AND b.start_at < a.end_at;
-"
-```
-
-Должно быть пусто.
-
-### Проверить нарушения зависимостей
-
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT COUNT(*)
-FROM scheduled_task
-WHERE schedule_version_id = (SELECT id FROM schedule_version WHERE is_active = true LIMIT 1)
-  AND start_at < (
-      SELECT MAX(end_at) FROM scheduled_task st2
-      WHERE st2.id = ANY(depends_on_task_ids)
-  );
-"
-```
-
-### Проверить задачи без смены
-
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT COUNT(*)
-FROM scheduled_task
-WHERE schedule_version_id = (SELECT id FROM schedule_version WHERE is_active = true LIMIT 1)
-  AND shift_id IS NULL;
-"
-```
-
-### Проверить plan_settings для активного плана
-
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT COUNT(*) AS settings_count
-FROM plan_settings
-WHERE schedule_version_id = (SELECT id FROM schedule_version WHERE is_active = true LIMIT 1);
-"
-```
-
-Должно быть больше нуля.
-
-### Сравнить app_settings и plan_settings
-
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT
-    (SELECT COUNT(*) FROM app_settings WHERE organization_id = '00000000-0000-0000-0000-000000000001') AS app_count,
-    (SELECT COUNT(*) FROM plan_settings WHERE schedule_version_id = (SELECT id FROM schedule_version WHERE is_active = true LIMIT 1)) AS plan_count;
-"
-```
-
-### Проверить триггер copy_app_settings_to_plan
-
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT tgname, tgenabled
-FROM pg_trigger
-WHERE tgname = 'trg_copy_app_settings_to_plan';
-"
-```
-
-Ожидаемый вывод: `trg_copy_app_settings_to_plan | O` (`O` = enabled).
-
-### Проверить, что миграции применены
-
-**add_21.sql (plan_settings):**
-
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT
-    EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'plan_settings') AS has_table,
-    EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_copy_app_settings_to_plan') AS has_trigger,
-    EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_plan_settings_version') AS has_index;
-"
-```
-
-**add_23.sql (архивация):**
-
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT
-    EXISTS (SELECT 1 FROM information_schema.columns
-            WHERE table_name = 'schedule_version' AND column_name = 'is_archived') AS has_column,
-    EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_schedule_version_archived') AS has_index,
-    EXISTS (SELECT 1 FROM app_settings WHERE setting_key = 'auto_archive_on_recalc') AS has_setting;
-"
-```
-
-Все три должны быть `t`.
-
-**add_24.sql (справка):**
-
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT
-    EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'help_article') AS has_table,
-    EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_help_article_category') AS has_category_idx,
-    EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_help_article_tags') AS has_tags_idx,
-    EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_help_article_updated_at') AS has_trigger,
-    (SELECT COUNT(*) FROM help_article) AS article_count;
-"
-```
-
-Все четыре `t`, `article_count` = 31.
-
-**add_25.sql (подсказки):**
-
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT
-    EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'help_hint') AS has_table,
-    EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_help_hint_published') AS has_pub_idx,
-    EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_help_hint_org') AS has_org_idx,
-    EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_help_hint_updated_at') AS has_trigger,
-    (SELECT COUNT(*) FROM help_hint WHERE is_published = TRUE) AS hint_count;
-"
-```
-
-Все четыре `t`, `hint_count` = 8.
-
-**add_26_seed_1/2/3.sql (FAQ):**
-
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT
-    (SELECT COUNT(*) FROM help_article WHERE category = 'faq') AS faq_count,
-    (SELECT COUNT(*) FROM help_article WHERE category = 'faq' AND organization_id IS NULL) AS global_faq,
-    (SELECT COUNT(*) FROM help_article WHERE slug LIKE 'faq-%') AS faq_slug_count;
-"
-```
-
-Ожидаемо: `faq_count = 15`, `global_faq = 15`, `faq_slug_count = 15`.
-
-**add_27_seed_1.sql (туториал):**
-
-```bash
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT
-    (SELECT COUNT(*) FROM help_article WHERE slug = 'tutorial-interactive') AS tutorial_count,
-    (SELECT COUNT(*) FROM help_article WHERE category = 'getting-started') AS getting_started_count;
-"
-```
-
-Ожидаемо: `tutorial_count = 1`, `getting_started_count = 3`.
-
-### Полная диагностика системы
-
-```bash
-# 1. Статус PostgreSQL
+# PostgreSQL
 docker ps --filter "name=aps_postgres"
 
-# 2. Backend
+# Backend
 curl http://localhost:8000/docs
 
-# 3. Frontend
+# Frontend
 curl http://localhost:5173
 
-# 4. Активная версия
+# Активная версия
 docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT id, name, is_active, is_archived FROM schedule_version
 WHERE organization_id = '00000000-0000-0000-0000-000000000001'
 ORDER BY created_at DESC LIMIT 1;
 "
 
-# 5. Количество задач
+# Количество задач
 docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT COUNT(*) FROM scheduled_task st
 JOIN schedule_version sv ON sv.id = st.schedule_version_id
 WHERE sv.is_active = true;
 "
 
-# 6. plan_settings
+# plan_settings
 docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT COUNT(*) FROM plan_settings
 WHERE schedule_version_id = (SELECT id FROM schedule_version WHERE is_active = true LIMIT 1);
 "
 
-# 7. Снапшоты
+# Снапшоты
 docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT
     (SELECT COUNT(*) FROM product_snapshot WHERE version_id = sv.id) AS products,
@@ -1596,31 +1671,29 @@ FROM schedule_version sv
 WHERE sv.is_active = true LIMIT 1;
 "
 
-# 8. Архивные версии
-docker exec -i aps_postgres psql -U aps -d household -c "
-SELECT COUNT(*) AS archived FROM schedule_version
-WHERE organization_id = '00000000-0000-0000-0000-000000000001'
-  AND is_archived = TRUE;
-"
-
-# 9. Статьи справки
+# Статьи справки
 docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT COUNT(*) AS help_articles FROM help_article;
 "
 
-# 10. Контекстные подсказки
+# Контекстные подсказки
 docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT COUNT(*) AS help_hints FROM help_hint WHERE is_published = TRUE;
 "
 
-# 11. FAQ-статьи
+# FAQ-статьи
 docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT COUNT(*) AS faq_articles FROM help_article WHERE category = 'faq';
 "
 
-# 12. Туториал
+# Туториал
 docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT COUNT(*) AS tutorial_articles FROM help_article WHERE slug = 'tutorial-interactive';
+"
+
+# Сохранённые представления аудита (Итерация 16.2)
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT COUNT(*) AS saved_views FROM audit_saved_view;
 "
 ```
 
@@ -1634,12 +1707,15 @@ SELECT COUNT(*) AS tutorial_articles FROM help_article WHERE slug = 'tutorial-in
 | `tutorial_articles` | 1 |
 | `active` версия | 1 |
 | `plan_settings` активного плана | >0 |
+| `saved_views` | >= 0 |
 
 ---
 
 ## Ссылки
 
 - [README.md](../README.md) — основная документация.
+- [docs/DEPLOYMENT.md](DEPLOYMENT.md) — развёртывание в облаке.
+- [docs/DOCKER.md](DOCKER.md) — Docker: устройство и отладка.
 - [docs/ARCHITECTURE.md](ARCHITECTURE.md) — архитектура.
 - [docs/API.md](API.md) — описание API.
 - [docs/CONFIGURATION.md](CONFIGURATION.md) — настройки.

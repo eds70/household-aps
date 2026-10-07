@@ -1,0 +1,167 @@
+# docker-compose.prod.yml
+#
+# APS Production Scheduler — production-конфигурация для облака.
+#
+# Использование (все команды — из КОРНЯ проекта):
+#   docker compose -f docker-compose.prod.yml build
+#   docker compose -f docker-compose.prod.yml up -d
+#   docker compose -f docker-compose.prod.yml ps
+#   docker compose -f docker-compose.prod.yml logs -f backend
+#   docker compose -f docker-compose.prod.yml down
+#
+# ⚠️  НЕ использовать `down -v` — потеряете БД (volume pgdata).
+#
+# Переменные окружения берутся из .env в корне (не из backend/.env!).
+# Скопируйте .env.example → .env и заполните.
+#
+# Для локальной разработки используйте docker/docker-compose.yml (только postgres).
+
+version: '3.9'
+
+services:
+
+  # ==========================================
+  # PostgreSQL 17 — база данных
+  # ==========================================
+  postgres:
+    image: postgres:17
+    container_name: aps_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aps}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD обязателен в .env}
+      POSTGRES_DB: ${POSTGRES_DB:-household}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aps} -d ${POSTGRES_DB:-household}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    # ⚠️  Порт НЕ пробрасываем наружу — только внутренняя Docker-сеть.
+    # Прямой доступ к БД из интернета = угроза безопасности.
+    expose:
+      - "5432"
+    networks:
+      - aps_network
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==========================================
+  # Backend (FastAPI + OR-Tools CP-SAT)
+  # ==========================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aps_backend
+    environment:
+      # БД — по внутреннему имени сервиса (postgres, не localhost)
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-aps}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-household}
+      # JWT
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY обязателен в .env}
+      ALGORITHM: ${ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-1440}
+      # CORS — домены/IP облака
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS обязателен в .env}
+      # Организация
+      DEFAULT_ORG_ID: ${DEFAULT_ORG_ID:-00000000-0000-0000-0000-000000000001}
+      # Метаданные
+      APP_NAME: ${APP_NAME:-APS Production Scheduler}
+      APP_VERSION: ${APP_VERSION:-4.9.0}
+      DEBUG: ${DEBUG:-false}
+    # Явный CMD без --reload (production не должен перезагружаться при правке файлов).
+    # Переопределяет CMD из Dockerfile.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "8000"
+    networks:
+      - aps_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==========================================
+  # Frontend (React + Vite → nginx:alpine, статика SPA)
+  # ==========================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Вшивается в билд (Vite env) — должен быть реальный URL API
+        VITE_API_URL: ${VITE_API_URL:?VITE_API_URL обязателен в .env}
+    container_name: aps_frontend
+    expose:
+      - "80"
+    networks:
+      - aps_network
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==========================================
+  # Nginx — внешний reverse-proxy
+  # ==========================================
+  nginx:
+    image: nginx:alpine
+    container_name: aps_nginx
+    ports:
+      - "80:80"
+      # Раскомментируйте после настройки HTTPS (см. DEPLOYMENT.md)
+      # - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Сертификаты (если используете HTTPS через certbot)
+      - ./nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - aps_network
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# ==========================================
+# СЕТИ И VOLUMES
+# ==========================================
+networks:
+  aps_network:
+    driver: bridge
+
+volumes:
+  pgdata:
+    driver: local
+    # Данные БД хранятся в именованном volume.
+    # ⚠️  НЕ удалять через `docker compose -f docker-compose.prod.yml down -v`!
+    #
+    # Если нужна привязка к конкретной папке на хосте (например, для бэкапа через
+    # обычный tar), раскомментируйте:
+    # driver_opts:
+    #   type: none
+    #   device: /home/user/aps-data/pgdata
+    #   o: bind

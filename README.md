@@ -8,11 +8,13 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![OR-Tools](https://img.shields.io/badge/OR--Tools-9.15+-F7931E)](https://developers.google.com/optimization)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev/)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 
 ---
 
 ## ⚡ TL;DR — запуск за 60 секунд
+
+**Для локальной разработки** (PostgreSQL в Docker, backend и frontend — на хосте):
 
 Из корня проекта (household-aps):
 ```
@@ -34,6 +36,9 @@ cd frontend; npm run dev
 
 **Открыть:** http://localhost:5173
 **Логин:** `admin@household.ru` / `admin123`
+
+> **Для развёртывания в облаке** (backend + frontend + БД + nginx — всё в Docker) —
+> см. **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
 
 ---
 
@@ -72,10 +77,12 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 
 | Документ | Описание |
 |----------|----------|
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | **Развёртывание в облаке** (Docker, HTTPS, бэкапы) |
+| [docs/DOCKER.md](docs/DOCKER.md) | **Docker**: устройство образов, отладка контейнеров |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Архитектура системы |
 | [docs/API.md](docs/API.md) | REST API endpoints |
-| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Все настройки |
-| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Операции с БД |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Все настройки (app_settings, plan_settings, .env) |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Операции с БД (backup, миграции, диагностика) |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Решение проблем |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Руководство разработчика |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | План развития |
@@ -88,6 +95,50 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 **Встроенная справка** после запуска frontend: **http://localhost:5173/help**
 
 **Интерактивный туториал** на странице справки: **http://localhost:5173/help** → блок «Интерактивные туры».
+
+## 🐳 Docker
+
+Проект использует **два** compose-файла:
+
+| Файл | Назначение | Что поднимает |
+|------|------------|---------------|
+| `docker/docker-compose.yml` | **Разработка** (dev) | Только PostgreSQL |
+| `docker-compose.prod.yml` | **Production** (облако) | PostgreSQL + backend + frontend + nginx |
+
+### Dev-режим (PostgreSQL только)
+
+```bash
+docker compose -f docker/docker-compose.yml up -d
+```
+
+Backend и frontend запускаются локально:
+```bash
+cd backend && python run_server.py
+cd frontend && npm run dev
+```
+
+Или через `.\quickstart.ps1` (рекомендуется — делает всё автоматически).
+
+### Prod-режим (полный стек в Docker)
+
+```bash
+# 1. Создать .env из шаблона
+cp .env.example .env       # Linux/macOS
+Copy-Item .env.example .env  # Windows PowerShell
+# Заполнить SECRET_KEY, POSTGRES_PASSWORD, ALLOWED_ORIGINS, VITE_API_URL
+
+# 2. Собрать образы
+docker compose -f docker-compose.prod.yml build
+
+# 3. Запустить
+docker compose -f docker-compose.prod.yml up -d
+
+# 4. Инициализировать БД
+./scripts/deploy_init.sh   # Linux
+.\scripts\deploy_init.ps1  # Windows
+```
+
+Подробно — в **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** и **[docs/DOCKER.md](docs/DOCKER.md)**.
 
 ## 🛠️ Стек технологий
 
@@ -107,7 +158,7 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 ### База данных
 | Компонент | Версия | Назначение |
 |-----------|--------|------------|
-| PostgreSQL | 16+ | Реляционная СУБД (Docker) |
+| PostgreSQL | 17+ | Реляционная СУБД (Docker) |
 | Docker | 24+ | Контейнеризация |
 
 ### Frontend
@@ -129,175 +180,56 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 
 ```
 household-aps/
-├── quickstart.ps1            # ⚡ Скрипт быстрого старта
+├── quickstart.ps1               # ⚡ Скрипт быстрого старта (dev)
+├── docker-compose.prod.yml      # 🐳 Prod: полный стек в Docker
+├── .env.example                 # Шаблон env для prod
 ├── README.md
 ├── CHANGELOG.md
 ├── CONTRIBUTING.md
+├── docker/
+│   └── docker-compose.yml       # 🛠 Dev: только PostgreSQL
 ├── backend/
 │   ├── app/
-│   │   ├── api/v1/           # REST API endpoints
-│   │   │   ├── auth.py
-│   │   │   ├── equipment.py
-│   │   │   ├── products.py
-│   │   │   ├── materials.py
-│   │   │   ├── recipes.py
-│   │   │   ├── operations.py
-│   │   │   ├── orders.py
-│   │   │   ├── schedule.py
-│   │   │   ├── gantt.py
-│   │   │   ├── calendar.py
-│   │   │   ├── advisor.py
-│   │   │   ├── shift.py
-│   │   │   ├── reschedule.py
-│   │   │   ├── lab.py
-│   │   │   ├── personnel.py
-│   │   │   ├── cz.py
-│   │   │   ├── settings.py
-│   │   │   ├── plan_settings.py
-│   │   │   ├── whatif.py
-│   │   │   ├── audit.py
-│   │   │   ├── audit_models.py
-│   │   │   ├── help.py
-│   │   │   ├── help_models.py
-│   │   │   ├── help_docs.py
-│   │   │   └── models.py
+│   │   ├── api/v1/              # REST API endpoints
 │   │   ├── auth/
 │   │   ├── core/
-│   │   ├── scheduler/        # Ядро планировщика
-│   │   │   ├── core.py
-│   │   │   ├── data_loader.py
-│   │   │   ├── routing.py
-│   │   │   ├── materials.py
-│   │   │   ├── advisor.py
-│   │   │   ├── feasibility.py
-│   │   │   ├── shifts.py
-│   │   │   ├── rescheduler.py
-│   │   │   ├── reschedule_cascade.py
-│   │   │   ├── cz.py
-│   │   │   ├── saver.py
-│   │   │   ├── snapshot.py
-│   │   │   ├── feature_flags.py
-│   │   │   ├── settings.py
-│   │   │   ├── settings_reader.py
-│   │   │   ├── shift_regenerator.py
-│   │   │   ├── calendar_postprocess.py
-│   │   │   ├── optimization.py
-│   │   │   ├── whatif.py
-│   │   │   ├── logging_config.py
-│   │   │   ├── duration/
-│   │   │   └── constraints/plugins.py
+│   │   ├── scheduler/           # Ядро планировщика
 │   │   └── main.py
-│   ├── migrations/
-│   │   ├── add_history_0_2.sql
-│   │   ├── add_06.sql … add_16.sql
-│   │   ├── add_21.sql          # plan_settings
-│   │   ├── add_23.sql          # is_archived (13.21)
-│   │   ├── add_24.sql          # help_article (15.1)
-│   │   ├── add_24_seed_1.sql   # 3 статьи
-│   │   ├── add_24_seed_2.sql   # 5 статей
-│   │   ├── add_24_seed_3.sql   # 7 статей
-│   │   ├── add_25.sql          # help_hint (15.2)
-│   │   ├── add_25_seed.sql     # 8 подсказок
-│   │   ├── add_26_seed_1.sql   # FAQ: планирование (5)
-│   │   ├── add_26_seed_2.sql   # FAQ: гант, смены, what-if, ЧЗ (5)
-│   │   ├── add_26_seed_3.sql   # FAQ: лаборатория, advisor (5)
-│   │   ├── add_27_seed_1.sql   # Туториал (15.3)
-│   │   ├── add_28.sql          # audit_saved_view (16.2)
-│   │   ├── fix_versions_hotfix.sql
-│   │   └── fix_shift_names.sql
-│   ├── .env
-│   ├── init_schema.sql
-│   ├── seed_demo.py
+│   ├── migrations/              # История миграций (add_*.sql)
+│   ├── scripts/
+│   │   └── create_admin_user.py
+│   ├── init_schema.sql          # Схема v4.0.0 (для апгрейда)
+│   ├── init_schema_v4.9.sql     # ✅ Полная схема v4.9.0
+│   ├── init_schema_v4.9_seed.sql# ✅ Seed-статьи справки (31)
 │   ├── seed_demo_data.sql
-│   ├── scripts/create_admin_user.py
+│   ├── Dockerfile               # 🐳 Образ backend
+│   ├── .dockerignore
 │   ├── requirements.txt
-│   ├── requirements-dev.txt
-│   ├── pyproject.toml
-│   └── run_server.py
+│   ├── run_server.py
+│   └── .env                     # 🔒 Dev: локальный env (не коммитить)
 ├── frontend/
 │   ├── src/
 │   │   ├── components/
-│   │   │   ├── common/DraggableDialog.tsx
-│   │   │   ├── common/AppAgGrid.tsx
-│   │   │   ├── layout/MainLayout.tsx
-│   │   │   ├── help/
-│   │   │   │   ├── HelpSidebar.tsx
-│   │   │   │   ├── HelpArticleView.tsx
-│   │   │   │   ├── HelpArticleEditor.tsx
-│   │   │   │   └── Hint.tsx
-│   │   │   └── gantt/
-│   │   │       ├── constants.ts
-│   │   │       ├── types.ts
-│   │   │       ├── DragTooltip.tsx
-│   │   │       ├── GanttFiltersBar.tsx
-│   │   │       ├── GanttFiltersPopover.tsx
-│   │   │       ├── GanttTaskDialog.tsx
-│   │   │       ├── GanttToolbar.tsx
-│   │   │       ├── MoveValidationDialog.tsx
-│   │   │       ├── RecalcProgressDialog.tsx
-│   │   │       ├── RecalcSettingsDialog.tsx
-│   │   │       └── TaskContextMenu.tsx
 │   │   ├── context/
-│   │   │   ├── AuthContext.tsx
-│   │   │   ├── PlainContext.tsx
-│   │   │   ├── HelpHintsContext.tsx
-│   │   │   └── TutorialContext.tsx
-│   │   ├── tutorial/
-│   │   │   ├── tours.ts        # Конфигурация туров
-│   │   │   └── types.ts
 │   │   ├── hooks/
-│   │   │   ├── useCascadeMove.ts
-│   │   │   ├── useDoubleClick.ts
-│   │   │   ├── useDragTooltip.ts
-│   │   │   ├── useExpandedGroups.ts
-│   │   │   ├── useExpandedRoots.ts
-│   │   │   ├── useGanttActions.ts
-│   │   │   ├── useGanttData.ts
-│   │   │   ├── useGanttDependencies.ts
-│   │   │   ├── useGanttFilters.ts
-│   │   │   ├── useGanttTimeline.ts
-│   │   │   ├── useGanttViewport.ts
-│   │   │   ├── useRecalculate.ts
-│   │   │   └── useTaskResize.ts
 │   │   ├── pages/
-│   │   │   ├── LoginPage.tsx
-│   │   │   ├── EquipmentPage.tsx
-│   │   │   ├── ProductsPage.tsx
-│   │   │   ├── MaterialsPage.tsx
-│   │   │   ├── RecipesPage.tsx
-│   │   │   ├── OperationsPage.tsx
-│   │   │   ├── OrdersPage.tsx
-│   │   │   ├── SchedulePage.tsx
-│   │   │   ├── GanttPage.tsx
-│   │   │   ├── ShiftPage.tsx
-│   │   │   ├── PersonnelPage.tsx
-│   │   │   ├── CzPage.tsx
-│   │   │   ├── WhatIfPage.tsx
-│   │   │   ├── AuditPage.tsx
-│   │   │   ├── SettingsPage.tsx
-│   │   │   ├── PlanSettingsWizard.tsx
-│   │   │   └── HelpPage.tsx
 │   │   ├── services/api.ts
-│   │   ├── theme/
-│   │   │   ├── agGridLocale.ts
-│   │   │   └── agGridTheme.ts
 │   │   ├── types/index.ts
-│   │   ├── utils/
-│   │   │   ├── ganttBatchColors.ts
-│   │   │   ├── ganttBrackets.ts
-│   │   │   ├── ganttDowntimes.ts
-│   │   │   ├── ganttGroups.ts
-│   │   │   ├── ganttHelpers.ts
-│   │   │   ├── ganttRenderItems.ts
-│   │   │   ├── ganttSetups.ts
-│   │   │   ├── ganttTimelineOptions.ts
-│   │   │   └── ganttValidators.ts
 │   │   ├── App.tsx
-│   │   ├── main.tsx
-│   │   └── index.css
+│   │   └── config.ts            # API_BASE_URL из VITE_API_URL
+│   ├── Dockerfile               # 🐳 Образ frontend (multi-stage)
+│   ├── .dockerignore
+│   ├── nginx.conf               # Внутренний nginx (SPA-fallback)
 │   ├── package.json
 │   └── vite.config.ts
+├── nginx/
+│   └── nginx.conf               # 🐳 Внешний reverse-proxy
+├── scripts/
+│   ├── deploy_init.sh           # Инициализация БД (Linux)
+│   └── deploy_init.ps1          # Инициализация БД (Windows)
 ├── docs/
+│   ├── DEPLOYMENT.md            # Развёртывание в облаке
+│   ├── DOCKER.md                # Docker: детали
 │   ├── ARCHITECTURE.md
 │   ├── API.md
 │   ├── CONFIGURATION.md
@@ -306,19 +238,13 @@ household-aps/
 │   ├── DEVELOPMENT.md
 │   ├── ROADMAP.md
 │   ├── adr/
-│   │   ├── README.md
-│   │   ├── 0001-use-ortools-cp-sat.md
-│   │   ├── 0002-snapshot-tables-for-versioning.md
-│   │   ├── 0003-plan-settings-per-plan.md
-│   │   ├── 0004-whatif-two-transactions.md
-│   │   └── 0005-help-system.md
 │   └── requirements/ТЗ.txt
 └── tools/prompts/
 ```
 
 ## 🚀 Быстрый старт
 
-### Автоматический (рекомендуется)
+### Автоматический (рекомендуется для разработки)
 
 Из корня проекта:
 ```
@@ -336,7 +262,7 @@ household-aps/
 Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 ```
 
-### Ручной
+### Ручной (dev)
 
 #### Предварительные требования
 - Python 3.12+
@@ -344,49 +270,39 @@ Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 - Docker
 
 #### Шаг 1: Запуск PostgreSQL
+
+Через `docker/docker-compose.yml`:
 ```
-docker run --name aps_postgres -e POSTGRES_USER=aps -e POSTGRES_PASSWORD=aps_secret -e POSTGRES_DB=household -p 5432:5432 -d postgres:16
+docker compose -f docker/docker-compose.yml up -d
+```
+
+Или напрямую:
+```
+docker run --name aps_postgres -e POSTGRES_USER=aps -e POSTGRES_PASSWORD=aps_secret -e POSTGRES_DB=household -p 5432:5432 -d postgres:17
 ```
 
 #### Шаг 2: Инициализация схемы и демо-данных
 
 **⚠️ ВАЖНО:** применять SQL-файлы через `docker cp` + `psql -f`, а не через `Get-Content | docker exec` — иначе PowerShell испортит кириллицу.
+
+**Способ 1 — полная схема v4.9.0 (рекомендуется):**
+```
+docker cp backend\init_schema_v4.9.sql aps_postgres:/tmp/init_schema_v4.9.sql
+docker cp backend\init_schema_v4.9_seed.sql aps_postgres:/tmp/init_schema_v4.9_seed.sql
+docker cp backend\seed_demo_data.sql aps_postgres:/tmp/seed_demo_data.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema_v4.9.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema_v4.9_seed.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/seed_demo_data.sql
+```
+
+**Способ 2 — базовая схема + миграции (для апгрейда):**
 ```
 docker cp backend\init_schema.sql aps_postgres:/tmp/init_schema.sql
 docker cp backend\seed_demo_data.sql aps_postgres:/tmp/seed_demo_data.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/seed_demo_data.sql
 ```
-
-#### Шаг 2b (только при апгрейде существующей БД): применить миграции
-```
-docker cp backend\migrations\add_21.sql aps_postgres:/tmp/add_21.sql
-docker cp backend\migrations\add_23.sql aps_postgres:/tmp/add_23.sql
-docker cp backend\migrations\add_24.sql aps_postgres:/tmp/add_24.sql
-docker cp backend\migrations\add_24_seed_1.sql aps_postgres:/tmp/add_24_seed_1.sql
-docker cp backend\migrations\add_24_seed_2.sql aps_postgres:/tmp/add_24_seed_2.sql
-docker cp backend\migrations\add_24_seed_3.sql aps_postgres:/tmp/add_24_seed_3.sql
-docker cp backend\migrations\add_25.sql aps_postgres:/tmp/add_25.sql
-docker cp backend\migrations\add_25_seed.sql aps_postgres:/tmp/add_25_seed.sql
-docker cp backend\migrations\add_26_seed_1.sql aps_postgres:/tmp/add_26_seed_1.sql
-docker cp backend\migrations\add_26_seed_2.sql aps_postgres:/tmp/add_26_seed_2.sql
-docker cp backend\migrations\add_26_seed_3.sql aps_postgres:/tmp/add_26_seed_3.sql
-docker cp backend\migrations\add_27_seed_1.sql aps_postgres:/tmp/add_27_seed_1.sql
-docker cp backend\migrations\add_28.sql aps_postgres:/tmp/add_28.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_21.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_23.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_24.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_24_seed_1.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_24_seed_2.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_24_seed_3.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_25.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_25_seed.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_1.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_2.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_26_seed_3.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_27_seed_1.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_28.sql
-```
+Затем — миграции из `backend/migrations/` (см. [docs/OPERATIONS.md](docs/OPERATIONS.md)).
 
 #### Шаг 3: Создание администратора
 ```
@@ -434,12 +350,14 @@ docker ps --filter "name=aps_postgres"
 docker exec -it aps_postgres psql -U aps -d household
 ```
 
-### Пересоздать БД с нуля
+### Пересоздать БД с нуля (v4.9.0)
 ```
 docker exec aps_postgres psql -U aps -d household -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
-docker cp backend\init_schema.sql aps_postgres:/tmp/init_schema.sql
+docker cp backend\init_schema_v4.9.sql aps_postgres:/tmp/init_schema_v4.9.sql
+docker cp backend\init_schema_v4.9_seed.sql aps_postgres:/tmp/init_schema_v4.9_seed.sql
 docker cp backend\seed_demo_data.sql aps_postgres:/tmp/seed_demo_data.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema_v4.9.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema_v4.9_seed.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/seed_demo_data.sql
 ```
 
@@ -449,38 +367,33 @@ docker cp backend\migrations\add_28.sql aps_postgres:/tmp/add_28.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_28.sql
 ```
 
-### Проверить статьи справки по категориям (Итерация 15.1 + 15.4)
+### Проверить статьи справки по категориям
 ```
 docker exec -i aps_postgres psql -U aps -d household -c "SELECT category, COUNT(*) AS cnt FROM help_article GROUP BY category ORDER BY category;"
 ```
 
 **Ожидаемо:** 9 категорий, **31 статья** (включая 15 FAQ и 1 туториал).
 
-### Проверить FAQ-статьи (Итерация 15.4)
+### Проверить FAQ-статьи
 ```
 docker exec -i aps_postgres psql -U aps -d household -c "SELECT slug, title FROM help_article WHERE category = 'faq' ORDER BY display_order;"
 ```
 
 **Ожидаемо:** 15 статей с префиксом `faq-`.
 
-### Проверить контекстные подсказки (Итерация 15.2)
+### Проверить контекстные подсказки
 ```
 docker exec -i aps_postgres psql -U aps -d household -c "SELECT hint_key, title, article_slug FROM help_hint WHERE is_published = TRUE ORDER BY display_order;"
 ```
 
-### Проверить таблицу сохранённых представлений аудита (Итерация 16.2)
+### Проверить сохранённые представления аудита
 ```
 docker exec -i aps_postgres psql -U aps -d household -c "\d audit_saved_view"
 ```
 
 **Ожидаемо:** 10 колонок, 4 индекса, 1 триггер.
 
-### Проверить свои сохранённые представления (Итерация 16.2)
-```
-docker exec -i aps_postgres psql -U aps -d household -c "SELECT name, is_default, display_order, created_at FROM audit_saved_view ORDER BY display_order, name;"
-```
-
-### Проверить архивные версии (Итерация 13.21)
+### Проверить архивные версии
 ```
 docker exec -i aps_postgres psql -U aps -d household -c "SELECT COUNT(*) FILTER (WHERE is_archived = TRUE) AS archived, COUNT(*) FILTER (WHERE is_active = TRUE) AS active FROM schedule_version WHERE organization_id = '00000000-0000-0000-0000-000000000001';"
 ```
@@ -501,34 +414,34 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT COUNT(*) FILTER 
 - **Подсказки (15.2):** обновление кэша только при перезагрузке страницы.
 - **Туториал (15.3):** прогресс хранится в `localStorage` (per-browser). При очистке браузера — тур показывается заново.
 - **Туториал (15.3):** нет per-user сохранения прогресса (нет поля в `app_user`).
-- **Туториал (15.3):** нет аналитики прохождения (какие шаги пропускаются).
 - **FAQ (15.4):** 15 статей покрывают топ-15 проблем. Дополнения — через seed-миграции.
-- **Справка (15.5):** редактирование статей доступно только роли ADMIN. Остальные роли получают 403.
-- **Аудит (16):** серии для дашборда собираются в памяти (без SQL-агрегации) — при 10k+ событий за период может замедлиться.
-- **Аудит (16):** экспорт в Excel ограничен `max_rows = 10000` (защита от гигантских выгрузок).
-- **Аудит (16):** сохранённые представления **per-user**, не шарятся между пользователями одной организации.
+- **Справка (15.5):** редактирование статей доступно только роли ADMIN.
+- **Аудит (16):** серии для дашборда собираются в памяти (без SQL-агрегации).
+- **Аудит (16):** экспорт в Excel ограничен `max_rows = 10000`.
+- **Аудит (16):** сохранённые представления **per-user**, не шарятся между пользователями.
 
 ## 🐛 Troubleshooting
 
 Краткий список — в [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). А также встроенный FAQ в UI: **http://localhost:5173/help/faq-plan-feasible-not-optimal**.
 
 Частые проблемы:
-- **`UndefinedColumnError`** → не применена миграция (см. таблицу в TROUBLESHOOTING).
+- **`UndefinedColumnError`** → не применена миграция.
 - **`usePlan must be used within PlanProvider`** → очистить `node_modules\.vite`.
 - **Advisor «дёргается»** → `useCallback` в `PlainContext.tsx`.
 - **План пуст (⚠)** → снапшоты не заполнены, пересоздать план.
-- **Старая версия не архивируется** → используется в what-if сценарии, снекбар покажет детали.
-- **Задачи не перетаскиваются на Ганте (14.2)** → проверьте, что режим `✏️ Редактирование`, а не `🔒 Просмотр`.
-- **Справка не открывается (15.1)** → проверить, что применены миграции `add_24.sql` и seed-файлы.
-- **Подсказки не показываются (15.2)** → проверить, что применены миграции `add_25.sql` и `add_25_seed.sql`, а также перезагрузить страницу (Ctrl+F5).
-- **Popover подсказки пустой (15.2)** → проверить `body_md` в `help_hint` для нужного `hint_key`.
-- **Туториал не запускается (15.3)** → проверить, что установлен `react-joyride`, очистить `node_modules/.vite`, перезагрузить страницу.
-- **FAQ-статьи не появились (15.4)** → проверить, что применены миграции `add_26_seed_1/2/3.sql`.
-- **Не удаётся создать/отредактировать статью (15.5)** → проверить, что у пользователя роль ADMIN.
-- **Аудит не открывается (16.0)** → проверить, что пункт меню раскомментирован в `MainLayout.tsx` и роут `/audit` есть в `App.tsx`.
-- **Дашборд на аудите пустой (16.3)** → проверить, что установлен `recharts`: `npm ls recharts`.
-- **Экспорт в Excel падает (16.4)** → проверить, что `openpyxl` установлен: `python -c "import openpyxl"`.
-- **Сохранённые представления не появляются (16.2)** → проверить, что применена миграция `add_28.sql`: `\d audit_saved_view`.
+- **Старая версия не архивируется** → используется в what-if сценарии.
+- **Задачи не перетаскиваются на Ганте** → проверьте, что режим `✏️`.
+- **Справка не открывается** → проверить миграции `add_24.sql` + seed-файлы.
+- **Подсказки не показываются** → `add_25.sql` + `add_25_seed.sql` + Ctrl+F5.
+- **Туториал не запускается** → `npm ls react-joyride`, очистить `node_modules/.vite`.
+- **FAQ-статьи не появились** → `add_26_seed_1/2/3.sql`.
+- **Не удаётся редактировать статью** → у пользователя роль ADMIN.
+- **Аудит не открывается** → `MainLayout.tsx` (пункт меню) + `App.tsx` (роут).
+- **Дашборд на аудите пустой** → `npm ls recharts`.
+- **Экспорт в Excel падает** → `python -c "import openpyxl"`.
+- **Сохранённые представления не появляются** → `add_28.sql`.
+- **В облаке frontend стучится на `localhost`** → `VITE_API_URL` в `.env`, пересобрать frontend.
+- **`curl` в PowerShell ведёт себя странно** → использовать `curl.exe` (см. DEPLOYMENT.md).
 
 ## 🗺️ Roadmap
 
