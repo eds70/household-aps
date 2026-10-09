@@ -3332,11 +3332,165 @@ nslookup your-domain.com
 
 **Пока DNS не работает** — использовать IP-адрес.
 
+### 147. Frontend стучится на `your-server-ip` (`ERR_NAME_NOT_RESOLVED`)
+
+**Симптом:** страница логина открывается, но при попытке входа — «Ошибка авторизации». В DevTools → Console:
+
+```
+Failed to load resource: net::ERR_NAME_NOT_RESOLVED
+POST http://your-server-ip/api/v1/auth/login
+```
+
+Вместо `localhost:8080` или реального домена frontend стучится на **`your-server-ip`** — плейсхолдер из `.env.example`.
+
+**Причина:** `VITE_API_URL` в `.env` **не заменён** с плейсхолдера `http://your-server-ip` на реальный адрес.
+
+**Почему это критично:** Vite **вшивает** `VITE_API_URL` в JS-бандл **на этапе сборки** (`docker compose build frontend`). После сборки значение **нельзя изменить** без пересборки.
+
+**Решение:**
+
+**Шаг 1. Проверить `.env`:**
+
+```bash
+cd ~/household-aps
+grep VITE_API_URL .env
+```
+
+Если видишь `VITE_API_URL=http://your-server-ip` — **подтверждено**.
+
+**Шаг 2. Заменить значение:**
+
+Для локальной VM (VirtualBox):
+```bash
+sed -i 's|^VITE_API_URL=.*|VITE_API_URL=http://localhost:8080|' .env
+```
+
+Для облака по IP:
+```bash
+sed -i 's|^VITE_API_URL=.*|VITE_API_URL=http://YOUR-IP|' .env
+```
+
+Для облака по домену:
+```bash
+sed -i 's|^VITE_API_URL=.*|VITE_API_URL=https://your-domain.com|' .env
+```
+
+**Шаг 3. Проверить `ALLOWED_ORIGINS`** (заодно):
+
+```bash
+sed -i 's|^ALLOWED_ORIGINS=.*|ALLOWED_ORIGINS=http://localhost:8080,http://localhost|' .env
+```
+
+**Шаг 4. Пересобрать frontend** (обязательно!):
+
+```bash
+docker compose -f docker-compose.prod.yml build frontend
+docker compose -f docker-compose.prod.yml up -d frontend
+```
+
+**Шаг 5. Перезапустить backend** (для новых CORS):
+
+```bash
+docker compose -f docker-compose.prod.yml restart backend
+```
+
+**Шаг 6. Проверить, что URL вшит правильно:**
+
+```bash
+docker compose -f docker-compose.prod.yml exec frontend \
+    grep -r "localhost:8080" /usr/share/nginx/html/assets/ | head -2
+```
+
+Ожидаемо: найдено совпадение в `index-xxx.js`.
+
+**Шаг 7. Hard reload в браузере:**
+
+`Ctrl+Shift+R` — очистить кэш. Открыть `http://localhost:8080/login`, войти.
+
+**Профилактика:**
+
+С 2026-10-09 в `frontend/src/config.ts` добавлена **защита** — если `VITE_API_URL` содержит плейсхолдер или пустой, используется fallback `http://localhost:8080`. **Но для облака** всё равно нужно явно задать правильный URL.
+
+**Связанные статьи:**
+
+- [docs/DEPLOYMENT.md](DEPLOYMENT.md) — Шаг 6.1 «Проверка критичных переменных».
+- Пункт 130 (VITE_API_URL изменили, но frontend не обновился).
+
+### 148. Оборудование не грузится, 307 redirect без порта
+
+**Симптом:** UI открывается, логин проходит, но страница `/equipment` пуста — «Нет данных для отображения», «Ошибка загрузки оборудования». В DevTools → Network:
+
+```
+GET /api/v1/equipment → 307 Temporary Redirect
+location: http://localhost/api/v1/equipment/    ← без порта :8080!
+```
+
+Браузер следует редиректу на `http://localhost/api/v1/equipment/` — а там ничего нет.
+
+**Причина:** в `nginx/nginx.conf` установлен `proxy_set_header Host $host;` — **без порта**. Когда backend отвечает 307 (redirect на trailing slash), nginx формирует `Location` через `$host`, теряя `:8080`.
+
+**Решение:**
+
+**Шаг 1. Заменить все `$host` на `$http_host` в `nginx/nginx.conf`:**
+
+```bash
+cd ~/household-aps
+sed -i 's|proxy_set_header Host \$host;|proxy_set_header Host $http_host;|g' nginx/nginx.conf
+```
+
+**Шаг 2. Проверить замену:**
+
+```bash
+grep -n "proxy_set_header Host" nginx/nginx.conf
+```
+
+Ожидаемо: все активные вхождения содержат `$http_host`, ни одной `$host`.
+
+**Шаг 3. Перезапустить nginx:**
+
+```bash
+docker compose -f docker-compose.prod.yml restart nginx
+```
+
+**Шаг 4. Проверить через curl** (в PowerShell):
+
+```powershell
+curl.exe -i http://localhost:8080/api/v1/equipment
+```
+
+Ожидаемо:
+```
+HTTP/1.1 401 Unauthorized     ← уже не 307
+location: (нет)
+```
+
+Или — если `Location` есть:
+```
+location: http://localhost:8080/api/v1/equipment/   ← с портом
+```
+
+**Шаг 5. Hard reload в браузере:**
+
+`Ctrl+Shift+R`, открыть `/equipment`. Должны загрузиться **10 записей оборудования**.
+
+**Почему это работает:**
+
+`$http_host` — переменная nginx, которая содержит `Host` **с портом** (то, что прислал клиент). `$host` — только домен, без порта. Для reverse-proxy на нестандартном порту (8080 → 80) обязательно использовать `$http_host`.
+
+**Профилактика:**
+
+С 2026-10-09 в `nginx/nginx.conf` **все** `proxy_set_header Host $host;` заменены на `$http_host` по умолчанию.
+
+**Связанные статьи:**
+
+- Пункт 131 (502 Bad Gateway — похожая проблема с Host).
+- Пункт 132 (SPA-роуты 404 — проблема nginx без порта).
+
 ---
 
 ## Диагностика
 
-### 147. Общая проверка системы
+### 149.Общая проверка системы
 
 ```bash
 # PostgreSQL
@@ -3419,7 +3573,7 @@ SELECT COUNT(*) AS saved_views FROM audit_saved_view;
 
 ---
 
-### 148. Полная очистка и пересоздание
+### 150.Полная очистка и пересоздание
 
 **Dev** (PostgreSQL в Docker):
 
@@ -3470,7 +3624,7 @@ docker compose -f docker-compose.prod.yml up -d
 
 ---
 
-### 149. Полезные ссылки
+### 151. Полезные ссылки
 
 - [README.md](../README.md) — основная документация.
 - [docs/DEPLOYMENT.md](DEPLOYMENT.md) — развёртывание в облаке.

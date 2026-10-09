@@ -28,7 +28,7 @@ from app.api.v1.shift import router as shift_router
 from app.api.v1.whatif import router as whatif_router
 from app.core.config import settings
 
-APP_VERSION = "4.9.0"
+APP_VERSION = "4.9.1"
 
 tags_metadata = [
     {"name": "Авторизация"},

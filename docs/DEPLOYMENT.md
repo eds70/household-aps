@@ -108,7 +108,7 @@
 | 2 | **PostgreSQL доступен из интернета** | НЕ пробрасывать `5432:5432`. Backend общается по внутренней сети |
 | 3 | **CORS** | Задать `ALLOWED_ORIGINS` в `.env` — домен/IP облака |
 | 4 | **`SECRET_KEY` по умолчанию** | Сгенерировать: `openssl rand -hex 32` |
-| 5 | **Frontend стучится на `localhost:8000`** | Задать `VITE_API_URL` в `.env`, пересобрать frontend |
+| 5 | **Frontend стучится на `your-server-ip`** ⚠️ | **Заменить `VITE_API_URL` в `.env`** перед сборкой! Vite вшивает значение в бандл |
 | 6 | **PostgreSQL volume** | НЕ использовать `docker compose down -v`. Volume `pgdata` персистентный |
 | 7 | **Контейнеры не поднимаются после ребута** | `restart: unless-stopped` (уже в compose) |
 | 8 | **Backend стартует раньше БД** | `depends_on: condition: service_healthy` (уже в compose) |
@@ -278,6 +278,42 @@ VITE_API_URL=http://your-server-ip
 
 **⚠️ Не коммитить `.env`!**
 
+### Шаг 6.1. Облако — проверка критичных переменных ⚠️
+
+**Перед сборкой — убедитесь, что все критичные переменные заменились.**
+
+```bash
+# Проверить, что нет плейсхолдеров
+grep -E "^(POSTGRES_PASSWORD|SECRET_KEY|VITE_API_URL|ALLOWED_ORIGINS)=" .env
+
+# Проверить, что нет "change_me"
+grep -c "change_me" .env
+# Ожидаемо: 0
+
+# Проверить, что нет "your-server-ip"/"your-domain.com"
+grep -E "your-server-ip|your-domain\.com" .env
+# Ожидаемо: пусто (или только в комментариях)
+```
+
+**⚠️ КРИТИЧНО: `VITE_API_URL`.**
+
+**Vite вшивает `VITE_API_URL` в JS-бандл при сборке frontend.** Если он останется `http://your-server-ip`:
+- Frontend будет стучаться на этот адрес.
+- Браузер вернёт `ERR_NAME_NOT_RESOLVED`.
+- **UI не заработает**, логин не пройдёт.
+
+**Значения:**
+- **Локальная VM (VirtualBox):** `VITE_API_URL=http://localhost:8080`
+- **Облако по IP:** `VITE_API_URL=http://your-server-ip` (заменить на реальный IP!)
+- **Облако по домену:** `VITE_API_URL=https://your-domain.com`
+
+**Если менял `VITE_API_URL` после сборки — пересобрать frontend:**
+
+```bash
+docker compose -f docker-compose.prod.yml build frontend
+docker compose -f docker-compose.prod.yml up -d frontend
+```
+
 ### Шаг 7. Облако — сборка и запуск
 
 ```bash
@@ -377,6 +413,17 @@ curl.exe http://your-server-ip/health
 # Или:
 (Invoke-WebRequest -Uri http://your-server-ip/health).Content
 ```
+
+**Проверка, что `VITE_API_URL` вшит правильно:**
+
+```bash
+# Проверить, что в JS-бандле есть правильный URL
+docker compose -f docker-compose.prod.yml exec frontend \
+    grep -r "your-server-ip\|your-domain.com" /usr/share/nginx/html/assets/ | head -3
+# Ожидаемо: ПУСТО (плейсхолдеров нет)
+```
+
+**Если найдены плейсхолдеры** — вы **забыли заменить `VITE_API_URL`** перед сборкой. См. Шаг 6.1.
 
 **Открой в браузере:** `http://your-server-ip/`
 
@@ -589,16 +636,32 @@ docker exec -i aps_postgres psql -U aps -d household -c \
 docker compose -f docker-compose.prod.yml logs backend | grep "connection refused"
 ```
 
-### Frontend стучится не туда
+### Frontend стучится не туда (`your-server-ip`) ⚠️
 
-**Причина:** `VITE_API_URL` не задан при сборке.
+**Причина:** `VITE_API_URL` не заменён в `.env` перед сборкой frontend.
 
-**Решение:** пересобрать:
-```bash
-docker compose -f docker-compose.prod.yml build --no-cache frontend
+**Симптом:** в DevTools → Console:
+```
+POST http://your-server-ip/api/v1/auth/login
+net::ERR_NAME_NOT_RESOLVED
 ```
 
-**Проверка:** `curl.exe http://your-server-ip/api/v1/health` — если 404, значит, nginx не проксирует API.
+**Решение:**
+1. Проверить `.env`:
+   ```bash
+   grep VITE_API_URL .env
+   ```
+2. Если там `your-server-ip` — заменить на правильный:
+   ```bash
+   sed -i 's|^VITE_API_URL=.*|VITE_API_URL=http://localhost:8080|' .env
+   ```
+   (или на ваш домен/IP)
+3. **Пересобрать frontend:**
+   ```bash
+   docker compose -f docker-compose.prod.yml build frontend
+   docker compose -f docker-compose.prod.yml up -d frontend
+   ```
+4. Hard reload в браузере (`Ctrl+Shift+R`).
 
 ### «Network Error» при логине
 
@@ -612,6 +675,22 @@ ALLOWED_ORIGINS=http://your-server-ip,https://your-domain.com
 Перезапустить backend:
 ```bash
 docker compose -f docker-compose.prod.yml restart backend
+```
+
+### Оборудование не грузится (307 redirect на неправильный порт) ⚠️
+
+**Причина:** `proxy_set_header Host $host;` в `nginx/nginx.conf` — не сохраняет порт при редиректе.
+
+**Симптом:** в DevTools → Network:
+```
+GET /api/v1/equipment → 307 Temporary Redirect
+location: http://localhost/api/v1/equipment/    ← без порта!
+```
+
+**Решение:** заменить все `$host` на `$http_host` в `nginx/nginx.conf`:
+```bash
+sed -i 's|proxy_set_header Host \$host;|proxy_set_header Host $http_host;|g' nginx/nginx.conf
+docker compose -f docker-compose.prod.yml restart nginx
 ```
 
 ### Порт 80 занят
@@ -685,10 +764,12 @@ newgrp docker
 - [ ] Docker + docker-compose установлены.
 - [ ] Проект склонирован / залит.
 - [ ] `.env` создан из `.env.example`.
-- [ ] `SECRET_KEY` сгенерирован (`openssl rand -hex 32`).
-- [ ] `POSTGRES_PASSWORD` задан (мин. 16 символов).
-- [ ] `ALLOWED_ORIGINS` = домен/IP.
-- [ ] `VITE_API_URL` = домен/IP.
+- [ ] **`SECRET_KEY` сгенерирован** (`openssl rand -hex 32`).
+- [ ] **`POSTGRES_PASSWORD` задан** (мин. 16 символов).
+- [ ] **`ALLOWED_ORIGINS` = домен/IP** ⚠️.
+- [ ] **`VITE_API_URL` = домен/IP** ⚠️ — **не `your-server-ip`!**
+- [ ] **Проверка: `grep -c "change_me" .env` → `0`** ⚠️.
+- [ ] **Проверка: `grep -c "your-server-ip" .env` → `0`** ⚠️.
 - [ ] `.env` **НЕ** в git.
 - [ ] `docker compose -f docker-compose.prod.yml build` — ок.
 - [ ] `docker compose -f docker-compose.prod.yml up -d` — 4 контейнера Up.
@@ -696,11 +777,13 @@ newgrp docker
 - [ ] `init_schema_v4.9.sql` применён.
 - [ ] `init_schema_v4.9_seed.sql` применён.
 - [ ] `seed_demo_data.sql` применён.
-- [ ] Админ создан.
+- [ ] Админ создан (или обновлён).
 - [ ] `/health` отвечает `version: "4.9.0"`.
+- [ ] **Проверка: `grep -r "your-server-ip" /usr/share/nginx/html/assets/` → пусто** ⚠️.
 - [ ] Браузер открывает `http://your-server-ip/`.
 - [ ] Логин работает.
 - [ ] Справка открывается (31 статья).
+- [ ] Оборудование грузится (10 записей).
 - [ ] **Пароль админа сменён.**
 - [ ] (Опционально) HTTPS настроен.
 - [ ] (Опционально) Cron для бэкапов.
@@ -716,4 +799,4 @@ newgrp docker
 
 ---
 
-*Последнее обновление: 2026-10-07*
+*Последнее обновление: 2026-10-09*

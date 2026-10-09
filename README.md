@@ -2,7 +2,7 @@
 
 **Система автоматического планирования производства на базе OR-Tools CP-SAT**
 
-Версия: **4.9.0** (Итерации 0–16 завершены)
+Версия: **4.9.1** (Итерации 0–16 завершены, patch-релиз)
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -139,6 +139,8 @@ docker compose -f docker-compose.prod.yml up -d
 ```
 
 Подробно — в **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** и **[docs/DOCKER.md](docs/DOCKER.md)**.
+
+**⚠️ Критично:** `VITE_API_URL` в `.env` **должен быть реальным адресом**, не плейсхолдером `your-server-ip`. Vite вшивает его в бандл при сборке — после сборки изменить нельзя. Подробнее — в [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), Шаг 6.1.
 
 ## 🛠️ Стек технологий
 
@@ -411,10 +413,8 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT COUNT(*) FILTER 
 - **Редактирование (14.2):** при открытии плана режим по умолчанию — readonly; для редактирования нужно кликнуть `✏️`.
 - **Справка (15.1):** поиск неполнотекстовый (`ILIKE`), для 100+ статей — миграция на `tsvector`.
 - **Подсказки (15.2):** нет редактирования через UI. Правки — через SQL или seed-миграции.
-- **Подсказки (15.2):** обновление кэша только при перезагрузке страницы.
 - **Туториал (15.3):** прогресс хранится в `localStorage` (per-browser). При очистке браузера — тур показывается заново.
-- **Туториал (15.3):** нет per-user сохранения прогресса (нет поля в `app_user`).
-- **FAQ (15.4):** 15 статей покрывают топ-15 проблем. Дополнения — через seed-миграции.
+- **Туториал (15.3):** нет per-user сохранения прогресса.
 - **Справка (15.5):** редактирование статей доступно только роли ADMIN.
 - **Аудит (16):** серии для дашборда собираются в памяти (без SQL-агрегации).
 - **Аудит (16):** экспорт в Excel ограничен `max_rows = 10000`.
@@ -441,7 +441,9 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT COUNT(*) FILTER 
 - **Экспорт в Excel падает** → `python -c "import openpyxl"`.
 - **Сохранённые представления не появляются** → `add_28.sql`.
 - **В облаке frontend стучится на `localhost`** → `VITE_API_URL` в `.env`, пересобрать frontend.
-- **`curl` в PowerShell ведёт себя странно** → использовать `curl.exe` (см. DEPLOYMENT.md).
+- **Frontend стучится на `your-server-ip`** → `VITE_API_URL` не заменён — см. п. 147 в TROUBLESHOOTING.
+- **Оборудование не грузится (307 redirect без порта)** → `nginx.conf` использует `$host` вместо `$http_host` — см. п. 148.
+- **`curl` в PowerShell ведёт себя странно** → использовать `curl.exe`.
 
 ## 🗺️ Roadmap
 
@@ -491,4 +493,4 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT COUNT(*) FILTER 
 
 ---
 
-Итерации 0–16 завершены. Следующая — Итерация 17: Резерв (⏳).
+Итерации 0–16 завершены. Patch 4.9.1 — исправления для развёртывания в VM/Docker. Следующая — Итерация 17: Резерв (⏳).

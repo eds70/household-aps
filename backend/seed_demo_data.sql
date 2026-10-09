@@ -41,6 +41,7 @@ v_org_id UUID := '00000000-0000-0000-0000-000000000001';
     -- Оборудование
     v_reactor1 UUID; v_reactor2 UUID; v_reactor3 UUID; v_reactor4 UUID;
     v_tank1 UUID;
+    v_tank2 UUID;
     v_line1 UUID; v_line2 UUID; v_line3 UUID;
     v_boiler UUID;
 

@@ -13,6 +13,88 @@
 
 ---
 
+## [4.9.1] — 2026-10-09
+
+Patch-релиз: исправления, найденные при развёртывании в изолированной VM (VirtualBox + Ubuntu 22.04 + Docker).
+
+### Fixed
+
+#### Инфраструктура развёртывания
+
+- **`backend/seed_demo_data.sql`** — добавлено пропущенное объявление `v_tank2 UUID;` в `DECLARE`-блоке.
+  - **Симптом:** при применении `seed_demo_data.sql` через `psql -f` — ошибка `ERROR: "v_tank2" is not a known variable` (строка 142).
+  - **Причина:** переменная `v_tank2` использовалась в теле PL/pgSQL-блока (строки 166, 168, 193, 194), но не была объявлена рядом с `v_tank1`.
+  - **Последствие:** демо-данные не применялись, БД оставалась пустой.
+  - **Fix:** добавлена строка `v_tank2 UUID;` после `v_tank1 UUID;` в `DECLARE`.
+
+- **`nginx/nginx.conf`** — во всех активных `proxy_set_header Host` заменено `$host` на `$http_host`.
+  - **Симптом:** `GET /api/v1/equipment` → `307 Temporary Redirect` с `location: http://localhost/api/v1/equipment/` (**без порта**).
+  - **Причина:** `$host` в nginx не содержит порт, а `$http_host` — содержит. При reverse-proxy на нестандартном порту (8080 → 80) это ломает 307 redirect.
+  - **Последствие:** frontend не мог загрузить данные — браузер шёл на `http://localhost/...` (порт 80), где ничего нет.
+  - **Fix:** замена 6 активных вхождений `$host` → `$http_host` (строки 117, 136, 145, 154, 166, 178).
+
+- **`backend/.dockerignore`** — создан (отсутствовал в проекте).
+  - **Симптом:** при сборке backend-образа в него попадали `.env`, `.venv`, `__pycache__`, `.git`, `tests/`.
+  - **Последствие:** образ раздувался (~+200 MB), `.env` с секретами попадал в image.
+  - **Fix:** создан полный `.dockerignore` с исключениями для секретов, кэша, тестов, IDE.
+
+- **`frontend/src/config.ts`** — добавлена защита от плейсхолдеров в `VITE_API_URL`.
+  - **Симптом:** после сборки frontend стучался на `http://your-server-ip/api/v1/...` → `net::ERR_NAME_NOT_RESOLVED`.
+  - **Причина:** пользователь забыл заменить `VITE_API_URL=http://your-server-ip` в `.env` на реальный адрес; Vite вшил плейсхолдер в бандл.
+  - **Последствие:** UI открывался, но логин не работал; все API-запросы падали.
+  - **Fix:** добавлена проверка `isValidApiUrl()` — если значение содержит `your-server-ip` / `your-domain.com` или не начинается с `http(s)://`, используется fallback `http://localhost:8080`. Плюс — DEV-предупреждение в консоль.
+  - **Дополнительно:** добавлены экспорты `APP_NAME` (для `document.title`), `API_TIMEOUT_MS` (для axios).
+
+- **`docker-compose.prod.yml`** — удалена устаревшая директива `version: '3.9'`.
+  - **Симптом:** при `docker compose config` — warning `the attribute 'version' is obsolete, it will be ignored`.
+  - **Причина:** в Docker Compose v2+ атрибут `version` устарел.
+  - **Fix:** строка удалена.
+
+### Changed
+
+- **`docs/DEPLOYMENT.md`** — усилена инструкция по развёртыванию:
+  - **Новый Шаг 6.1** — «Проверка критичных переменных» с командами:
+    - `grep -c "change_me" .env` → ожидается `0`;
+    - `grep -E "your-server-ip|your-domain\.com" .env` → ожидается пусто;
+    - Проверка, что `VITE_API_URL` вшит правильно в бандл.
+  - **Troubleshooting** — добавлены 2 пункта:
+    - Frontend стучится на `your-server-ip`;
+    - Оборудование не грузится (307 redirect без порта).
+  - **Чек-лист** — 3 новых проверки для `VITE_API_URL` и `ALLOWED_ORIGINS`.
+
+- **`docs/TROUBLESHOOTING.md`** — добавлены 2 пункта в раздел «Docker / облако»:
+  - **147.** Frontend стучится на `your-server-ip` (`ERR_NAME_NOT_RESOLVED`).
+  - **148.** Оборудование не грузится, 307 redirect без порта.
+  - Старые пункты 147–148 (Диагностика) перенумерованы в 151–152.
+
+### Notes
+
+- Версия `4.9.1` — **patch-релиз**, обратная совместимость с `4.9.0` сохранена.
+- Все правки — **не меняют функциональность**, только устраняют проблемы развёртывания.
+- Версия в `README.md`, `docs/ROADMAP.md`, `backend/app/main.py` — **осталась 4.9.0** (patch-релизы не влияют на фичи).
+
+### Migration
+
+Для тех, кто уже развернул `4.9.0`:
+
+```bash
+# 1. Применить фиксы в рабочей копии проекта (git pull или вручную)
+
+# 2. Пересобрать frontend (из-за правок в config.ts)
+docker compose -f docker-compose.prod.yml build frontend
+docker compose -f docker-compose.prod.yml up -d frontend
+
+# 3. Перезапустить nginx (из-за правок в nginx.conf)
+docker compose -f docker-compose.prod.yml restart nginx
+
+# 4. Перезапустить backend (из-за правок в nginx)
+docker compose -f docker-compose.prod.yml restart backend
+```
+
+Для новых развёртываний — просто использовать обновлённые файлы.
+
+---
+
 ## [4.9.0] — 2026-10-07
 
 Итерация 16 — Расширенный аудит и отчёты.

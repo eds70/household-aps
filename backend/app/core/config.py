@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     )
 
     APP_VERSION: str = Field(
-        default="4.9.0feаутшч",
+        default="4.9.1",
         description="Версия приложения",
     )
 
