@@ -177,3 +177,6 @@ docker/data/
 !.env.example
 !.gitkeep
 !docs/requirements/*.txt
+__pycache__/
+*.pyc
+*.pyo
