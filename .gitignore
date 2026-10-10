@@ -180,3 +180,18 @@ docker/data/
 __pycache__/
 *.pyc
 *.pyo
+
+dev_license.jwt
+l*.txt
+*.license
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Local license artifacts
+dev_license.jwt
+*.license
+l*.txt
+test.txt
