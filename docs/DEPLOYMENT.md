@@ -784,8 +784,8 @@ APS Scheduler использует **offline-лицензирование** (JWT
 |---|---|---|
 | `LICENSE_VERIFY` | да | `true` — проверка включена, `false` — отключена (только для локальной разработки) |
 | `LICENSE_KEY` | если `VERIFY=true` | JWT-лицензия от вендора |
-| `LICENSE_PUBLIC_KEY` | если RS256 | Публичный ключ вендора (PEM). Используется для проверки подписи RS256/ES256 |
-| `LICENSE_MASTER_SECRET` | если HS256 | Мастер-секрет HS256 (64 hex). Только для локальной разработки |
+| `LICENSE_PUBLIC_KEY` | для **RS256/ES256** (prod) | Публичный ключ вендора (PEM). Клиент не может подписать лицензию этим ключом |
+| `LICENSE_MASTER_SECRET` | для **HS256** (dev-only) | Мастер-секрет HS256 (64 hex). Клиент получает тот же ключ, что и подпись, — **только для внутренних тестов** |
 
 **Приоритет:** если задан `LICENSE_PUBLIC_KEY` — используется RS256/ES256, `LICENSE_MASTER_SECRET` игнорируется.
 
@@ -850,7 +850,108 @@ docker compose -f docker-compose.prod.yml logs backend-init
 
 ### Сценарии деплоя
 
-#### A. Локальная разработка, лицензия не нужна
+#### A. Production (RS256) — **рекомендуется**
+
+Используется **асимметричная подпись**: вендор подписывает **приватным** ключом, клиент проверяет **публичным**. Клиент **не может** выпустить себе лицензию.
+
+**1. Сгенерировать пару ключей (на машине вендора, один раз):**
+
+```bash
+python backend/scripts/generate_license.py init-master-key --algorithm RS256
+```
+
+Создаст:
+- `~/.aps/license_master_key.private.pem` — **секрет вендора**, НИКОМУ не передавать;
+- `~/.aps/license_master_key.public.pem` — публичный ключ, передавать клиенту.
+
+**2. Получить `instance_id` клиента (с его сервера):**
+
+```bash
+curl https://aps.client.com/api/v1/license/instance
+```
+
+**3. Сгенерировать лицензию под клиента:**
+
+```bash
+python backend/scripts/generate_license.py generate \
+  --algorithm RS256 \
+  --org "ООО Клиент" \
+  --tier enterprise \
+  --days 365 \
+  --instance-id <instance_id> \
+  --output client.license
+```
+
+Если привязка к серверу не нужна (работает на любом) — **убрать `--instance-id`**.
+
+**4. Передать клиенту:**
+- **LICENSE_KEY** (JWT из `client.license`);
+- **LICENSE_PUBLIC_KEY** (содержимое `license_master_key.public.pem`).
+
+**5. В `.env` клиента:**
+
+```dotenv
+LICENSE_VERIFY=true
+LICENSE_KEY=eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
+LICENSE_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\nMIIB...\n-----END PUBLIC KEY-----"
+# LICENSE_MASTER_SECRET — НЕ задавать!
+```
+
+**6. Перезапустить backend:**
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --force-recreate backend
+```
+
+**Проверка в логах:**
+
+```
+[license] Режим проверки: RS256 (публичный ключ вендора)
+[license] Лицензия валидна: holder='ООО Клиент', tier=enterprise, algorithm=RS256, days_left=365, instance_bound=true
+```
+
+#### B. Тест/дев (HS256 unattached) — только для внутренних тестов
+
+⚠️ **Не использовать в продакшене.** Клиент получает **тот же секрет**, что и подпись, и технически может выпустить себе лицензию.
+
+Лицензия **без `instance_id`** — работает на любой машине.
+
+**1. Сгенерировать мастер-секрет (один раз):**
+
+```bash
+python backend/scripts/generate_license.py init-master-key --algorithm HS256
+```
+
+Создаст `~/.aps/license_master_key.hex` — 64 hex-символа.
+
+**2. Сгенерировать лицензию:**
+
+```bash
+python backend/scripts/generate_license.py generate \
+  --algorithm HS256 \
+  --org "Test Org" \
+  --tier enterprise \
+  --days 30 \
+  --output test.license
+```
+
+**3. В `.env`:**
+
+```dotenv
+LICENSE_VERIFY=true
+LICENSE_KEY=<JWT из test.license>
+LICENSE_MASTER_SECRET=<64 hex из init-master-key>
+```
+
+**4. Перезапустить backend** через `--force-recreate`:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --force-recreate backend
+```
+
+**Почему `--force-recreate`, а не `restart`:** `restart` переиспользует существующий контейнер с его переменными окружения. `.env` перечитывается **только при создании** контейнера. После правки `.env` нужен `--force-recreate`.
+
+#### C. Локальная разработка, лицензия не нужна
 
 ```dotenv
 LICENSE_VERIFY=false
@@ -862,70 +963,7 @@ Backend стартует, все эндпоинты доступны. В лог�
 [license] LICENSE_VERIFY=false — проверка лицензии отключена. Не использовать в production!
 ```
 
-#### B. Тест с реальной лицензией (unattached)
-
-Лицензия **без `instance_id`** — работает на любой машине. Генерируется **без** `--instance-id`:
-
-```bash
-python backend/scripts/generate_license.py generate \
-  --algorithm HS256 \
-  --org "Test Org" \
-  --tier enterprise \
-  --days 30 \
-  --output test.license
-```
-
-В `.env`:
-
-```dotenv
-LICENSE_VERIFY=true
-LICENSE_KEY=<JWT из test.license>
-LICENSE_MASTER_SECRET=<64 hex из init-master-key>
-```
-
-Перезапустить backend **обязательно** через `--force-recreate` (не `restart`):
-
-```bash
-docker compose -f docker-compose.prod.yml up -d --force-recreate backend
-```
-
-**Почему `--force-recreate`, а не `restart`:** `restart` переиспользует существующий контейнер с его переменными окружения. `.env` перечитывается **только при создании** контейнера. После правки `.env` нужен `--force-recreate`.
-
-#### C. Production (RS256, привязка к серверу)
-
-1. На **машине вендора** (не на сервере клиента!):
-   ```bash
-   python backend/scripts/generate_license.py init-master-key --algorithm RS256
-   ```
-   Создаст `~/.aps/license_master_key.private.pem` (секрет) и `.public.pem`.
-
-2. Получить `instance_id` клиента (с его сервера):
-   ```bash
-   curl https://aps.client.com/api/v1/license/instance
-   ```
-
-3. Сгенерировать лицензию, привязанную к клиенту:
-   ```bash
-   python backend/scripts/generate_license.py generate \
-     --algorithm RS256 \
-     --org "ООО Клиент" \
-     --tier enterprise \
-     --days 365 \
-     --instance-id <instance_id> \
-     --output client.license
-   ```
-
-4. Передать клиенту: **LICENSE_KEY** (JWT) и **LICENSE_PUBLIC_KEY** (содержимое `.public.pem`).
-
-5. В `.env` клиента:
-   ```dotenv
-   LICENSE_VERIFY=true
-   LICENSE_KEY=<JWT>
-   LICENSE_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\nMIIB...\n-----END PUBLIC KEY-----"
-   # LICENSE_MASTER_SECRET — НЕ задавать!
-   ```
-
-6. `docker compose -f docker-compose.prod.yml up -d --force-recreate backend`
+**Только для локальной разработки.** В продакшене — использовать **A (RS256)**.
 
 ### Перенос JWT на сервер без venv
 
@@ -947,7 +985,8 @@ EOF
 base64 -d /tmp/li.b64 > /tmp/license.jwt
 rm /tmp/li.b64
 
-# Проверить длину (у JWT HS256 обычно ~330-400 символов)
+# Проверить длину
+# HS256: ~330-400 символов; RS256: ~700-900 символов
 wc -c /tmp/license.jwt
 ```
 
@@ -974,6 +1013,7 @@ echo "LICENSE_KEY=$(cat /tmp/license.jwt)" >> .env
 | UI: `Objects are not valid as a React child` | Frontend не пересобран | `docker compose build frontend` + `up -d --force-recreate frontend nginx` |
 | UI: нет бейджа лицензии | Frontend образ устарел | `docker compose build --no-cache frontend` + `up -d --force-recreate frontend nginx` |
 | UI: бейдж «Лицензия недействительна», хотя `/api/v1/license/info` возвращает `valid: true` | Frontend кэширует старый `licenseInfo` | Hard reload (`Ctrl+Shift+R`) |
+| `/license/info` возвращает `algorithm: "HS256"`, хотя реально RS256 | Старый код с константой `LICENSE_ALGORITHM` | Обновить до версии, где `algorithm = info.algorithm` (из заголовка JWT) |
 
 ### Проверка статуса лицензии
 
@@ -994,7 +1034,7 @@ curl http://your-server-ip/api/v1/license/info | python3 -m json.tool
 #   "is_expired": false,
 #   "instance_bound": true,   ← или false для unattached
 #   "error": null,
-#   "algorithm": "RS256"      ← или "HS256"
+#   "algorithm": "RS256"      ← реальный алгоритм из JWT
 # }
 ```
 
@@ -1024,8 +1064,8 @@ curl http://your-server-ip/api/v1/license/info | python3 -m json.tool
 - [ ] **Проверка: `grep -c "your-server-ip" .env` → `0`** ⚠️.
 - [ ] **Лицензия: `LICENSE_VERIFY` задан** (true для прода, false для dev).
 - [ ] **Если `LICENSE_VERIFY=true`: `LICENSE_KEY` задан** ⚠️.
-- [ ] **Если RS256: `LICENSE_PUBLIC_KEY` задан** (и `LICENSE_MASTER_SECRET` убран).
-- [ ] **Если HS256: `LICENSE_MASTER_SECRET` задан** (64 hex).
+- [ ] **Если RS256 (prod): `LICENSE_PUBLIC_KEY` задан** (и `LICENSE_MASTER_SECRET` убран).
+- [ ] **Если HS256 (dev-only): `LICENSE_MASTER_SECRET` задан** (64 hex).
 - [ ] `.env` **НЕ** в git.
 - [ ] `docker compose -f docker-compose.prod.yml build` — ок.
 - [ ] `docker compose -f docker-compose.prod.yml up -d` — 4 контейнера Up + `backend-init` Exited (0).
@@ -1043,6 +1083,7 @@ curl http://your-server-ip/api/v1/license/info | python3 -m json.tool
 - [ ] Браузер открывает `http://your-server-ip/`.
 - [ ] **UI: бейдж лицензии в шапке** (зелёный при valid, красный при `LICENSE_VERIFY=false`).
 - [ ] **UI: страница `/license` открывается и показывает все поля**.
+- [ ] **`/license/info` возвращает `algorithm: "RS256"` или `"HS256"`** (соответствует реальному).
 - [ ] Логин работает.
 - [ ] Справка открывается (31 статья).
 - [ ] Оборудование грузится (10 записей).

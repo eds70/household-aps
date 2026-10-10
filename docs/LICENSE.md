@@ -12,16 +12,16 @@
 
 1. [Как это работает](#как-это-работает)
 2. [Для вендора](#для-вендора)
-    - [Выбор алгоритма: HS256 vs RS256](#выбор-алгоритма-hs256-vs-rs256)
-    - [HS256 — для локальной разработки](#hs256--для-локальной-разработки)
-    - [RS256 — для продакшена](#rs256--для-продакшена)
-    - [Выпуск лицензии](#выпуск-лицензии)
-    - [Журнал выдачи](#журнал-выдачи)
-    - [Ротация ключей](#ротация-ключей)
+   - [Выбор алгоритма: HS256 vs RS256](#выбор-алгоритма-hs256-vs-rs256)
+   - [RS256 — для продакшена (рекомендуется)](#rs256--для-продакшена-рекомендуется)
+   - [HS256 — для локальной разработки](#hs256--для-локальной-разработки)
+   - [Выпуск лицензии](#выпуск-лицензии)
+   - [Журнал выдачи](#журнал-выдачи)
+   - [Ротация ключей](#ротация-ключей)
 3. [Для клиента](#для-клиента)
-    - [Что приходит в письме](#что-приходит-в-письме)
-    - [Установка лицензии](#установка-лицензии)
-    - [Проверка](#проверка)
+   - [Что приходит в письме](#что-приходит-в-письме)
+   - [Установка лицензии](#установка-лицензии)
+   - [Проверка](#проверка)
 4. [Диагностика](#диагностика)
 5. [FAQ](#faq)
 6. [Для разработчика](#для-разработчика)
@@ -63,22 +63,11 @@
 | Кто может подписать лицензию | Любой, у кого есть секрет | Только владелец приватного ключа |
 | Что передаётся клиенту | Тот же секрет | Только **публичный** ключ |
 | Риск | Клиент может выпустить себе лицензию | Нулевой |
-| Для чего | Локальная разработка | Продакшен |
+| Для чего | Локальная разработка | **Продакшен (рекомендуется)** |
 
-**Правило:** на продакшене — только `RS256`. `HS256` — исключительно для dev, когда вендор и клиент — одно лицо.
+**Правило:** на продакшене — **только `RS256`**. `HS256` — исключительно для dev, когда вендор и клиент — одно лицо.
 
-### HS256 — для локальной разработки
-
-```powershell
-# Один раз — сгенерировать мастер-секрет
-python backend\scripts\generate_license.py init-master-key --algorithm HS256
-```
-
-Создаст `~/.aps/license_master_key.hex` (64 hex-символа). Этот же ключ пойдёт в `.env` как `LICENSE_MASTER_SECRET`.
-
-⚠️ **Не используйте HS256 в проде.** Клиент, зная секрет, может выпустить себе любую лицензию.
-
-### RS256 — для продакшена
+### RS256 — для продакшена (рекомендуется)
 
 ```powershell
 # Один раз — сгенерировать пару ключей (RSA-3072)
@@ -91,6 +80,17 @@ python backend\scripts\generate_license.py init-master-key --algorithm RS256
 - `~/.aps/license_master_key.public.pem` — публичный ключ. Раздавать клиентам.
 
 ⚠️ Если приватный ключ утечёт — все выпущенные лицензии становятся недействительными только после смены ключа. См. [Ротация ключей](#ротация-ключей).
+
+### HS256 — для локальной разработки
+
+```powershell
+# Один раз — сгенерировать мастер-секрет
+python backend\scripts\generate_license.py init-master-key --algorithm HS256
+```
+
+Создаст `~/.aps/license_master_key.hex` (64 hex-символа). Этот же ключ пойдёт в `.env` как `LICENSE_MASTER_SECRET`.
+
+⚠️ **Не используйте HS256 в проде.** Клиент, зная секрет, может выпустить себе любую лицензию.
 
 ### Выпуск лицензии
 
@@ -211,7 +211,8 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...
 
 Оба варианта валидатор `normalize_pem` приводит к одному каноничному виду.
 
-⚠️ **Не используйте `LICENSE_MASTER_SECRET` в продакшене.** Если вендор прислал публичный ключ — используйте `LICENSE_PUBLIC_KEY`. `LICENSE_MASTER_SECRET` — только для локальной разработки.
+⚠️ **Для продакшена — только `LICENSE_PUBLIC_KEY` (RS256).**
+Если вендор прислал публичный ключ — используйте `LICENSE_PUBLIC_KEY`. `LICENSE_MASTER_SECRET` (HS256) — **не для прода**, только для локальной разработки. См. [Для вендора → Выбор алгоритма](#выбор-алгоритма-hs256-vs-rs256).
 
 ### Проверка
 
@@ -235,7 +236,7 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...
 
    Ожидаемо:
    ```json
-   {"valid": true, "verify_enabled": true, "key_provided": true, "holder": "ООО Ромашка", "tier": "enterprise", "days_left": 365, "is_expired": false, "instance_bound": true}
+   {"valid": true, "verify_enabled": true, "key_provided": true, "holder": "ООО Ромашка", "tier": "enterprise", "days_left": 365, "is_expired": false, "instance_bound": true, "algorithm": "RS256"}
    ```
 
 4. **Через UI.** Открыть APS, посмотреть бейдж в шапке — должен быть **зелёный**: «Лицензия до DD.MM.YYYY».
@@ -253,6 +254,7 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...
 | `Лицензия привязана к другому серверу` | `instance_id` в JWT не совпадает с текущим | Запросить лицензию под текущий `instance_id` |
 | `Проверка лицензии не прошла: ...` | Общая ошибка | Смотреть текст после двоеточия |
 | UI показывает «Лицензия недействительна» | `/api/v1/license/info` вернул `valid: false` | Смотреть поле `error` в ответе |
+| `algorithm` в `/license/info` не совпадает с реальным | В старом коде возвращалась константа | Обновить до версии, где `algorithm = info.algorithm` (из заголовка JWT) |
 
 **Получить свой instance_id:**
 
@@ -345,25 +347,31 @@ SUPPORTED_ALGORITHMS: tuple[str, ...] = (
 
 ```powershell
 cd D:\Working\household-aps\backend
-pytest tests\test_license.py -v
+pytest tests\test_license.py tests\test_license_rs256.py tests\test_main.py -v
 ```
 
-Тесты покрывают HS256 (dev). Для RS256/ES256 — тесты в `test_license_rs256.py` (если файл существует), см. также `tests\fixtures\` для генерации ключей на лету.
+Тесты покрывают:
+
+- HS256 (dev) — `test_license.py`;
+- RS256/ES256, algorithm confusion, instance binding — `test_license_rs256.py`;
+- конфигурация приложения, preflight CORS, lifespan — `test_main.py`.
 
 ### Отладка
 
 ```powershell
-# Разобрать JWT без проверки подписи — просто base64-decode payload
+# Разобрать JWT без проверки подписи
 python backend\scripts\generate_license.py inspect --algorithm RS256 --key "<JWT>"
 
 # Или вручную
 python -c "from jose import jwt; import json; print(json.dumps(jwt.get_unverified_claims('<JWT>'), indent=2, ensure_ascii=False))"
 ```
 
-Для проверки подписи вручную:
+Проверка подписи вручную:
 
 ```powershell
-python -c "from app.core.license import verify_license; from app.core.config import settings; info = verify_license(settings.LICENSE_KEY, settings.LICENSE_PUBLIC_KEY or settings.LICENSE_MASTER_SECRET); print(info)"
+# Для RS256 (prod) — используйте LICENSE_PUBLIC_KEY.
+# Для HS256 (dev-only) — LICENSE_MASTER_SECRET.
+python -c "from app.core.license import verify_license; from app.core.config import settings; key = settings.LICENSE_PUBLIC_KEY or settings.LICENSE_MASTER_SECRET; info = verify_license(settings.LICENSE_KEY, key); print(info)"
 ```
 
 ---
