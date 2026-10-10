@@ -9,7 +9,8 @@
 #   docker compose -f docker-compose.prod.yml logs -f backend
 #   docker compose -f docker-compose.prod.yml down
 #
-# ⚠️  НЕ использовать `down -v` — потеряете БД (volume pgdata).
+# ⚠️  НЕ использовать `down -v` — потеряете БД (volume pgdata) и
+#     instance_id (volume aps_data). Attached-лицензии придётся перевыпускать.
 #
 # Переменные окружения берутся из .env в корне (не из backend/.env!).
 # Скопируйте .env.example → .env и заполните.
@@ -49,6 +50,31 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # ==========================================
+  # Backend-init — однократная настройка прав на /data
+  # ==========================================
+  # Backend работает от непривилегированного пользователя (uid 1000,
+  # см. backend/Dockerfile). Docker создаёт named volume `aps_data`
+  # от root. Этот init-контейнер запускается один раз, меняет
+  # владельца /data на 1000:1000 и завершается.
+  #
+  # Без него backend не может писать /data/license_instance,
+  # instance_id пересчитывается при каждом пересоздании контейнера,
+  # и attached-лицензии ломаются.
+  #
+  # Почему отдельный контейнер, а не `user: root` в backend:
+  #   — backend должен работать от непривилегированного пользователя;
+  #   — chown нужен один раз, а не при каждом запросе.
+  backend-init:
+    image: alpine:3.20
+    container_name: aps_backend_init
+    command: chown -R 1000:1000 /data
+    volumes:
+      - aps_data:/data
+    networks:
+      - aps_network
+    restart: "no"
 
   # ==========================================
   # Backend (FastAPI + OR-Tools CP-SAT)
@@ -102,6 +128,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      backend-init:
+        condition: service_completed_successfully
     expose:
       - "8000"
     networks:

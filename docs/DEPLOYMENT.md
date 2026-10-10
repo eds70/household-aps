@@ -7,6 +7,7 @@
 - [README.md](../README.md) — основная документация.
 - [OPERATIONS.md](OPERATIONS.md) — операции с БД.
 - [CONFIGURATION.md](CONFIGURATION.md) — переменные окружения.
+- [LICENSE.md](LICENSE.md) — система лицензирования (для вендора и клиента).
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — решение проблем.
 
 **Файлы для развёртывания** (создаются вместе с этим документом):
@@ -56,6 +57,7 @@
 - Backend и frontend имеют только `expose:` — не видны из интернета.
 - Nginx — единственная точка входа.
 - Все данные (БД) в Docker-volume `pgdata`.
+- `instance_id` (для лицензии) — в Docker-volume `aps_data`.
 
 ---
 
@@ -66,6 +68,8 @@
 - **RAM:** 4 GB
 - **Диск:** 40 GB SSD
 - **ОС:** Ubuntu 22.04 LTS (или 24.04)
+
+⚠️ **Для сборки backend с 1 vCPU нужно 20–30 минут** (OR-Tools тяжёлый). Рекомендуется **минимум 2 vCPU**.
 
 ### Рекомендуется (для 5-10 пользователей)
 - **CPU:** 4 vCPU
@@ -91,6 +95,7 @@
 | Переменные | `$VAR` | `$env:VAR` или `$VAR` |
 | `curl` | настоящий curl | алиас на `Invoke-WebRequest` ⚠️ |
 | Настоящий curl в PS | — | `curl.exe` |
+| Логические операторы | `&&`, `\|\|` | только в PowerShell 7+; в 5.1 — раздельно |
 | Копирование файлов | `cp a b` | `Copy-Item a b` |
 | Пути | `/home/user/...` | `C:\Users\...` |
 
@@ -122,6 +127,11 @@
 | 16 | **Обновление `VITE_API_URL` без пересборки** | Vite вшивает в бандл. После изменения — `docker compose build frontend` |
 | 17 | **TLS-сертификат истёк** через 3 месяца | Cron + `certbot renew`, или Caddy (автоматически) |
 | 18 | **`--workers 2` + asyncpg** | Если проблемы с connection pool — уменьшить до `--workers 1` или настроить `pool_size` |
+| 19 | **`LICENSE_VERIFY=false` в проде** ⚠️ | Проверка лицензии отключена → любой может запустить. Для прода — `true` + `LICENSE_KEY` |
+| 20 | **`Permission denied: /data/license_instance`** | Volume `aps_data` смонтирован от root. Нужен `backend-init` (уже в compose) или ручной `chown -R 1000:1000` |
+| 21 | **После правки `.env` ничего не поменялось** ⚠️ | `docker compose restart` не перечитывает `.env`. Нужен `up -d --force-recreate backend` |
+| 22 | **UI: `Objects are not valid as a React child`** | Frontend не пересобран после патчей `api.ts`. `docker compose build frontend` |
+| 23 | **Frontend не показывает бейдж лицензии** | Frontend образ устарел. `docker compose build --no-cache frontend` + `up -d --force-recreate frontend nginx` |
 
 ---
 
@@ -218,7 +228,7 @@ sudo ufw status
 
 **Вариант A — git clone:**
 ```bash
-git clone https://github.com/your-org/household-aps.git
+git clone -b license https://github.com/your-org/household-aps.git
 cd household-aps
 ```
 
@@ -317,7 +327,7 @@ docker compose -f docker-compose.prod.yml up -d frontend
 ### Шаг 7. Облако — сборка и запуск
 
 ```bash
-# Сборка образов (5-10 минут, особенно backend из-за OR-Tools)
+# Сборка образов (5-10 минут на 2 vCPU; до 30 минут на 1 vCPU — backend тяжёлый из-за OR-Tools)
 docker compose -f docker-compose.prod.yml build
 
 # Запуск
@@ -329,11 +339,12 @@ docker compose -f docker-compose.prod.yml ps
 
 **Ожидаемо:**
 ```
-NAME            STATUS
-aps_postgres    Up (healthy)
-aps_backend     Up (healthy)
-aps_frontend    Up
-aps_nginx       Up
+NAME              STATUS
+aps_postgres      Up (healthy)
+aps_backend       Up (healthy)
+aps_frontend      Up (health: starting → healthy)
+aps_nginx         Up
+aps_backend_init  Exited (0)   ← нормально, init-контейнер завершается
 ```
 
 **Если какой-то сервис `Restarting` — смотреть логи:**
@@ -404,7 +415,7 @@ docker exec -i aps_postgres psql -U aps -d household -c \
 ```bash
 # Health-check (curl в Bash)
 curl http://your-server-ip/health
-# Ожидаемо: {"status":"healthy","version":"4.9.0",...}
+# Ожидаемо: {"status":"healthy","version":"4.9.1",...}
 ```
 
 **В PowerShell** (если локально проверяешь удалённый сервер):
@@ -561,8 +572,8 @@ docker compose -f docker-compose.prod.yml build
 docker cp backend/migrations/add_29.sql aps_postgres:/tmp/
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_29.sql
 
-# 5. Перезапустить
-docker compose -f docker-compose.prod.yml up -d
+# 5. Пересоздать контейнеры (--force-recreate, чтобы перечитать .env, если менялся)
+docker compose -f docker-compose.prod.yml up -d --force-recreate
 
 # 6. Проверить
 curl http://your-server-ip/health
@@ -589,6 +600,9 @@ docker compose -f docker-compose.prod.yml logs -f postgres --tail=50
 
 # Фильтрация по ошибкам
 docker compose -f docker-compose.prod.yml logs backend | grep ERROR
+
+# Лицензия
+docker compose -f docker-compose.prod.yml logs backend | grep license
 ```
 
 ### Ресурсы
@@ -674,7 +688,7 @@ ALLOWED_ORIGINS=http://your-server-ip,https://your-domain.com
 
 Перезапустить backend:
 ```bash
-docker compose -f docker-compose.prod.yml restart backend
+docker compose -f docker-compose.prod.yml up -d --force-recreate backend
 ```
 
 ### Оборудование не грузится (307 redirect на неправильный порт) ⚠️
@@ -690,7 +704,7 @@ location: http://localhost/api/v1/equipment/    ← без порта!
 **Решение:** заменить все `$host` на `$http_host` в `nginx/nginx.conf`:
 ```bash
 sed -i 's|proxy_set_header Host \$host;|proxy_set_header Host $http_host;|g' nginx/nginx.conf
-docker compose -f docker-compose.prod.yml restart nginx
+docker compose -f docker-compose.prod.yml up -d --force-recreate nginx
 ```
 
 ### Порт 80 занят
@@ -756,6 +770,244 @@ newgrp docker
 
 ---
 
+## Лицензирование при деплое
+
+APS Scheduler использует **offline-лицензирование** (JWT-токен, подписанный вендором). Проверка происходит **на backend при старте**, без обращения к внешним серверам.
+
+Подробное описание системы лицензирования — в [LICENSE.md](LICENSE.md). Здесь — только то, что нужно для деплоя.
+
+### Переменные окружения
+
+Все переменные задаются в **корневом** `.env` (не в `backend/.env`!).
+
+| Переменная | Обязательна | Назначение |
+|---|---|---|
+| `LICENSE_VERIFY` | да | `true` — проверка включена, `false` — отключена (только для локальной разработки) |
+| `LICENSE_KEY` | если `VERIFY=true` | JWT-лицензия от вендора |
+| `LICENSE_PUBLIC_KEY` | если RS256 | Публичный ключ вендора (PEM). Используется для проверки подписи RS256/ES256 |
+| `LICENSE_MASTER_SECRET` | если HS256 | Мастер-секрет HS256 (64 hex). Только для локальной разработки |
+
+**Приоритет:** если задан `LICENSE_PUBLIC_KEY` — используется RS256/ES256, `LICENSE_MASTER_SECRET` игнорируется.
+
+### Volume `aps_data` — критично
+
+Backend сохраняет свой `instance_id` в файл `/data/license_instance` внутри контейнера. **Этот файл должен переживать пересоздание контейнера**, иначе:
+
+- `instance_id` меняется при каждом `up`,
+- привязанные (`instance_bound`) лицензии становятся невалидными.
+
+В `docker-compose.prod.yml` для этого есть named volume:
+
+```yaml
+services:
+  backend:
+    volumes:
+      - aps_data:/data
+```
+
+**⚠️ Никогда не запускайте `docker compose down -v`** — это удалит `pgdata` (БД) и `aps_data` (instance_id). Attached-лицензии придётся перевыпускать.
+
+**⚠️ При смене сервера или переустановке — `instance_id` будет другим.** Attached-лицензию придётся перевыпускать под новый `instance_id`.
+
+### Права на `/data`
+
+Backend работает от непривилегированного пользователя (uid 1000, см. `backend/Dockerfile`). Docker создаёт named volume `aps_data` **от root**. Значит, backend не сможет писать в `/data`.
+
+Решение — **init-контейнер** `backend-init`, который запускается **до** backend, делает `chown -R 1000:1000 /data` и завершается. В `docker-compose.prod.yml` уже включён:
+
+```yaml
+services:
+  backend-init:
+    image: alpine:3.20
+    command: chown -R 1000:1000 /data
+    volumes:
+      - aps_data:/data
+    restart: "no"
+
+  backend:
+    depends_on:
+      backend-init:
+        condition: service_completed_successfully
+```
+
+Проверить, что права корректны:
+
+```bash
+docker inspect aps_backend --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}'
+sudo ls -la /var/lib/docker/volumes/<project>_aps_data/_data
+# Владелец должен быть: 1000 1000 (aps aps)
+```
+
+Проверить, что init-контейнер отработал:
+
+```bash
+docker compose -f docker-compose.prod.yml ps backend-init
+# Ожидаемо: Exited (0)
+
+docker compose -f docker-compose.prod.yml logs backend-init
+# Может быть пусто (chown не выводит ничего)
+```
+
+### Сценарии деплоя
+
+#### A. Локальная разработка, лицензия не нужна
+
+```dotenv
+LICENSE_VERIFY=false
+```
+
+Backend стартует, все эндпоинты доступны. В логах предупреждение:
+
+```
+[license] LICENSE_VERIFY=false — проверка лицензии отключена. Не использовать в production!
+```
+
+#### B. Тест с реальной лицензией (unattached)
+
+Лицензия **без `instance_id`** — работает на любой машине. Генерируется **без** `--instance-id`:
+
+```bash
+python backend/scripts/generate_license.py generate \
+  --algorithm HS256 \
+  --org "Test Org" \
+  --tier enterprise \
+  --days 30 \
+  --output test.license
+```
+
+В `.env`:
+
+```dotenv
+LICENSE_VERIFY=true
+LICENSE_KEY=<JWT из test.license>
+LICENSE_MASTER_SECRET=<64 hex из init-master-key>
+```
+
+Перезапустить backend **обязательно** через `--force-recreate` (не `restart`):
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --force-recreate backend
+```
+
+**Почему `--force-recreate`, а не `restart`:** `restart` переиспользует существующий контейнер с его переменными окружения. `.env` перечитывается **только при создании** контейнера. После правки `.env` нужен `--force-recreate`.
+
+#### C. Production (RS256, привязка к серверу)
+
+1. На **машине вендора** (не на сервере клиента!):
+   ```bash
+   python backend/scripts/generate_license.py init-master-key --algorithm RS256
+   ```
+   Создаст `~/.aps/license_master_key.private.pem` (секрет) и `.public.pem`.
+
+2. Получить `instance_id` клиента (с его сервера):
+   ```bash
+   curl https://aps.client.com/api/v1/license/instance
+   ```
+
+3. Сгенерировать лицензию, привязанную к клиенту:
+   ```bash
+   python backend/scripts/generate_license.py generate \
+     --algorithm RS256 \
+     --org "ООО Клиент" \
+     --tier enterprise \
+     --days 365 \
+     --instance-id <instance_id> \
+     --output client.license
+   ```
+
+4. Передать клиенту: **LICENSE_KEY** (JWT) и **LICENSE_PUBLIC_KEY** (содержимое `.public.pem`).
+
+5. В `.env` клиента:
+   ```dotenv
+   LICENSE_VERIFY=true
+   LICENSE_KEY=<JWT>
+   LICENSE_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\nMIIB...\n-----END PUBLIC KEY-----"
+   # LICENSE_MASTER_SECRET — НЕ задавать!
+   ```
+
+6. `docker compose -f docker-compose.prod.yml up -d --force-recreate backend`
+
+### Перенос JWT на сервер без venv
+
+Если на сервере нет Python-окружения с зависимостями (типично для VM/облака), лицензию генерируют **на машине вендора**, а на сервер переносят **через base64** — чтобы избежать искажений при копипасте:
+
+**На машине вендора:**
+
+```powershell
+$jwt = (Get-Content client.license -Raw).Trim()
+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($jwt))
+```
+
+**На сервере:**
+
+```bash
+cat > /tmp/li.b64 << 'EOF'
+<вставь base64-строку одной строкой>
+EOF
+base64 -d /tmp/li.b64 > /tmp/license.jwt
+rm /tmp/li.b64
+
+# Проверить длину (у JWT HS256 обычно ~330-400 символов)
+wc -c /tmp/license.jwt
+```
+
+Затем в `.env`:
+
+```bash
+# Добавить LICENSE_KEY из файла
+echo "LICENSE_KEY=$(cat /tmp/license.jwt)" >> .env
+```
+
+Или вручную через `nano .env`.
+
+### Диагностика лицензирования
+
+| Симптом | Причина | Решение |
+|---|---|---|
+| UI: красный бейдж «Лицензия недействительна» | Backend не загрузил лицензию | `docker compose logs backend | grep license` — смотреть причину |
+| В логах: `LICENSE_KEY не задан` | `.env` не прочитан | Проверить, что `.env` в корне, а не в `backend/`; `--force-recreate backend` |
+| В логах: `Signature verification failed` | Неверный ключ проверки | `LICENSE_MASTER_SECRET` (HS256) или `LICENSE_PUBLIC_KEY` (RS256) не соответствует тому, чем подписан JWT |
+| В логах: `LicenseInstanceMismatchError` | Лицензия привязана к другому серверу | Перевыпустить лицензию под текущий `instance_id` (`curl /api/v1/license/instance`) |
+| В логах: `Permission denied: /data/license_instance` | Volume не chown'нут | Проверить, что `backend-init` запускается и завершается успешно |
+| `instance_id` меняется при `restart` | Volume `aps_data` не смонтирован | Проверить `docker inspect aps_backend \| grep -A5 Mounts` |
+| После правки `.env` ничего не поменялось | Использовали `restart`, а не `--force-recreate` | `up -d --force-recreate backend` |
+| UI: `Objects are not valid as a React child` | Frontend не пересобран | `docker compose build frontend` + `up -d --force-recreate frontend nginx` |
+| UI: нет бейджа лицензии | Frontend образ устарел | `docker compose build --no-cache frontend` + `up -d --force-recreate frontend nginx` |
+| UI: бейдж «Лицензия недействительна», хотя `/api/v1/license/info` возвращает `valid: true` | Frontend кэширует старый `licenseInfo` | Hard reload (`Ctrl+Shift+R`) |
+
+### Проверка статуса лицензии
+
+После запуска:
+
+```bash
+# Через API
+curl http://your-server-ip/api/v1/license/info | python3 -m json.tool
+
+# Ожидаемо при valid=true:
+# {
+#   "valid": true,
+#   "verify_enabled": true,
+#   "key_provided": true,
+#   "holder": "ООО Клиент",
+#   "tier": "enterprise",
+#   "days_left": 365,
+#   "is_expired": false,
+#   "instance_bound": true,   ← или false для unattached
+#   "error": null,
+#   "algorithm": "RS256"      ← или "HS256"
+# }
+```
+
+Через UI: **клик по бейджу лицензии в шапке** → открывается `/license` со всеми полями.
+
+### Ссылки
+
+- [docs/LICENSE.md](LICENSE.md) — полное описание системы лицензирования
+- [scripts/generate_license.py](../backend/scripts/generate_license.py) — CLI для вендора
+- [backend/app/core/license.py](../backend/app/core/license.py) — код проверки
+
+---
+
 ## Чек-лист развёртывания
 
 - [ ] VM создана, SSH работает.
@@ -770,17 +1022,27 @@ newgrp docker
 - [ ] **`VITE_API_URL` = домен/IP** ⚠️ — **не `your-server-ip`!**
 - [ ] **Проверка: `grep -c "change_me" .env` → `0`** ⚠️.
 - [ ] **Проверка: `grep -c "your-server-ip" .env` → `0`** ⚠️.
+- [ ] **Лицензия: `LICENSE_VERIFY` задан** (true для прода, false для dev).
+- [ ] **Если `LICENSE_VERIFY=true`: `LICENSE_KEY` задан** ⚠️.
+- [ ] **Если RS256: `LICENSE_PUBLIC_KEY` задан** (и `LICENSE_MASTER_SECRET` убран).
+- [ ] **Если HS256: `LICENSE_MASTER_SECRET` задан** (64 hex).
 - [ ] `.env` **НЕ** в git.
 - [ ] `docker compose -f docker-compose.prod.yml build` — ок.
-- [ ] `docker compose -f docker-compose.prod.yml up -d` — 4 контейнера Up.
+- [ ] `docker compose -f docker-compose.prod.yml up -d` — 4 контейнера Up + `backend-init` Exited (0).
+- [ ] `backend-init` отработал (`ps backend-init` → Exited (0)).
+- [ ] В логах backend: `instance_id сохранён в /data/license_instance` (без `Permission denied`).
+- [ ] В логах backend: `Режим проверки: HS256/RS256 ...` (если `LICENSE_VERIFY=true`).
+- [ ] В логах backend: `Лицензия валидна: holder=..., days_left=...` (если `LICENSE_VERIFY=true`).
 - [ ] `deploy_init.sh` (или `.ps1`) выполнен успешно.
 - [ ] `init_schema_v4.9.sql` применён.
 - [ ] `init_schema_v4.9_seed.sql` применён.
 - [ ] `seed_demo_data.sql` применён.
 - [ ] Админ создан (или обновлён).
-- [ ] `/health` отвечает `version: "4.9.0"`.
+- [ ] `/health` отвечает `version: "4.9.1"`.
 - [ ] **Проверка: `grep -r "your-server-ip" /usr/share/nginx/html/assets/` → пусто** ⚠️.
 - [ ] Браузер открывает `http://your-server-ip/`.
+- [ ] **UI: бейдж лицензии в шапке** (зелёный при valid, красный при `LICENSE_VERIFY=false`).
+- [ ] **UI: страница `/license` открывается и показывает все поля**.
 - [ ] Логин работает.
 - [ ] Справка открывается (31 статья).
 - [ ] Оборудование грузится (10 записей).
@@ -794,9 +1056,10 @@ newgrp docker
 ## Что дальше
 
 - [OPERATIONS.md](OPERATIONS.md) — операции с БД (backup, restore, миграции).
+- [LICENSE.md](LICENSE.md) — система лицензирования (вендор + клиент + разработчик).
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — детальные проблемы.
 - [CONFIGURATION.md](CONFIGURATION.md) — все переменные окружения.
 
 ---
 
-*Последнее обновление: 2026-10-09*
+*Последнее обновление: 2026-10-10*
