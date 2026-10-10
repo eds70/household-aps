@@ -1,5 +1,6 @@
 ﻿# backend/app/main.py
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
 
@@ -71,104 +72,50 @@ tags_metadata = [
     {"name": "Система"},
 ]
 
-app = FastAPI(
-    title="APS Production Scheduler",
-    description=(
-        "REST API для построения оптимальных планов производства "
-        "с использованием OR-Tools CP-SAT."
-    ),
-    version=APP_VERSION,
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_tags=tags_metadata,
-    debug=True,
-)
-
 
 # ==========================================
-# MIDDLEWARE: LicenseMiddleware
+# LIFESPAN: загрузка лицензии при старте
 # ==========================================
 #
-# ВАЖНО (порядок middleware в Starlette):
-#   Последний добавленный через add_middleware выполняется ПЕРВЫМ.
-#   Поэтому здесь порядок такой:
-#     1) LicenseMiddleware  — добавлен раньше → выполняется позже
-#     2) CORSMiddleware     — добавлен позже  → выполняется раньше
+# Итерация 17.x: переход с @app.on_event("startup") на lifespan-контекст.
+# Причины:
+#   1. @app.on_event помечен DeprecationWarning в FastAPI и будет удалён.
+#   2. lifespan — стандартный механизм asyncio-контекста, можно
+#      освобождать ресурсы в shutdown (сейчас нечего, но задел на будущее).
 #
-#   Это нужно, чтобы 403 от LicenseMiddleware уходил с CORS-заголовками,
-#   иначе браузер показывает «CORS policy blocked» вместо честного 403.
+# ВАЖНО: функция lifespan должна быть определена ДО app = FastAPI(...),
+# потому что передаётся в аргументе lifespan= при создании приложения.
 
-class LicenseMiddleware(BaseHTTPMiddleware):
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     """
-    Проверяет валидность лицензии для всех запросов, кроме публичных.
+    Lifespan-контекст приложения APS Scheduler.
 
-    Логика:
-      - OPTIONS-запросы (CORS preflight) — всегда пропускаются.
-      - Если LICENSE_VERIFY=false → middleware ничего не делает.
-      - Если LICENSE_VERIFY=true:
-        - Публичные пути (PUBLIC_PATH_PREFIXES) — пропускаются.
-        - Всё остальное — проверяется app.state.license_info.
-          Если None → 403 «Лицензия недействительна».
+    Выполняется:
+      - на старте — до того, как приложение начнёт принимать запросы;
+      - на остановке — после того, как приложение перестанет их принимать.
+
+    Заменяет устаревший @app.on_event("startup").
+
+    Порядок:
+      1. startup: загрузка и проверка лицензии, инициализация state.
+      2. yield: приложение работает.
+      3. shutdown: освобождение ресурсов (сейчас нечего).
     """
+    # ---- STARTUP ----
+    logger.info("[app] Запуск APS Production Scheduler API...")
+    await _load_license_on_startup(app)
+    logger.info("[app] Приложение готово к приёму запросов.")
 
-    async def dispatch(self, request: Request, call_next):
-        # 1. CORS preflight — всегда пропускаем.
-        #    Preflight не содержит credentials и не должен требовать лицензии.
-        #    Его обработает CORSMiddleware (зарегистрирован «выше»).
-        if request.method == "OPTIONS":
-            return await call_next(request)
+    yield
 
-        # 2. Если верификация отключена — пропускаем всё
-        if not settings.LICENSE_VERIFY:
-            return await call_next(request)
-
-        # 3. Публичные пути — пропускаем
-        path = request.url.path
-        for prefix in PUBLIC_PATH_PREFIXES:
-            if path.startswith(prefix):
-                return await call_next(request)
-
-        # 4. Проверка лицензии
-        license_info: Optional[LicenseInfo] = getattr(
-            request.app.state, "license_info", None
-        )
-        license_error: Optional[str] = getattr(
-            request.app.state, "license_error", None
-        )
-
-        if license_info is None or license_info.is_expired:
-            detail: dict = {
-                "code": "LICENSE_INVALID",
-                "message": license_error or "Лицензия недействительна",
-            }
-            return JSONResponse(
-                status_code=status.HTTP_403_FORBIDDEN,
-                content={"detail": detail},
-            )
-
-        return await call_next(request)
+    # ---- SHUTDOWN ----
+    # Здесь можно закрыть пулы соединений, flush логов, дождаться
+    # фоновых задач. Пока таких ресурсов нет — просто логируем.
+    logger.info("[app] Останов APS Production Scheduler API.")
 
 
-# Порядок регистрации: LicenseMiddleware первым в коде → выполняется последним.
-# CORSMiddleware добавляется СЛЕДУЮЩИМ, значит выполняется ПЕРВЫМ и успевает
-# обернуть ответ LicenseMiddleware в CORS-заголовки.
-app.add_middleware(LicenseMiddleware)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.allowed_origins_list,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# ==========================================
-# STARTUP: загрузка и проверка лицензии
-# ==========================================
-
-@app.on_event("startup")
-async def load_license_on_startup() -> None:
+async def _load_license_on_startup(app: FastAPI) -> None:
     """
     Проверяет лицензию при старте backend.
 
@@ -305,6 +252,103 @@ async def load_license_on_startup() -> None:
             f"[license] Непредвиденная ошибка при проверке лицензии: {e}",
             exc_info=True,
         )
+
+
+# ==========================================
+# ПРИЛОЖЕНИЕ
+# ==========================================
+
+app = FastAPI(
+    title="APS Production Scheduler",
+    description=(
+        "REST API для построения оптимальных планов производства "
+        "с использованием OR-Tools CP-SAT."
+    ),
+    version=APP_VERSION,
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_tags=tags_metadata,
+    debug=True,
+    lifespan=lifespan,   # ← Итерация 17.x: вместо @app.on_event("startup")
+)
+
+
+# ==========================================
+# MIDDLEWARE: LicenseMiddleware
+# ==========================================
+#
+# ВАЖНО (порядок middleware в Starlette):
+#   Последний добавленный через add_middleware выполняется ПЕРВЫМ.
+#   Поэтому здесь порядок такой:
+#     1) LicenseMiddleware  — добавлен раньше → выполняется позже
+#     2) CORSMiddleware     — добавлен позже  → выполняется раньше
+#
+#   Это нужно, чтобы 403 от LicenseMiddleware уходил с CORS-заголовками,
+#   иначе браузер показывает «CORS policy blocked» вместо честного 403.
+
+class LicenseMiddleware(BaseHTTPMiddleware):
+    """
+    Проверяет валидность лицензии для всех запросов, кроме публичных.
+
+    Логика:
+      - OPTIONS-запросы (CORS preflight) — всегда пропускаются.
+      - Если LICENSE_VERIFY=false → middleware ничего не делает.
+      - Если LICENSE_VERIFY=true:
+        - Публичные пути (PUBLIC_PATH_PREFIXES) — пропускаются.
+        - Всё остальное — проверяется app.state.license_info.
+          Если None → 403 «Лицензия недействительна».
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        # 1. CORS preflight — всегда пропускаем.
+        #    Preflight не содержит credentials и не должен требовать лицензии.
+        #    Его обработает CORSMiddleware (зарегистрирован «выше»).
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
+        # 2. Если верификация отключена — пропускаем всё
+        if not settings.LICENSE_VERIFY:
+            return await call_next(request)
+
+        # 3. Публичные пути — пропускаем
+        path = request.url.path
+        for prefix in PUBLIC_PATH_PREFIXES:
+            if path.startswith(prefix):
+                return await call_next(request)
+
+        # 4. Проверка лицензии
+        license_info: Optional[LicenseInfo] = getattr(
+            request.app.state, "license_info", None
+        )
+        license_error: Optional[str] = getattr(
+            request.app.state, "license_error", None
+        )
+
+        if license_info is None or license_info.is_expired:
+            detail: dict = {
+                "code": "LICENSE_INVALID",
+                "message": license_error or "Лицензия недействительна",
+            }
+            return JSONResponse(
+                status_code=status.HTTP_403_FORBIDDEN,
+                content={"detail": detail},
+            )
+
+        return await call_next(request)
+
+
+# Порядок регистрации: LicenseMiddleware первым в коде → выполняется последним.
+# CORSMiddleware добавляется СЛЕДУЮЩИМ, значит выполняется ПЕРВЫМ и успевает
+# обернуть ответ LicenseMiddleware в CORS-заголовки.
+app.add_middleware(LicenseMiddleware)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origins_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ==========================================
