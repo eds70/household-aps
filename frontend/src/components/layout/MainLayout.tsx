@@ -7,6 +7,7 @@ import {
     Box,
     Button,
     Chip,
+    CircularProgress,
     CssBaseline,
     Divider,
     Drawer,
@@ -27,6 +28,7 @@ import {
     Assignment as AssignmentIcon,
     ChevronLeft as ChevronLeftIcon,
     Edit as EditIcon,
+    ErrorOutlined as ErrorOutlineIcon,
     Factory as FactoryIcon,
     HelpOutlined as HelpOutlineIcon,
     History as HistoryIcon,
@@ -43,10 +45,14 @@ import {
     Settings as SettingsIcon,
     ShoppingCart as ShoppingCartIcon,
     Timeline as TimelineIcon,
+    WarningAmber as WarningAmberIcon,
+    WorkspacePremium as WorkspacePremiumIcon,
 } from '@mui/icons-material';
 import {useAuth} from '../../context/AuthContext';
 import {usePlan} from '../../context/PlainContext';
 import {useTutorial} from '../../context/TutorialContext';
+import {licenseApi} from '../../services/api';
+import type {LicenseInfo} from '../../types';
 
 const DRAWER_WIDTH_EXPANDED = 240;
 const DRAWER_WIDTH_COLLAPSED = 56;
@@ -79,6 +85,125 @@ const ROLE_LABELS: Record<string, string> = {
     VIEWER: 'Наблюдатель',
 };
 
+// ==========================================
+// КОМПОНЕНТ: LicenseChip
+// ==========================================
+// Итерация 17.1: показывает статус лицензии в шапке.
+// Кликабельный — ведёт на /license.
+//
+// 4 состояния:
+//   - loading: серый, «Лицензия» + спиннер.
+//   - invalid/expired: красный, «Лицензия недействительна».
+//   - warning (≤ 14 дней): оранжевый, «Лицензия: N дн.».
+//   - valid: зелёный, «Лицензия до DD.MM.YYYY».
+
+const LicenseChip: React.FC<{
+    info: LicenseInfo | null;
+    onClick: () => void;
+}> = ({info, onClick}) => {
+    // Загрузка
+    if (!info) {
+        return (
+            <Tooltip title="Загрузка статуса лицензии...">
+                <Chip
+                    icon={<CircularProgress size={14} sx={{ml: 1}} />}
+                    label="Лицензия"
+                    size="small"
+                    onClick={onClick}
+                    sx={{
+                        bgcolor: 'rgba(255,255,255,0.15)',
+                        color: '#ffffff',
+                        fontWeight: 500,
+                        fontSize: '0.8rem',
+                        cursor: 'pointer',
+                        border: '1px dashed rgba(255,255,255,0.4)',
+                    }}
+                />
+            </Tooltip>
+        );
+    }
+
+    // Невалидная или истёкшая
+    if (!info.valid || info.is_expired) {
+        return (
+            <Tooltip
+                title={
+                    info.error
+                        ? `Лицензия недействительна: ${info.error}`
+                        : 'Лицензия недействительна. Нажмите для деталей.'
+                }
+                arrow
+            >
+                <Chip
+                    icon={<ErrorOutlineIcon sx={{color: '#ffffff !important'}} />}
+                    label="Лицензия недействительна"
+                    size="small"
+                    onClick={onClick}
+                    sx={{
+                        bgcolor: '#e74c3c',
+                        color: '#ffffff',
+                        fontWeight: 600,
+                        fontSize: '0.8rem',
+                        cursor: 'pointer',
+                        border: '1px solid #c0392b',
+                    }}
+                />
+            </Tooltip>
+        );
+    }
+
+    // Валидная, но скоро истекает (≤ 14 дней)
+    if (info.days_left !== null && info.days_left <= 14) {
+        return (
+            <Tooltip
+                title={`Лицензия истекает через ${info.days_left} дн. Продлите её.`}
+                arrow
+            >
+                <Chip
+                    icon={<WarningAmberIcon sx={{color: '#ffffff !important'}} />}
+                    label={`Лицензия: ${info.days_left} дн.`}
+                    size="small"
+                    onClick={onClick}
+                    sx={{
+                        bgcolor: '#e67e22',
+                        color: '#ffffff',
+                        fontWeight: 600,
+                        fontSize: '0.8rem',
+                        cursor: 'pointer',
+                        border: '1px solid #d35400',
+                    }}
+                />
+            </Tooltip>
+        );
+    }
+
+    // Валидная, всё хорошо
+    const expiresText = info.expires_at
+        ? new Date(info.expires_at).toLocaleDateString('ru-RU')
+        : '—';
+    return (
+        <Tooltip
+            title={`Лицензия: ${info.holder || '—'} (${info.tier}). Действует до ${expiresText}.`}
+            arrow
+        >
+            <Chip
+                icon={<WorkspacePremiumIcon sx={{color: '#ffffff !important'}} />}
+                label={`Лицензия до ${expiresText}`}
+                size="small"
+                onClick={onClick}
+                sx={{
+                    bgcolor: '#27ae60',
+                    color: '#ffffff',
+                    fontWeight: 600,
+                    fontSize: '0.8rem',
+                    cursor: 'pointer',
+                    border: '1px solid #1e8449',
+                }}
+            />
+        </Tooltip>
+    );
+};
+
 const MainLayout: React.FC = () => {
     const { user, logout } = useAuth();
     const {
@@ -104,6 +229,27 @@ const MainLayout: React.FC = () => {
     useEffect(() => {
         localStorage.setItem(STORAGE_KEY, String(collapsed));
     }, [collapsed]);
+
+    // ==========================================
+    // Итерация 17.1: статус лицензии
+    // ==========================================
+    const [licenseInfo, setLicenseInfo] = useState<LicenseInfo | null>(null);
+
+    useEffect(() => {
+        (async () => {
+            try {
+                const info = await licenseApi.getInfo();
+                setLicenseInfo(info);
+            } catch {
+                // Тихо игнорируем — чип покажет «Лицензия недействительна»
+                setLicenseInfo(null);
+            }
+        })();
+    }, []);
+
+    const handleLicenseClick = () => {
+        navigate('/license');
+    };
 
     const handleToggleCollapse = () => setCollapsed((prev) => !prev);
     const handleDrawerToggle = () => setMobileOpen(!mobileOpen);
@@ -386,6 +532,16 @@ const MainLayout: React.FC = () => {
                                 />
                             </Tooltip>
                         )}
+                    </Box>
+
+                    {/* ==========================================
+                        Итерация 17.1: чип статуса лицензии
+                    ========================================== */}
+                    <Box sx={{mr: 1, display: {xs: 'none', sm: 'block'}}}>
+                        <LicenseChip
+                            info={licenseInfo}
+                            onClick={handleLicenseClick}
+                        />
                     </Box>
 
                     {/* ==========================================

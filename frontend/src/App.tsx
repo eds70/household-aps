@@ -25,9 +25,10 @@ import SettingsPage from './pages/SettingsPage';
 import WhatIfPage from './pages/WhatIfPage';
 import AuditPage from './pages/AuditPage';
 import HelpPage from './pages/HelpPage';
+import LicensePage from './pages/LicensePage'; // ← НОВОЕ
 import {Box, CircularProgress} from '@mui/material';
 import {COMMON_TOUR_OPTIONS} from './tutorial/tours';
-import {APP_NAME} from './config'; // ← НОВОЕ
+import {APP_NAME} from './config';
 
 const theme = createTheme({
     palette: {
@@ -268,6 +269,8 @@ const AppRoutes: React.FC = () => {
                 <Route path="settings" element={<SettingsPage />} />
                 <Route path="help" element={<HelpPage />} />
                 <Route path="help/:slug" element={<HelpPage />} />
+                {/* Итерация 17.1: страница лицензии */}
+                <Route path="license" element={<LicensePage />} />
             </Route>
 
             <Route path="*" element={<Navigate to="/equipment" replace />} />

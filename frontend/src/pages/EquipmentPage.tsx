@@ -1,5 +1,8 @@
 // frontend/src/pages/EquipmentPage.tsx
 // Итерация 13.19: markPlanDirty() при изменениях оборудования и ремонтов.
+// Итерация 17.x: все запросы переведены на общий api-клиент из services/api.ts
+// (вместо голого axios), чтобы интерцептор нормализовал detail в строку
+// при 403/500 и не падало с "Objects are not valid as a React child".
 
 import React, {useCallback, useEffect, useRef, useState} from "react";
 import {
@@ -34,9 +37,7 @@ import {Allotment} from "allotment";
 import "allotment/dist/style.css";
 import type {CalendarEvent, Equipment} from "../types";
 import {usePlan} from "../context/PlainContext";
-import {calendarApi, equipmentApi} from "../services/api";
-import axios from "axios";
-import {API_BASE_URL} from "../config";
+import api, {calendarApi, equipmentApi} from "../services/api";
 import DraggableDialog from "../components/common/DraggableDialog";
 import AppAgGrid from '../components/common/AppAgGrid';
 
@@ -193,7 +194,7 @@ const EquipmentPage: React.FC = () => {
                 const repair = repairs.find((r) => r.id === item.id);
                 if (!repair) { callback(item); return; }
                 try {
-                    await axios.put(`${API_BASE_URL}/api/v1/calendar/${repair.id}`, {
+                    await api.put(`/api/v1/calendar/${repair.id}`, {
                         starts_at: new Date(item.start).toISOString(),
                         ends_at: new Date(item.end).toISOString(),
                     });
@@ -293,7 +294,7 @@ const EquipmentPage: React.FC = () => {
         if (!field || field === "id") return;
         const oldValue = data[field];
         try {
-            await axios.put(`${API_BASE_URL}/api/v1/equipment/${data.id}`, { [field]: newValue });
+            await api.put(`/api/v1/equipment/${data.id}`, { [field]: newValue });
             setEquipment((prev) => prev.map((eq) => (eq.id === data.id ? { ...eq, [field]: newValue } : eq)));
             // Итерация 13.19: пометить план
             markPlanDirty();
@@ -311,7 +312,7 @@ const EquipmentPage: React.FC = () => {
         if (isReadOnly) return;
         if (!window.confirm("Удалить оборудование?")) return;
         try {
-            await axios.delete(`${API_BASE_URL}/api/v1/equipment/${id}`);
+            await api.delete(`/api/v1/equipment/${id}`);
             setEquipment((prev) => prev.filter((eq) => eq.id !== id));
             if (selectedEquipmentId === id) setSelectedEquipmentId(null);
             // Итерация 13.19: пометить план
@@ -333,7 +334,7 @@ const EquipmentPage: React.FC = () => {
     const handleSaveEquipment = async () => {
         if (isReadOnly) return;
         try {
-            const response = await axios.post(`${API_BASE_URL}/api/v1/equipment/`, {
+            const response = await api.post(`/api/v1/equipment/`, {
                 ...formData, organization_id: "00000000-0000-0000-0000-000000000001",
             });
             setEquipment((prev) => [...prev, response.data]);
@@ -375,13 +376,13 @@ const EquipmentPage: React.FC = () => {
         }
         try {
             if (editingRepair) {
-                const updated = await axios.put(`${API_BASE_URL}/api/v1/calendar/${editingRepair.id}`, {
+                const updated = await api.put(`/api/v1/calendar/${editingRepair.id}`, {
                     event_type: repairForm.event_type,
                     starts_at, ends_at, comment: repairForm.comment,
                 });
                 setRepairs((prev) => prev.map((r) => (r.id === editingRepair.id ? updated.data : r)));
             } else {
-                const created = await axios.post(`${API_BASE_URL}/api/v1/calendar/`, {
+                const created = await api.post(`/api/v1/calendar/`, {
                     equipment_id: selectedEquipmentId,
                     event_type: repairForm.event_type,
                     starts_at, ends_at, comment: repairForm.comment,
@@ -401,7 +402,7 @@ const EquipmentPage: React.FC = () => {
         if (!editingRepair) return;
         if (!window.confirm("Удалить этот ремонт/простой?")) return;
         try {
-            await axios.delete(`${API_BASE_URL}/api/v1/calendar/${editingRepair.id}`);
+            await api.delete(`/api/v1/calendar/${editingRepair.id}`);
             setRepairs((prev) => prev.filter((r) => r.id !== editingRepair.id));
             setRepairDialogOpen(false);
             // Итерация 13.19: пометить план

@@ -1,5 +1,8 @@
 // frontend/src/pages/ProductsPage.tsx
 // Итерация 13.19: markPlanDirty() при изменениях, влияющих на расчёт.
+// Итерация 17.x: все запросы переведены на общий api-клиент из services/api.ts
+// (вместо голого axios), чтобы интерцептор нормализовал detail в строку
+// при 403/500 и не падало с "Objects are not valid as a React child".
 
 import React, {useEffect, useState} from 'react';
 import {
@@ -23,14 +26,12 @@ import {Add as AddIcon, Delete as DeleteIcon, Lock as LockIcon} from '@mui/icons
 import type {ColDef, GridReadyEvent} from 'ag-grid-community';
 import {AllCommunityModule, ModuleRegistry} from 'ag-grid-community';
 import type {Product} from '../types';
-import axios from 'axios';
-import {API_BASE_URL} from '../config';
+import api from '../services/api';
 import {usePlan} from '../context/PlainContext';
 import DraggableDialog from '../components/common/DraggableDialog';
+import AppAgGrid from '../components/common/AppAgGrid';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
-
-import AppAgGrid from '../components/common/AppAgGrid';
 
 const PRODUCT_TYPE_TRANSLATIONS: Record<string, string> = {
     'PF': 'Полуфабрикат',
@@ -61,7 +62,7 @@ const ProductsPage: React.FC = () => {
         setError(null);
         try {
             const params = currentVersionId ? { version_id: currentVersionId } : {};
-            const response = await axios.get(`${API_BASE_URL}/api/v1/products/`, { params });
+            const response = await api.get(`/api/v1/products/`, { params });
             setProducts(response.data);
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Ошибка загрузки данных');
@@ -142,7 +143,7 @@ const ProductsPage: React.FC = () => {
         if (!field || field === 'id') return;
         const oldValue = data[field];
         try {
-            await axios.put(`${API_BASE_URL}/api/v1/products/${data.id}`, { [field]: newValue });
+            await api.put(`/api/v1/products/${data.id}`, { [field]: newValue });
             setProducts((prev) => prev.map((p) => p.id === data.id ? { ...p, [field]: newValue } : p));
             // Итерация 13.19: пометить план «грязным»
             markPlanDirty();
@@ -156,7 +157,7 @@ const ProductsPage: React.FC = () => {
         if (isReadOnly) return;
         if (!window.confirm('Удалить продукт?')) return;
         try {
-            await axios.delete(`${API_BASE_URL}/api/v1/products/${id}`);
+            await api.delete(`/api/v1/products/${id}`);
             setProducts((prev) => prev.filter((p) => p.id !== id));
             // Итерация 13.19: пометить план «грязным»
             markPlanDirty();
@@ -178,7 +179,7 @@ const ProductsPage: React.FC = () => {
     const handleSave = async () => {
         if (isReadOnly) return;
         try {
-            const response = await axios.post(`${API_BASE_URL}/api/v1/products/`, {
+            const response = await api.post(`/api/v1/products/`, {
                 ...formData, organization_id: '00000000-0000-0000-0000-000000000001',
             });
             setProducts((prev) => [...prev, response.data]);

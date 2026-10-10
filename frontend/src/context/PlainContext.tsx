@@ -1,7 +1,6 @@
 // frontend/src/context/PlainContext.tsx
 import React, {createContext, useCallback, useContext, useEffect, useState} from 'react';
-import axios from 'axios';
-import {API_BASE_URL} from '../config';
+import api from '../services/api';
 import {useAuth} from './AuthContext';
 
 export interface PlanVersion {
@@ -205,8 +204,10 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const loadVersions = useCallback(async () => {
         try {
             // Итерация 13.21: всегда получаем ВСЕ версии.
-            const response = await axios.get(
-                `${API_BASE_URL}/api/v1/schedule/versions`,
+            // Итерация 17.x: используем общий api-клиент вместо голого axios,
+            // чтобы интерцептор нормализовал detail в строку при 403/500.
+            const response = await api.get(
+                '/api/v1/schedule/versions',
                 { params: { include_archived: true } },
             );
             const list: PlanVersion[] = Array.isArray(response.data) ? response.data : [];
@@ -280,7 +281,7 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
         versionType: string,
         comment?: string,
     ): Promise<PlanVersion> => {
-        const response = await axios.post(`${API_BASE_URL}/api/v1/schedule/versions`, {
+        const response = await api.post('/api/v1/schedule/versions', {
             name,
             version_type: versionType,
             comment,
@@ -292,7 +293,7 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }, []);
 
     const deletePlan = useCallback(async (versionId: string): Promise<void> => {
-        await axios.delete(`${API_BASE_URL}/api/v1/schedule/versions/${versionId}`);
+        await api.delete(`/api/v1/schedule/versions/${versionId}`);
         setVersions((prev) => prev.filter((v) => v.id !== versionId));
 
         setCurrentPlan((prev) => {
@@ -312,8 +313,8 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
      * Итерация 13.21: разархивация версии.
      */
     const unarchiveVersion = useCallback(async (versionId: string): Promise<void> => {
-        await axios.put(
-            `${API_BASE_URL}/api/v1/schedule/versions/${versionId}/unarchive`,
+        await api.put(
+            `/api/v1/schedule/versions/${versionId}/unarchive`,
         );
         await loadVersions();
     }, [loadVersions]);

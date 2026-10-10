@@ -24,11 +24,52 @@ api.interceptors.request.use(
 );
 
 // ==========================================
-// Интерсептор ответов — обработка 401
+// Интерсептор ответов — обработка 401 и нормализация detail
 // ==========================================
+//
+// Backend возвращает `detail` в двух форматах:
+//   1. Строка — обычные HTTPException(detail="...").
+//   2. Объект  — LicenseMiddleware и require_feature:
+//                {"code": "LICENSE_INVALID", "message": "..."}
+//
+// Фронт ожидает строку. Чтобы не падало с
+// "Objects are not valid as a React child", нормализуем detail
+// в строку ЗДЕСЬ, один раз для всего приложения.
+
+interface NormalizedDetail {
+    code?: string;
+    message: string;
+    [key: string]: unknown;
+}
+
+function normalizeDetail(raw: unknown): string {
+    if (raw == null) return 'Неизвестная ошибка';
+    if (typeof raw === 'string') return raw;
+    if (typeof raw === 'object') {
+        const obj = raw as NormalizedDetail;
+        if (typeof obj.message === 'string' && obj.message) return obj.message;
+        try {
+            return JSON.stringify(raw);
+        } catch {
+            return 'Неизвестная ошибка';
+        }
+    }
+    return String(raw);
+}
+
 api.interceptors.response.use(
     (response) => response,
     (error) => {
+        // 1. Нормализуем `detail` в строку прямо в error.response.data.
+        //    Все последующие catch-блоки получат уже строку.
+        if (error.response?.data && typeof error.response.data === 'object') {
+            const d = error.response.data;
+            if ('detail' in d) {
+                d.detail = normalizeDetail(d.detail);
+            }
+        }
+
+        // 2. Обработка 401 — как было.
         if (error.response?.status === 401) {
             localStorage.removeItem('access_token');
             if (!window.location.pathname.includes('/login')) {
@@ -1161,6 +1202,37 @@ export const auditApi = {
             payload,
             { responseType: 'blob' },
         );
+        return response.data;
+    },
+};
+
+// ==========================================
+// License API (Итерация 17.1)
+// ==========================================
+// Эндпоинты для отображения статуса лицензии в UI.
+// Оба публичные — не требуют авторизации.
+
+export const licenseApi = {
+    /**
+     * GET /api/v1/license/info
+     *
+     * Возвращает статус лицензии.
+     * Доступно всегда — даже при невалидной лицензии,
+     * чтобы UI мог показать причину.
+     */
+    getInfo: async (): Promise<import('../types').LicenseInfo> => {
+        const response = await api.get('/api/v1/license/info');
+        return response.data;
+    },
+
+    /**
+     * GET /api/v1/license/instance
+     *
+     * Возвращает instance_id текущего сервера.
+     * Используется для генерации привязанной лицензии.
+     */
+    getInstance: async (): Promise<import('../types').LicenseInstanceResponse> => {
+        const response = await api.get('/api/v1/license/instance');
         return response.data;
     },
 };

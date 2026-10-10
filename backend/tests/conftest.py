@@ -180,3 +180,26 @@ async def async_client(
 
     app.dependency_overrides.pop(get_db_session, None)
     await engine.dispose()
+
+# ==========================================
+# ОТКЛЮЧЕНИЕ ПРОВЕРКИ ЛИЦЕНЗИИ В ТЕСТАХ
+# ==========================================
+# Все тесты бизнес-логики не должны зависеть от состояния лицензии.
+# Тесты самой лицензии (`test_license.py`) используют изолированные
+# FastAPI-приложения и явно управляют LICENSE_VERIFY.
+# ==========================================
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _disable_license_verification(monkeypatch):
+    """
+    Отключает LicenseMiddleware для всех тестов.
+
+    Устанавливает settings.LICENSE_VERIFY = False через monkeypatch —
+    восстанавливается после каждого теста.
+    """
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "LICENSE_VERIFY", False)
+    yield

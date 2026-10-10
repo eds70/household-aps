@@ -1,7 +1,6 @@
 // frontend/src/context/AuthContext.tsx
-import React, { createContext, useState, useEffect, useContext, useCallback } from 'react';
-import axios from 'axios';
-import { API_BASE_URL } from '../config';
+import React, {createContext, useCallback, useContext, useEffect, useState} from 'react';
+import api from '../services/api';
 
 export interface UserData {
     id: string;
@@ -25,19 +24,47 @@ interface AuthContextType {
 
 export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+/**
+ * Итерация 17.x: нормализует `detail` из ответа backend в строку.
+ *
+ * Backend возвращает `detail` в двух форматах:
+ *   1. Строка — обычные HTTPException(detail="...").
+ *   2. Объект  — LicenseMiddleware / require_feature:
+ *                {"code": "LICENSE_INVALID", "message": "..."}
+ *
+ * До этого патча `err.response?.data?.detail` мог попасть в
+ * `new Error(detail)`, и дальше — в UI — рендерился объект.
+ * React падал с "Objects are not valid as a React child".
+ *
+ * Примечание: интерцептор в `services/api.ts` уже нормализует
+ * `detail` в строку, но подстраховываемся здесь на случай, если
+ * интерцептор будет снят или сработает до него.
+ */
+function normalizeDetail(raw: unknown, fallback: string): string {
+    if (typeof raw === 'string' && raw) return raw;
+    if (raw && typeof raw === 'object' && 'message' in raw) {
+        const msg = (raw as { message?: unknown }).message;
+        if (typeof msg === 'string' && msg) return msg;
+    }
+    return fallback;
+}
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const [user, setUser] = useState<UserData | null>(null);
     const [token, setToken] = useState<string | null>(() => localStorage.getItem('access_token'));
     const [isLoading, setIsLoading] = useState(true);
 
-    // Настройка axios для отправки токена во всех запросах
-    useEffect(() => {
-        if (token) {
-            axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-        } else {
-            delete axios.defaults.headers.common['Authorization'];
-        }
-    }, [token]);
+    // ==========================================
+    // Итерация 17.x: убран глобальный axios.defaults.
+    //
+    // Раньше здесь был useEffect, который писал
+    //   axios.defaults.headers.common['Authorization'] = `Bearer ${token}`.
+    //
+    // Это работало на ГЛОБАЛЬНОМ axios и не влияло на инстанс `api`
+    // из services/api.ts. Теперь мы везде ходим через `api`, а он
+    // сам подставляет заголовок из localStorage через request-интерцептор.
+    // Поэтому этот useEffect больше не нужен.
+    // ==========================================
 
     // Загрузка данных пользователя при монтировании
     const refreshUser = useCallback(async () => {
@@ -48,7 +75,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         try {
-            const response = await axios.get(`${API_BASE_URL}/api/v1/auth/me`);
+            const response = await api.get('/api/v1/auth/me');
             setUser(response.data);
         } catch (err) {
             console.error('Ошибка загрузки данных пользователя:', err);
@@ -66,7 +93,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const login = async (email: string, password: string) => {
         try {
-            const response = await axios.post(`${API_BASE_URL}/api/v1/auth/login`, {
+            const response = await api.post('/api/v1/auth/login', {
                 email,
                 password,
             });
@@ -77,7 +104,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
             await refreshUser();
         } catch (err: any) {
-            const message = err.response?.data?.detail || 'Ошибка авторизации';
+            const message = normalizeDetail(
+                err.response?.data?.detail,
+                'Ошибка авторизации',
+            );
             throw new Error(message);
         }
     };
@@ -86,7 +116,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         localStorage.removeItem('access_token');
         setToken(null);
         setUser(null);
-        delete axios.defaults.headers.common['Authorization'];
+        // Глобальный axios.defaults больше не используется —
+        // чистить нечего, `api` берёт токен из localStorage при каждом запросе.
     };
 
     return (

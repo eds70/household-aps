@@ -1250,3 +1250,95 @@ export interface AuditExportRequest {
     title?: string | null;
     max_rows?: number;
 }
+
+// ==========================================
+// ИТЕРАЦИЯ 17.1: ЛИЦЕНЗИРОВАНИЕ
+// ==========================================
+
+/**
+ * Уровни лицензии.
+ * Чем выше — тем больше фич доступно.
+ */
+export type LicenseTier = 'trial' | 'community' | 'enterprise';
+
+/**
+ * Ответ GET /api/v1/license/info.
+ *
+ * Возвращается всегда (в т.ч. при невалидной лицензии) —
+ * чтобы UI мог показать причину.
+ */
+export interface LicenseInfo {
+    /** Валидна ли лицензия (не истекла, подпись верна, instance совпал). */
+    valid: boolean;
+
+    /** Включена ли проверка лицензии в backend (LICENSE_VERIFY). */
+    verify_enabled: boolean;
+
+    /** Задан ли LICENSE_KEY в env. */
+    key_provided: boolean;
+
+    /** Организация-владелец (если лицензия валидна). */
+    holder: string | null;
+
+    /** Уровень лицензии. */
+    tier: LicenseTier | null;
+
+    /** Иерархия уровней (для отображения в UI). */
+    tier_hierarchy: LicenseTier[];
+
+    /** Активные фичи из лицензии. */
+    features: string[];
+
+    /** Дефолтные фичи по уровням (для справки в UI). */
+    default_features_by_tier: Record<string, string[]>;
+
+    /** Когда выпущена (ISO-8601). */
+    issued_at: string | null;
+
+    /** Когда истекает (ISO-8601). */
+    expires_at: string | null;
+
+    /** Сколько дней осталось (может быть отрицательным). */
+    days_left: number | null;
+
+    /** Истёк ли срок. */
+    is_expired: boolean;
+
+    /** Текущий instance_id сервера. */
+    instance_id: string | null;
+
+    /** Привязана ли лицензия к конкретному серверу. */
+    instance_bound: boolean;
+
+    /** Ограничение на количество пользователей. */
+    max_users: number | null;
+
+    /** Текст ошибки, если лицензия невалидна. */
+    error: string | null;
+
+    /** Издатель лицензии (iss). */
+    issuer: string;
+
+    /** Алгоритм подписи (HS256, RS256). */
+    algorithm: string;
+}
+
+/**
+ * Ответ GET /api/v1/license/instance.
+ */
+export interface LicenseInstanceResponse {
+    /** SHA256-хеш от machine-id + MAC + hostname + platform. */
+    instance_id: string | null;
+
+    /** Алгоритм вычисления (sha256). */
+    algorithm: string;
+
+    /** Из каких компонентов вычисляется. */
+    components: string[];
+}
+
+/**
+ * Цвет для отображения статуса лицензии в UI.
+ * Соответствует значениям MUI Chip `color`.
+ */
+export type LicenseStatusColor = 'success' | 'warning' | 'error' | 'info';
