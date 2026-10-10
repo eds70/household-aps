@@ -19,7 +19,6 @@ from fastapi import APIRouter, Request
 from app.core.config import settings
 from app.core.license import (
     DEFAULT_FEATURES_BY_TIER,
-    LICENSE_ALGORITHM,
     LICENSE_ISSUER,
     TIER_HIERARCHY,
     LicenseInfo,
@@ -81,7 +80,10 @@ async def get_license_info(request: Request) -> Dict[str, Any]:
         "instance_id": str | null,        # текущий instance_id сервера
         "instance_bound": bool,           # привязана ли лицензия к серверу
         "max_users": int | null,
-        "error": str | null               # текст ошибки, если невалидна
+        "error": str | null,              # текст ошибки, если невалидна
+        "issuer": str,
+        "algorithm": str | null           # реальный алгоритм подписи
+                                          # (из заголовка JWT: HS256/RS256/ES256)
       }
 
     Публичный. Не требует авторизации и валидной лицензии.
@@ -114,10 +116,14 @@ async def get_license_info(request: Request) -> Dict[str, Any]:
             "max_users": info.max_users,
             "error": None,
             "issuer": LICENSE_ISSUER,
-            "algorithm": LICENSE_ALGORITHM,
+            # Реальный алгоритм подписи, определённый из заголовка JWT
+            # при разборе лицензии (см. LicenseInfo.algorithm).
+            # Раньше здесь была константа LICENSE_ALGORITHM = "HS256",
+            # что вводило в заблуждение при RS256/ES256.
+            "algorithm": info.algorithm,
         }
 
-    # Невалидная (или отсутствует)
+    # Невалидная (или отсутствует) лицензия
     return {
         "valid": False,
         "verify_enabled": verify_enabled,
@@ -138,7 +144,8 @@ async def get_license_info(request: Request) -> Dict[str, Any]:
         "max_users": None,
         "error": error or "Лицензия не проверена",
         "issuer": LICENSE_ISSUER,
-        "algorithm": LICENSE_ALGORITHM,
+        # Алгоритм неизвестен — лицензия не разобрана.
+        "algorithm": None,
     }
 
 
