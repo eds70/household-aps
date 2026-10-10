@@ -71,8 +71,31 @@ services:
       DEFAULT_ORG_ID: ${DEFAULT_ORG_ID:-00000000-0000-0000-0000-000000000001}
       # Метаданные
       APP_NAME: ${APP_NAME:-APS Production Scheduler}
-      APP_VERSION: ${APP_VERSION:-4.9.0}
+      APP_VERSION: ${APP_VERSION:-4.9.1}
       DEBUG: ${DEBUG:-false}
+      # ==========================================
+      # ЛИЦЕНЗИРОВАНИЕ
+      # ==========================================
+      # Схема:
+      #   LICENSE_VERIFY        — включена ли проверка (false только для dev).
+      #   LICENSE_KEY           — JWT-лицензия от вендора.
+      #   LICENSE_PUBLIC_KEY    — публичный ключ вендора (RS256/ES256).
+      #                           Задаётся на проде. Клиент не может
+      #                           подписать лицензию этим ключом.
+      #   LICENSE_MASTER_SECRET — мастер-секрет HS256. Только для dev.
+      #
+      # Приоритет: LICENSE_PUBLIC_KEY важнее LICENSE_MASTER_SECRET.
+      # Синтаксис ${VAR:-} даёт пустую строку, если переменная не задана
+      # в .env — pydantic-settings трактует её как None (см. config.py).
+      LICENSE_VERIFY: ${LICENSE_VERIFY:-true}
+      LICENSE_KEY: ${LICENSE_KEY:-}
+      LICENSE_PUBLIC_KEY: ${LICENSE_PUBLIC_KEY:-}
+      LICENSE_MASTER_SECRET: ${LICENSE_MASTER_SECRET:-}
+    # Volume для /data: здесь хранится instance_id (файл /data/license_instance).
+    # Без volume instance_id пересчитывается при пересоздании контейнера,
+    # и привязанные к серверу лицензии перестают работать.
+    volumes:
+      - aps_data:/data
     # Явный CMD без --reload (production не должен перезагружаться при правке файлов).
     # Переопределяет CMD из Dockerfile.
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
@@ -163,3 +186,12 @@ volumes:
     #   type: none
     #   device: /home/user/aps-data/pgdata
     #   o: bind
+  aps_data:
+    driver: local
+    # Volume для /data внутри backend-контейнера.
+    # Здесь хранится instance_id (файл /data/license_instance).
+    #
+    # ⚠️  Без этого volume instance_id пересчитывается при каждом
+    # пересоздании контейнера → привязанные лицензии перестают работать.
+    # ⚠️  НЕ удалять через `down -v` — потеряете instance_id, и все
+    # привязанные лицензии придётся перевыпускать.
