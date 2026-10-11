@@ -77,7 +77,16 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 
 EXPOSE 80
 
+# ==========================================
+# HEALTHCHECK
+# ==========================================
+# wget уже есть в nginx:alpine.
+# Используем 127.0.0.1, а не localhost:
+#   — внутри контейнера localhost может резолвиться в IPv6 (::1);
+#   — nginx-alpine по умолчанию слушает только 0.0.0.0 (IPv4);
+#   — wget localhost → ::1 → Connection refused → unhealthy.
+# 127.0.0.1 — явный IPv4, без резолвинга.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget --quiet --tries=1 --spider http://localhost/ || exit 1
+    CMD wget --quiet --tries=1 --spider http://127.0.0.1/ || exit 1
 
 CMD ["nginx", "-g", "daemon off;"]
