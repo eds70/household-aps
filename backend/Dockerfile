@@ -8,104 +8,76 @@
 # Или через docker-compose.prod.yml:
 #   docker compose -f docker-compose.prod.yml build backend
 #
-# Особенности:
-#   - multi-stage не нужен: один слой, но с кэшем pip.
-#   - non-root пользователь для безопасности.
-#   - CMD можно переопределить через `command:` в compose.
-
-# ==========================================
-# БАЗА
-# ==========================================
-FROM python:3.12-slim
-
-# ==========================================
-# МЕТАДАННЫЕ
-# ==========================================
-LABEL maintainer="APS Production Scheduler" \
-      description="Backend: FastAPI + OR-Tools + asyncpg" \
-      version="4.9.0"
-
-# ==========================================
-# СИСТЕМНЫЕ ПЕРЕМЕННЫЕ
-# ==========================================
-# PYTHONDONTWRITEBYTECODE — не создавать .pyc (чище контейнер).
-# PYTHONUNBUFFERED — вывод в stdout без буферизации (важно для логов).
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
-
-# ==========================================
-# РАБОЧАЯ ДИРЕКТОРИЯ
-# ==========================================
-WORKDIR /app
-
-# ==========================================
-# СИСТЕМНЫЕ ЗАВИСИМОСТИ
-# ==========================================
-# - build-essential: компиляция C-расширений (asyncpg, ortools и др.)
-# - libpq-dev: PostgreSQL клиентская библиотека
-# - curl: healthcheck в docker-compose
-# - postgresql-client: psql для возможной отладки изнутри контейнера
-#   (обычно не нужен, но полезно при troubleshooting)
+# ОПТИМИЗАЦИЯ (2026-10-11):
+#   - multi-stage build: builder (build-essential) + runtime (без apt)
+#   - BuildKit cache mount для pip: кэш переживает пересборку
+#   - ldd-анализ показал: libpq5, libgomp1 НЕ нужны в runtime
+#   - libstdc++/libgcc есть в python:3.12-slim из коробки
+#   - HEALTHCHECK на Python (без curl, ~10 MB экономии)
+#   - убран PIP_NO_CACHE_DIR (ломал кэш pip)
 #
-# После установки dev-пакеты удаляются — образ меньше.
+# ТРЕБУЕТ Docker BuildKit (включён по умолчанию в Docker 20.10+).
+
+# syntax=docker/dockerfile:1.6
+
+# ==========================================
+# STAGE 1: BUILDER
+# ==========================================
+FROM python:3.12-slim AS builder
+
+# Единственная системная зависимость: build-essential для компиляции
+# C-расширений (если есть wheels — не используется, но на всякий случай).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
-        libpq-dev \
-        curl \
-        postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
-# ==========================================
-# PYTHON-ЗАВИСИМОСТИ (ОТДЕЛЬНЫМ СЛОЕМ)
-# ==========================================
-# Копируем только requirements.txt — если код изменится,
-# pip install не переустанавливается (кэш Docker).
+WORKDIR /app
+
+# Копируем ТОЛЬКО requirements.txt — слой пересобирается
+# только при изменении зависимостей.
 COPY requirements.txt ./
 
-RUN pip install --no-cache-dir -r requirements.txt
+# Устанавливаем в /install, чтобы во второй стадии скопировать
+# только готовые пакеты, без pip и компиляторов.
+#
+# --mount=type=cache,target=/root/.cache/pip — кэш pip переживает
+# пересборку. Второй раз OR-Tools (~500 MB) НЕ будет скачиваться.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip && \
+    pip install --prefix=/install -r requirements.txt
 
 # ==========================================
-# КОД ПРИЛОЖЕНИЯ
+# STAGE 2: RUNTIME
 # ==========================================
-# Копируется всё содержимое backend/, кроме:
-#   - .env (не должен попасть в образ)
-#   - .venv
-#   - __pycache__
-#   - tests/
-#   - *.md
-# Управляется через .dockerignore (см. соседний файл).
+# Минимальный образ: python:3.12-slim + установленные Python-пакеты.
+# Без apt install — все .so-зависимости есть в slim или самодостаточны.
+FROM python:3.12-slim
+
+LABEL maintainer="APS Production Scheduler" \
+      description="Backend: FastAPI + OR-Tools + asyncpg" \
+      version="4.9.1"
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Копируем установленные пакеты из builder-стадии.
+# Никаких gcc, pip, apt — только сами .so и .py.
+COPY --from=builder /install /usr/local
+
+# Код приложения — отдельный слой. При правке кода pip-слой НЕ сбрасывается.
 COPY . .
 
-# ==========================================
-# NON-ROOT ПОЛЬЗОВАТЕЛЬ
-# ==========================================
-# Создаём пользователя app, даём ему владение /app.
-# Процесс uvicorn запускается от app, не от root.
 RUN useradd -m -u 1000 app \
     && chown -R app:app /app
 USER app
 
-# ==========================================
-# ПОРТ
-# ==========================================
-# Соответствует host="0.0.0.0", port=8000 в run_server.py.
-# Наружу не пробрасывается — доступ через nginx-контейнер.
 EXPOSE 8000
 
-# ==========================================
-# HEALTHCHECK (ВНУТРЕННИЙ)
-# ==========================================
-# Проверяет /health каждые 30 секунд.
-# Дублирует healthcheck из docker-compose.prod.yml, но работает и без compose.
+# HEALTHCHECK на Python (curl в runtime не нужен — экономит ~10 MB).
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()" || exit 1
 
-# ==========================================
-# CMD — DEV-ДЕФОЛТ
-# ==========================================
-# Запускает run_server.py (uvicorn с reload=True — dev-режим).
-# В production через docker-compose.prod.yml переопределяется на:
-#   command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+# CMD — DEV-ДЕФОЛТ (переопределяется в docker-compose.prod.yml).
 CMD ["python", "run_server.py"]
