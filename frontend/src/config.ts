@@ -78,7 +78,7 @@ export const PAGINATION_PAGE_SIZE = 20;
 /**
  * Название приложения. Используется в document.title (App.tsx).
  */
-export const APP_NAME = 'APS Production Scheduler';
+export const APP_NAME = 'APS Production Scheduler';  // test build speed
 
 // ==========================================
 // DEV-предупреждение
