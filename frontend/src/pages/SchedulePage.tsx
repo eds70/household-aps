@@ -449,6 +449,36 @@ const SchedulePage: React.FC = () => {
         const isArchived = v.is_archived;
         const hasSnapshot = v.has_snapshot !== false;
 
+        // [FIX] Клик по имени копирует UUID версии в буфер обмена.
+        const handleCopyId = (e: React.MouseEvent) => {
+            e.stopPropagation();
+            const doCopy = async () => {
+                try {
+                    await navigator.clipboard.writeText(v.id);
+                    setSuccess(`ID плана скопирован: ${v.id}`);
+                    setTimeout(() => setSuccess(null), 2500);
+                } catch {
+                    // Fallback для http/незащищённого контекста
+                    const ta = document.createElement('textarea');
+                    ta.value = v.id;
+                    ta.style.position = 'fixed';
+                    ta.style.left = '-1000px';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    try {
+                        document.execCommand('copy');
+                        setSuccess(`ID плана скопирован: ${v.id}`);
+                        setTimeout(() => setSuccess(null), 2500);
+                    } catch {
+                        setError(`Не удалось скопировать. ID: ${v.id}`);
+                    } finally {
+                        document.body.removeChild(ta);
+                    }
+                }
+            };
+            doCopy();
+        };
+
         return (
             <div
                 style={{
@@ -493,20 +523,47 @@ const SchedulePage: React.FC = () => {
                     />
                 )}
 
-                <div
-                    style={{
-                        flex: '1 1 200px',
-                        minWidth: '150px',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                        fontWeight: isActive ? 700 : 400,
-                        color: isArchived ? '#95a5a6' : 'inherit',
-                        fontSize: '0.875rem',
-                    }}
+                {/* [FIX] Имя плана + tooltip с UUID + клик = копирование */}
+                <Tooltip
+                    title={
+                        <Box sx={{ fontSize: '0.75rem', lineHeight: 1.4 }}>
+                            <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                                Кликните, чтобы скопировать ID
+                            </div>
+                            <div
+                                style={{
+                                    fontFamily: 'monospace',
+                                    fontSize: '0.7rem',
+                                    wordBreak: 'break-all',
+                                    opacity: 0.9,
+                                }}
+                            >
+                                {v.id}
+                            </div>
+                        </Box>
+                    }
+                    arrow
+                    placement="top-start"
+                    enterDelay={500}
                 >
-                    {v.name}
-                </div>
+                    <div
+                        onClick={handleCopyId}
+                        style={{
+                            flex: '1 1 200px',
+                            minWidth: '150px',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            fontWeight: isActive ? 700 : 400,
+                            color: isArchived ? '#95a5a6' : 'inherit',
+                            fontSize: '0.875rem',
+                            cursor: 'pointer',
+                            userSelect: 'none',
+                        }}
+                    >
+                        {v.name}
+                    </div>
+                </Tooltip>
 
                 {isActive && (
                     <Chip
@@ -522,7 +579,7 @@ const SchedulePage: React.FC = () => {
                 )}
             </div>
         );
-    }, [expandedRoots]);
+    }, [expandedRoots, setSuccess, setError]);
 
     const columnDefs: ColDef<PlanVersionWithPath>[] = useMemo(() => [
         {

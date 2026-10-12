@@ -234,8 +234,12 @@ export const materialsApi = {
 // Recipes API
 // ==========================================
 export const recipesApi = {
-    getAll: async (productId?: string) => {
-        const params = productId ? { product_id: productId } : {};
+    // Итерация 17.x: поддержка version_id — если задан,
+    // backend читает из recipe_snapshot / recipe_item_snapshot.
+    getAll: async (productId?: string, versionId?: string) => {
+        const params: Record<string, string> = {};
+        if (productId) params.product_id = productId;
+        if (versionId) params.version_id = versionId;
         const response = await api.get('/api/v1/recipes', { params });
         return response.data;
     },
@@ -251,10 +255,32 @@ export const recipesApi = {
         const response = await api.delete(`/api/v1/recipes/${id}`);
         return response.data;
     },
-    addItem: async (recipeId: string, materialId: string, qtyPerBase: number) => {
-        const response = await api.post(`/api/v1/recipes/${recipeId}/items`, null, {
-            params: { material_id: materialId, qty_per_base: qtyPerBase },
+    // JSON body вместо query-параметров
+    addItem: async (
+        recipeId: string,
+        materialId: string,
+        qtyPerBase: number,
+    ) => {
+        const response = await api.post(`/api/v1/recipes/${recipeId}/items`, {
+            material_id: materialId,
+            qty_per_base: qtyPerBase,
         });
+        return response.data;
+    },
+    // Inline-edit qty компонента
+    updateItem: async (
+        recipeId: string,
+        itemId: string,
+        materialId: string,
+        qtyPerBase: number,
+    ) => {
+        const response = await api.put(
+            `/api/v1/recipes/${recipeId}/items/${itemId}`,
+            {
+                material_id: materialId,
+                qty_per_base: qtyPerBase,
+            },
+        );
         return response.data;
     },
     deleteItem: async (recipeId: string, itemId: string) => {

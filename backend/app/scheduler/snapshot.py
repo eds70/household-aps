@@ -17,7 +17,7 @@
 
 Решение:
     Единая функция snapshot_all_catalogs(session, org_id, version_id),
-    которая заполняет все 4 снапшот-таблицы из актуальных справочников.
+    которая заполняет все снапшот-таблицы из актуальных справочников.
 
     Вызывается из:
       1. schedule.py::create_schedule_version — при создании плана.
@@ -26,6 +26,9 @@
 Идемпотентность:
     Используем ON CONFLICT DO NOTHING — повторный вызов безопасен.
     Снапшот-таблицы имеют PK (id, version_id), поэтому дубликатов не будет.
+
+Итерация 17.x: добавлены снапшоты рецептов (recipe_snapshot,
+    recipe_item_snapshot). См. миграцию add_29_recipe_snapshots.sql.
 
 ВАЖНО:
     - Снапшоты — это «слепок» справочников на момент создания/расчёта плана.
@@ -64,6 +67,8 @@ async def snapshot_all_catalogs(
       - product            → product_snapshot
       - operation_template → operation_snapshot
       - calendar_event     → calendar_snapshot
+      - recipe             → recipe_snapshot       (Итерация 17.x)
+      - recipe_item        → recipe_item_snapshot  (Итерация 17.x)
 
     Args:
         session: Async-сессия SQLAlchemy.
@@ -71,7 +76,8 @@ async def snapshot_all_catalogs(
         version_id: UUID версии плана (schedule_version.id).
 
     Returns:
-        Статистика: {equipment, products, operations, calendar_events}.
+        Статистика: {equipment, products, operations, calendar_events,
+                     recipes, recipe_items}.
     """
     log_with_context(
         logger, logging.INFO,
@@ -193,18 +199,63 @@ async def snapshot_all_catalogs(
     )
     calendar_count = calendar_result.rowcount or 0
 
+    # ==========================================
+    # 5. RECIPE → recipe_snapshot  (Итерация 17.x)
+    # ==========================================
+    # Снапшот рецептов. FK на product убран в снапшот-таблице —
+    # product_id хранится как обычный UUID (см. add_29 миграцию).
+    recipes_result = await session.execute(
+        text("""
+            INSERT INTO recipe_snapshot
+                (id, organization_id, product_id, base_volume_kg,
+                 comment, version_id)
+            SELECT
+                id, organization_id, product_id, base_volume_kg,
+                comment, :version_id
+            FROM recipe
+            WHERE organization_id = :org_id
+            ON CONFLICT (id, version_id) DO NOTHING
+        """),
+        {"version_id": version_id, "org_id": org_id},
+    )
+    recipes_count = recipes_result.rowcount or 0
+
+    # ==========================================
+    # 6. RECIPE_ITEM → recipe_item_snapshot  (Итерация 17.x)
+    # ==========================================
+    # Компоненты рецептов. JOIN с recipe — чтобы отфильтровать
+    # по organization_id (в recipe_item его нет).
+    recipe_items_result = await session.execute(
+        text("""
+            INSERT INTO recipe_item_snapshot
+                (id, recipe_id, material_id, qty_per_base, version_id)
+            SELECT
+                ri.id, ri.recipe_id, ri.material_id, ri.qty_per_base,
+                :version_id
+            FROM recipe_item ri
+            JOIN recipe r ON r.id = ri.recipe_id
+            WHERE r.organization_id = :org_id
+            ON CONFLICT (id, version_id) DO NOTHING
+        """),
+        {"version_id": version_id, "org_id": org_id},
+    )
+    recipe_items_count = recipe_items_result.rowcount or 0
+
     stats = {
         "equipment": equipment_count,
         "products": products_count,
         "operations": operations_count,
         "calendar_events": calendar_count,
+        "recipes": recipes_count,
+        "recipe_items": recipe_items_count,
     }
 
     log_with_context(
         logger, logging.INFO,
         f"[snapshot] Готово для version={str(version_id)[:8]}: "
         f"equipment={equipment_count}, products={products_count}, "
-        f"operations={operations_count}, calendar={calendar_count}",
+        f"operations={operations_count}, calendar={calendar_count}, "
+        f"recipes={recipes_count}, recipe_items={recipe_items_count}",
         stage="snapshot", org_id=str(org_id),
     )
 
