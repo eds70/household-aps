@@ -2,7 +2,7 @@
 
 **Система автоматического планирования производства на базе OR-Tools CP-SAT**
 
-Версия: **4.9.1** (Итерации 0–16 завершены, patch-релиз)
+Версия: **4.10.0** (Итерации 0–16 завершены, Итерации 17.1–17.4 завершены)
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -72,6 +72,8 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 - **FAQ** (Итерация 15.4) — 15 статей «Симптом → Причина → Что делать»
 - **Редактирования статей справки в UI** (Итерация 15.5) — CRUD-эндпоинты и редактор на фронтенде
 - **Расширенного аудита и отчётов** (Итерация 16) — фильтры, дашборд с графиками, сохранённые представления, экспорт в Excel
+- **Версионирования рецептур** (Итерация 17.2) — снапшоты рецептов и компонентов в каждой версии плана
+- **Редактирования рецептур в UI** (Итерация 17.1) — inline-edit базовых полей и состава рецепта
 
 ## 📚 Документация
 
@@ -197,7 +199,7 @@ household-aps/
 │   │   ├── core/
 │   │   ├── scheduler/           # Ядро планировщика
 │   │   └── main.py
-│   ├── migrations/              # История миграций (add_*.sql)
+│   ├── migrations/              # История миграций (add_*.sql, включая add_29_recipe_snapshots.sql)
 │   ├── scripts/
 │   │   └── create_admin_user.py
 │   ├── init_schema.sql          # Схема v4.0.0 (для апгрейда)
@@ -365,8 +367,8 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/seed_demo_data.sql
 
 ### Применить SQL-миграцию (правильный способ)
 ```
-docker cp backend\migrations\add_28.sql aps_postgres:/tmp/add_28.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_28.sql
+docker cp backend\migrations\add_29_recipe_snapshots.sql aps_postgres:/tmp/add_29.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_29.sql
 ```
 
 ### Проверить статьи справки по категориям
@@ -400,6 +402,27 @@ docker exec -i aps_postgres psql -U aps -d household -c "\d audit_saved_view"
 docker exec -i aps_postgres psql -U aps -d household -c "SELECT COUNT(*) FILTER (WHERE is_archived = TRUE) AS archived, COUNT(*) FILTER (WHERE is_active = TRUE) AS active FROM schedule_version WHERE organization_id = '00000000-0000-0000-0000-000000000001';"
 ```
 
+### Проверить снапшоты рецептур (Итерация 17.2)
+```
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT version_id, COUNT(*) AS recipes FROM recipe_snapshot GROUP BY version_id ORDER BY version_id DESC LIMIT 5;"
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT version_id, COUNT(*) AS items FROM recipe_item_snapshot GROUP BY version_id ORDER BY version_id DESC LIMIT 5;"
+```
+
+**Ожидаемо:** для каждой новой версии — те же числа, что и в живых `recipe` / `recipe_item`.
+
+### Проверить структуру снапшот-таблиц рецептур
+```
+docker exec -i aps_postgres psql -U aps -d household -c "\d recipe_snapshot"
+docker exec -i aps_postgres psql -U aps -d household -c "\d recipe_item_snapshot"
+```
+
+**Ожидаемо:** составной PK `(id, version_id)`, FK на `schedule_version` с `ON DELETE CASCADE`.
+
+### Проверить `planning_start_date`
+```
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT setting_key, setting_value FROM app_settings WHERE setting_key = 'planning_start_date';"
+```
+
 ## ⚠️ Известные ограничения
 
 Полный список — в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#известные-ограничения).
@@ -419,6 +442,10 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT COUNT(*) FILTER 
 - **Аудит (16):** серии для дашборда собираются в памяти (без SQL-агрегации).
 - **Аудит (16):** экспорт в Excel ограничен `max_rows = 10000`.
 - **Аудит (16):** сохранённые представления **per-user**, не шарятся между пользователями.
+- **Рецептуры (17.1):** изменение `product_id` у существующего рецепта — только через удаление/создание; inline-edit не реализован.
+- **Рецептуры (17.2):** старые версии планов (созданные до миграции `add_29_recipe_snapshots.sql`) имеют пустые снапшоты рецептов — отображают пустой список.
+- **Рецептуры (17.2):** материалы (`material`) не версионируются — если материал переименован после снапшота, в старой версии отобразится новое имя.
+- **Валидация (17.x):** `qty_per_base` не проверяется на `> 0` — можно ввести 0 или отрицательное значение.
 
 ## 🐛 Troubleshooting
 
@@ -444,6 +471,9 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT COUNT(*) FILTER 
 - **Frontend стучится на `your-server-ip`** → `VITE_API_URL` не заменён — см. п. 147 в TROUBLESHOOTING.
 - **Оборудование не грузится (307 redirect без порта)** → `nginx.conf` использует `$host` вместо `$http_host` — см. п. 148.
 - **`curl` в PowerShell ведёт себя странно** → использовать `curl.exe`.
+- **Создание рецепта падает с 500 (FK violation)** → использован `material.id` вместо `product.id` — см. п. 152 в TROUBLESHOOTING.
+- **Поле «Дата начала планирования» не сохраняется** → `planning_start_date` в `app_settings`; проверить, что миграция применена и в UI выбран `type="date"`.
+- **Снапшоты рецептов пусты для старых версий** → миграция `add_29_recipe_snapshots.sql` применена позже создания этих версий. Нужна новая версия.
 
 ## 🗺️ Roadmap
 
@@ -484,6 +514,10 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT COUNT(*) FILTER 
 | 15.7 | Аудит документации (`check_docs.py`) | 1 день | 🟢 | ✅ |
 | 16 | Расширенный аудит и отчёты | 2 нед | 🟡 | ✅ |
 | 17 | Резерв | — | — | ⏳ |
+| 17.1 | Inline-edit рецептур в UI | 2 дня | 🟡 | ✅ |
+| 17.2 | Версионирование рецептур (снапшоты) | 2 дня | 🔥🔥 | ✅ |
+| 17.3 | Дата начала планирования в UI | 1 день | 🟡 | ✅ |
+| 17.4 | Копирование UUID версии плана из UI | 0.5 дня | 🟢 | ✅ |
 
 Полный Roadmap — в [docs/ROADMAP.md](docs/ROADMAP.md).
 
@@ -493,4 +527,4 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT COUNT(*) FILTER 
 
 ---
 
-Итерации 0–16 завершены. Patch 4.9.1 — исправления для развёртывания в VM/Docker. Следующая — Итерация 17: Резерв (⏳).
+Итерации 0–16 завершены. Patch 4.9.1 — исправления для развёртывания в VM/Docker. Итерации 17.1–17.4 завершены: inline-edit рецептур, версионирование рецептур через снапшоты, дата начала планирования в UI, копирование UUID версии. Следующая — Итерация 18: Резерв (⏳).

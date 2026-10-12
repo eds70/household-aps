@@ -16,6 +16,7 @@
 - [plan_settings](#plan_settings)
 - [Архивация версий (13.21)](#архивация-версий-1321)
 - [Снапшоты справочников (13.15)](#снапшоты-справочников-1315)
+- [Рецептуры (17.1–17.2)](#рецептуры-171172)
 - [Честный Знак](#честный-знак)
 - [Лаборатория](#лаборатория)
 - [Смены](#смены)
@@ -104,9 +105,9 @@ docker cp backend/migrations/add_XX.sql aps_postgres:/tmp/add_XX.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_XX.sql
 ```
 
-Определить, какая миграция нужна, по имени колонки:
+Определить, какая миграция нужна, по имени колонки/таблицы:
 
-| Колонка | Миграция |
+| Колонка/таблица | Миграция |
 |---------|----------|
 | `operation_name` | `add_12.sql` |
 | `cooling_mode` | `add_10b.sql` |
@@ -121,10 +122,12 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_XX.sql
 | `help_article` (таблица) | `add_24.sql` |
 | `help_hint` (таблица) | `add_25.sql` |
 | `audit_saved_view` (таблица) | `add_28.sql` |
+| `recipe_snapshot`, `recipe_item_snapshot` | `add_29_recipe_snapshots.sql` |
 
 > **Замечание:** если разворачиваете с нуля через `backend/init_schema_v4.9.sql`
-> + `init_schema_v4.9_seed.sql` — **все эти миграции уже включены**. Проблема
-    > возникает только при апгрейде старой БД.
+> + `init_schema_v4.9_seed.sql` — **большинство этих миграций уже включено**.
+    > Проблема возникает только при апгрейде старой БД, либо когда миграция
+    > вышла **после** консолидации (например, `add_29_recipe_snapshots.sql`).
 
 ---
 
@@ -671,6 +674,8 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema_v4.9.sq
 | `resource_pool (organization_id, type)` | Дубль пула | Удалить старый или обновить |
 | `cz_scan_log (organization_id, cz_code)` | Повторный скан | Идемпотентно, `duplicate: true` |
 | `equipment_snapshot (id, version_id)` | Дубль снапшота | `ON CONFLICT DO NOTHING` (by design) |
+| `recipe_snapshot (id, version_id)` | Дубль снапшота рецепта | `ON CONFLICT DO NOTHING` (by design) |
+| `recipe_item_snapshot (id, version_id)` | Дубль снапшота компонента | `ON CONFLICT DO NOTHING` (by design) |
 | `help_article (slug)` | Дубль статьи | `ON CONFLICT (slug) DO NOTHING` |
 | `help_hint (hint_key)` | Дубль подсказки | `ON CONFLICT (hint_key) DO NOTHING` |
 | `audit_saved_view (organization_id, user_id, name)` | Дубль имени представления | Выбрать другое имя |
@@ -1212,6 +1217,309 @@ WHERE organization_id = '00000000-0000-0000-0000-000000000001'
   AND is_active = FALSE;
 "
 ```
+
+---
+
+## Рецептуры (17.1–17.2)
+
+### 152. Создание рецепта через UI падает с 500 (FK violation)
+
+**Симптом:** на странице «Рецептуры» → «Добавить рецепт» → выбрать
+продукт → «Сохранить» → `500 Internal Server Error`. В логах backend:
+
+```
+asyncpg.exceptions.ForeignKeyViolationError:
+insert or update on table "recipe" violates foreign key constraint
+"recipe_product_id_fkey"
+DETAIL: Key (product_id)=(...) is not present in table "product".
+```
+
+В браузере — `Access to XMLHttpRequest at '...' from origin '...'
+has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header
+is present on the requested resource.` (это **вторичная** ошибка —
+backend отдал 500 без CORS-заголовков).
+
+**Причина:** в `RecipesPage.tsx` в селекте «Продукт (ПФ)» использовались
+**материалы**, а не **продукты**:
+
+```tsx
+// ❌ Было (баг)
+{materials.filter((m) => m.category === 'RAW').map((m) => (
+    <MenuItem key={m.id} value={m.id}>{m.code} - {m.name}</MenuItem>
+))}
+```
+
+`material.id ≠ product.id`. FK `recipe.product_id → product.id` падал,
+потому что это разные UUID.
+
+**Последствие:** рецепты через UI было невозможно создать — они
+существовали только из seed-миграции. UI-баг был **предсуществующий**
+(не связан с Итерацией 17.1).
+
+**Решение:**
+
+**Шаг 1. Проверить, что `material` и `product` — разные таблицы:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT 'product' AS src, id, code, name FROM product WHERE code LIKE 'FRAGRANCE%'
+UNION ALL
+SELECT 'material', id, code, name FROM material WHERE code LIKE 'FRAGRANCE%';
+"
+```
+
+Если `FRAGRANCE` есть только в `material` — диагноз подтверждён.
+
+**Шаг 2. Обновить `RecipesPage.tsx`:**
+
+```tsx
+// ✅ Стало (Итерация 17.1)
+import {productsApi} from '../services/api';
+
+const [products, setProducts] = useState<Product[]>([]);
+
+const loadData = async () => {
+    const productParams = currentVersionId
+        ? { params: { version_id: currentVersionId } }
+        : {};
+    const [recipesResp, materialsResp, productsResp] = await Promise.all([
+        api.get('/api/v1/recipes/', recipesParams),
+        api.get('/api/v1/materials/'),
+        api.get('/api/v1/products/', productParams),
+    ]);
+    setRecipes(recipesResp.data);
+    setMaterials(materialsResp.data);
+    setProducts(productsResp.data);
+};
+
+// Селект использует products
+{products.filter((p) => p.type === 'PF').map((p) => (
+    <MenuItem key={p.id} value={p.id}>{p.code} - {p.name}</MenuItem>
+))}
+```
+
+**Шаг 3. Пересобрать frontend (если в Docker):**
+
+```bash
+docker compose -f docker-compose.prod.yml build frontend
+docker compose -f docker-compose.prod.yml up -d frontend
+```
+
+**Шаг 4. Проверить, что создание работает:**
+
+```bash
+# Создать рецепт через UI. Затем:
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT id, product_id, base_volume_kg FROM recipe ORDER BY id DESC LIMIT 3;
+"
+```
+
+---
+
+### 153. Пустой список рецептов в версии плана
+
+**Симптом:** открыли сохранённую версию плана, зашли в «Рецептуры» —
+список пуст.
+
+**Причина:** версия создана **до** применения миграции
+`add_29_recipe_snapshots.sql`. Снапшоты рецептов для неё **не заполнены**.
+
+**Решение:**
+
+**Шаг 1. Проверить, что миграция применена:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT EXISTS (
+    SELECT 1 FROM information_schema.tables WHERE table_name = 'recipe_snapshot'
+);
+"
+```
+
+Если `f` — применить миграцию:
+
+```bash
+docker cp backend/migrations/add_29_recipe_snapshots.sql aps_postgres:/tmp/add_29.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_29.sql
+```
+
+**Шаг 2. Проверить, что у версии есть снапшот:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT version_id, COUNT(*) AS recipes FROM recipe_snapshot
+GROUP BY version_id ORDER BY version_id DESC LIMIT 5;
+"
+```
+
+Если для нужной версии `recipes = 0` — снапшот не заполнен.
+
+**Шаг 3. Создать новую версию** через UI («Планирование» → «Новый план»)
+или через API:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/schedule/versions \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Тест рецептур v2", "version_type": "MONTHLY"}'
+```
+
+Снапшоты заполнятся автоматически.
+
+**Шаг 4. Проверить:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT version_id, COUNT(*) AS recipes FROM recipe_snapshot
+GROUP BY version_id ORDER BY version_id DESC LIMIT 5;
+"
+```
+
+Должно быть **>0** для новой версии.
+
+**Примечание:** это **не баг** — снапшоты создаются только для новых
+версий. Для старых версий рецепты недоступны. Если это критично —
+можно добавить fallback на живые таблицы (обсудить с командой).
+
+---
+
+### 154. `POST /api/v1/recipes/{id}/items` не работает — 422
+
+**Симптом:** при добавлении компонента в диалоге состава — `422
+Unprocessable Entity`. В ответе: `detail: [{"loc": ["body"], "msg":
+"Field required", ...}]`.
+
+**Причина:** эндпоинт `POST /api/v1/recipes/{recipe_id}/items` в
+**Итерации 17.1** переведён с **query-параметров** на **JSON body**:
+
+```
+❌ Было: POST /recipes/{id}/items?material_id=<UUID>&qty_per_base=5.5
+✅ Стало: POST /recipes/{id}/items
+           Body: {"material_id": "<UUID>", "qty_per_base": 5.5}
+```
+
+Старые клиенты (в т.ч. старые версии `recipesApi.addItem` в `api.ts`)
+передавали query-параметры и получали `422`.
+
+**Решение:**
+
+**Шаг 1. Обновить `frontend/src/services/api.ts`** — метод `recipesApi.addItem`:
+
+```typescript
+// ❌ Было (старый контракт)
+addItem: async (recipeId: string, materialId: string, qtyPerBase: number) => {
+    const response = await api.post(`/api/v1/recipes/${recipeId}/items`, null, {
+        params: { material_id: materialId, qty_per_base: qtyPerBase },
+    });
+    return response.data;
+},
+
+// ✅ Стало (Итерация 17.1)
+addItem: async (recipeId: string, materialId: string, qtyPerBase: number) => {
+    const response = await api.post(`/api/v1/recipes/${recipeId}/items`, {
+        material_id: materialId,
+        qty_per_base: qtyPerBase,
+    });
+    return response.data;
+},
+```
+
+**Шаг 2. Если вы используете `curl` — передавать JSON body:**
+
+```bash
+curl -X POST http://localhost:8000/api/v1/recipes/<RECIPE_ID>/items \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"material_id": "<MATERIAL_ID>", "qty_per_base": 5.5}'
+```
+
+**Шаг 3. Пересобрать frontend (если в Docker):**
+
+```bash
+docker compose -f docker-compose.prod.yml build frontend
+docker compose -f docker-compose.prod.yml up -d frontend
+```
+
+---
+
+### 155. Поле «Дата начала планирования» не сохраняется
+
+**Симптом:** на странице «Планирование» в панели «Параметры расчёта»
+есть поле «Дата начала планирования», но при изменении и сохранении
+значение возвращается к старому, или не влияет на расчёт.
+
+**Причина:** возможные варианты:
+1. Backend не перезапущен после правок `SchedulePage.tsx`
+   (в prod — не пересобран frontend).
+2. Значение сохраняется в `app_settings`, но планировщик читает
+   из `plan_settings` (если у плана есть свой снапшот).
+3. Формат даты неверный — backend ожидает `YYYY-MM-DDTHH:mm:ss`.
+
+**Решение:**
+
+**Шаг 1. Проверить, что значение сохранилось в `app_settings`:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT setting_key, setting_value, updated_at
+FROM app_settings WHERE setting_key = 'planning_start_date';
+"
+```
+
+Ожидаемо: `setting_value = "2026-XX-XXT08:00:00"`.
+
+**Шаг 2. Если значение не сохранилось** — проверить, что frontend
+пересобран/перезапущен:
+
+```bash
+# Prod
+docker compose -f docker-compose.prod.yml build frontend
+docker compose -f docker-compose.prod.yml up -d frontend
+```
+
+И очистить кэш браузера (`Ctrl+Shift+R`).
+
+**Шаг 3. Если значение сохранилось, но не влияет на расчёт** —
+проверить `plan_settings` активного плана:
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT setting_value FROM plan_settings
+WHERE schedule_version_id = (SELECT id FROM schedule_version WHERE is_active = TRUE LIMIT 1)
+  AND setting_key = 'planning_start_date';
+"
+```
+
+Если значение отличается от `app_settings` — **`plan_settings`
+переопределяет** для этого плана (это by design). Изменить
+через мастер настроек плана или сбросить к глобальным:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/plan-settings/version/$VERSION_ID/reset \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Шаг 4. Проверить, что планировщик использует дату.** После расчёта:
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT MIN(planned_start) AS first_task, MAX(planned_end) AS last_task
+FROM scheduled_task
+WHERE schedule_version_id = (SELECT id FROM schedule_version WHERE is_active = TRUE LIMIT 1);
+"
+```
+
+`first_task` должен быть близко к `planning_start_date` (в UTC —
+минус 3 часа от МСК).
+
+**Шаг 5. Если дата задана в прошлом** — часть задач может «уехать»
+или получить `start=0` (см. `_datetime_to_minutes` в `core.py`:
+`return max(0, ...)`). Не задавайте дату раньше текущей без
+необходимости.
+
+**Связанные статьи:**
+- [docs/CONFIGURATION.md](CONFIGURATION.md) — про `planning_start_date`.
+- [docs/ARCHITECTURE.md](ARCHITECTURE.md) — про `_resolve_t0`.
 
 ---
 
@@ -3490,7 +3798,7 @@ location: http://localhost:8080/api/v1/equipment/   ← с портом
 
 ## Диагностика
 
-### 149.Общая проверка системы
+### 156. Общая проверка системы
 
 ```bash
 # PostgreSQL
@@ -3522,13 +3830,15 @@ SELECT COUNT(*) FROM plan_settings
 WHERE schedule_version_id = (SELECT id FROM schedule_version WHERE is_active = true LIMIT 1);
 "
 
-# Снапшоты активного плана
+# Снапшоты активного плана (включая рецепты)
 docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT
     (SELECT COUNT(*) FROM product_snapshot WHERE version_id = sv.id) AS products,
     (SELECT COUNT(*) FROM equipment_snapshot WHERE version_id = sv.id) AS equipment,
     (SELECT COUNT(*) FROM operation_snapshot WHERE version_id = sv.id) AS ops,
-    (SELECT COUNT(*) FROM calendar_snapshot WHERE version_id = sv.id) AS cal
+    (SELECT COUNT(*) FROM calendar_snapshot WHERE version_id = sv.id) AS cal,
+    (SELECT COUNT(*) FROM recipe_snapshot WHERE version_id = sv.id) AS recipes,
+    (SELECT COUNT(*) FROM recipe_item_snapshot WHERE version_id = sv.id) AS recipe_items
 FROM schedule_version sv
 WHERE sv.is_active = true LIMIT 1;
 "
@@ -3557,6 +3867,11 @@ SELECT COUNT(*) AS tutorial_articles FROM help_article WHERE slug = 'tutorial-in
 docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT COUNT(*) AS saved_views FROM audit_saved_view;
 "
+
+# Дата начала планирования
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT setting_value FROM app_settings WHERE setting_key = 'planning_start_date';
+"
 ```
 
 **Ожидаемые значения:**
@@ -3569,11 +3884,13 @@ SELECT COUNT(*) AS saved_views FROM audit_saved_view;
 | `tutorial_articles` | 1 |
 | `active` версия | 1 |
 | `plan_settings` активного плана | >0 |
+| `recipe_snapshot` активной версии | = живым рецептам (если версия создана после `add_29`) |
 | `saved_views` | >= 0 |
+| `planning_start_date` | `"2026-09-01T08:00:00"` (default) или пользовательское |
 
 ---
 
-### 150.Полная очистка и пересоздание
+### 157. Полная очистка и пересоздание
 
 **Dev** (PostgreSQL в Docker):
 
@@ -3597,11 +3914,15 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema_v4.9.sq
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema_v4.9_seed.sql
 docker exec -i aps_postgres psql -U aps -d household -f /tmp/seed_demo_data.sql
 
-# 4. Создать админа
+# 4. Применить add_29 (не входит в v4.9.0-консолидацию)
+docker cp backend/migrations/add_29_recipe_snapshots.sql aps_postgres:/tmp/add_29.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_29.sql
+
+# 5. Создать админа
 cd backend
 python -m scripts.create_admin_user
 
-# 5. Запустить backend и frontend
+# 6. Запустить backend и frontend
 python run_server.py
 cd ../frontend; npm run dev
 ```
@@ -3620,11 +3941,17 @@ docker compose -f docker-compose.prod.yml up -d
 
 # 4. Инициализировать БД
 ./scripts/deploy_init.sh    # или .ps1
+
+# 5. Применить add_29
+docker compose -f docker-compose.prod.yml cp \
+    backend/migrations/add_29_recipe_snapshots.sql postgres:/tmp/
+docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U aps -d household -f /tmp/add_29_recipe_snapshots.sql
 ```
 
 ---
 
-### 151. Полезные ссылки
+### 158. Полезные ссылки
 
 - [README.md](../README.md) — основная документация.
 - [docs/DEPLOYMENT.md](DEPLOYMENT.md) — развёртывание в облаке.

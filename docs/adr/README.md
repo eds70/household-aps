@@ -96,6 +96,7 @@
 - `0003-plan-settings-per-plan.md`
 - `0004-whatif-two-transactions.md`
 - `0005-help-system.md`
+- `0006-recipe-snapshots.md`
 
 ---
 
@@ -108,6 +109,7 @@
 | 0003 | [Plan settings per plan](0003-plan-settings-per-plan.md) | Принято | 2026-09-25 | 13.14 |
 | 0004 | [What-if two transactions](0004-whatif-two-transactions.md) | Принято | 2026-09-24 | 12 |
 | 0005 | [Help system as markdown articles](0005-help-system.md) | Принято | 2026-10-02 | 15.1 |
+| 0006 | [Recipe snapshots for versioning](0006-recipe-snapshots.md) | Принято | 2026-10-12 | 17.2 |
 
 ### Краткое описание
 
@@ -171,6 +173,23 @@
 
 ---
 
+#### [0006. Recipe snapshots for versioning](0006-recipe-snapshots.md)
+
+**Проблема:** рецептуры не версионировались — при открытии сохранённой
+версии плана всегда читались актуальные данные.
+
+**Решение:** снапшот-таблицы `recipe_snapshot` и `recipe_item_snapshot`
+(составной PK `(id, version_id)`, FK на `schedule_version`).
+
+**Альтернативы:**
+- Хранить JSONB-снапшот в `schedule_version` — нет валидации, сложно запрашивать.
+- Версионировать через `valid_from`/`valid_to` — усложняет все запросы.
+- Soft-delete в живых таблицах — не решает воспроизводимость.
+
+**Итерация:** 17.2.
+
+---
+
 ## Как добавить ADR
 
 ### 1. Создать файл
@@ -186,13 +205,13 @@
 Добавить строку в таблицу [Индекс ADR](#индекс-adr):
 
 ```markdown
-| 0006 | [Новое решение](0006-new-decision.md) | Принято | 2026-10-03 | 15.2 |
+| 0007 | [Новое решение](0007-new-decision.md) | Принято | 2026-10-13 | 18 | 
 ```
 
 ### 4. Добавить краткое описание
 
 ```markdown
-#### [0006. Новое решение](0006-new-decision.md)
+#### [0007. Новое решение](0007-new-decision.md)
 
 **Проблема:** ...
 
@@ -200,14 +219,14 @@
 
 **Альтернативы:** ...
 
-**Итерация:** 15.2.
+**Итерация:** 18.
 ```
 
 ### 5. Обновить CHANGELOG
 
 ```markdown
 ### Added
-- ADR 0006: Новое решение.
+- ADR 0007: Новое решение.
 ```
 
 ### 6. Обновить ARCHITECTURE.md (если нужно)

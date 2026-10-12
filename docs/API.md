@@ -12,6 +12,7 @@ REST API системы **APS Production Scheduler**.
 
 - [Авторизация](#авторизация)
 - [Справочники](#справочники)
+- [Рецептуры (расширение)](#рецептуры-расширение)
 - [Планирование](#планирование)
 - [Advisor](#advisor)
 - [Сменное планирование](#сменное-планирование)
@@ -144,6 +145,33 @@ REST API системы **APS Production Scheduler**.
 | `PUT` | `/api/v1/recipes/{id}` | Обновить | ADMIN, PLANNER |
 | `DELETE` | `/api/v1/recipes/{id}` | Удалить | ADMIN |
 
+**Query-параметр:** `version_id` (optional) — читать из снапшота (Итерация 17.2).
+**Query-параметр:** `product_id` (optional) — фильтр по продукту.
+
+**Ответ (элемент списка):**
+```json
+{
+  "id": "uuid",
+  "organization_id": "uuid",
+  "product_id": "uuid",
+  "base_volume_kg": 100.0,
+  "comment": "string | null",
+  "product_name": "string | null",
+  "product_code": "string | null",
+  "items": [
+    {
+      "id": "uuid",
+      "recipe_id": "uuid",
+      "material_id": "uuid",
+      "qty_per_base": 60.0,
+      "material_name": "string | null",
+      "material_code": "string | null",
+      "material_unit": "string | null"
+    }
+  ]
+}
+```
+
 ---
 
 ### Техкарты (операции)
@@ -184,6 +212,115 @@ REST API системы **APS Production Scheduler**.
 **Поля:** `id`, `equipment_id`, `event_type`, `start_at`, `end_at`, `reason`.
 
 **Типы событий:** `WEEKEND`, `MAINTENANCE`, `BREAKDOWN`, `HOLIDAY`.
+
+---
+
+## Рецептуры (расширение)
+
+Раздел посвящён эндпоинтам, добавленным в **Итерации 17.1–17.2**:
+inline-edit компонентов рецепта и версионирование (чтение из снапшота).
+
+### `GET /api/v1/recipes/?version_id=<UUID>`
+
+Список рецептов **для указанной версии плана** (читает из снапшот-таблиц
+`recipe_snapshot` / `recipe_item_snapshot`).
+
+**Query-параметры:**
+- `version_id` (optional) — UUID версии плана. Если задан — источник данных
+  снапшот; иначе — живые `recipe` / `recipe_item`.
+- `product_id` (optional) — фильтр по продукту.
+
+**Ответ:** тот же формат, что и `GET /api/v1/recipes` без `version_id`.
+
+**Особенности:**
+- Если для версии снапшот не заполнен (старая версия до миграции
+  `add_29_recipe_snapshots.sql`) — вернётся **пустой список**.
+- `material_name` / `material_code` / `material_unit` подтягиваются через
+  `LEFT JOIN material` — **живые** данные. Если материал переименован после
+  снапшота, отобразится новое имя.
+- `product_name` / `product_code` — аналогично, через `LEFT JOIN product`.
+
+**Права:** любой.
+
+---
+
+### `POST /api/v1/recipes/{recipe_id}/items`
+
+**Добавить компонент к рецепту.** Используется в диалоге «Состав» на
+странице «Рецептуры» (inline-edit).
+
+**Тело (JSON):**
+```json
+{
+  "material_id": "uuid",
+  "qty_per_base": 5.5
+}
+```
+
+**Ответ:**
+```json
+{
+  "id": "uuid",
+  "message": "Компонент добавлен"
+}
+```
+
+**Ошибки:**
+- `404` — рецепт не найден или принадлежит другой организации.
+
+**Права:** ADMIN, PLANNER.
+
+**⚠️ Изменение контракта (Итерация 17.1):**
+Раньше эндпоинт принимал `material_id` и `qty_per_base` как **query-параметры**.
+Теперь — **JSON body** (стандартный паттерн для мутаций). Старые клиенты,
+передающие query-параметры, получат `422 Unprocessable Entity`.
+
+---
+
+### `PUT /api/v1/recipes/{recipe_id}/items/{item_id}`
+
+**Обновить компонент рецепта.** Используется для inline-edit
+`qty_per_base` в AG Grid.
+
+**Тело (JSON):**
+```json
+{
+  "material_id": "uuid",
+  "qty_per_base": 12.5
+}
+```
+
+**Ответ:**
+```json
+{
+  "message": "Компонент обновлён"
+}
+```
+
+**Ошибки:**
+- `404` — рецепт не найден или принадлежит другой организации.
+- `404` — компонент не найден в рецепте.
+
+**Права:** ADMIN, PLANNER.
+
+---
+
+### `DELETE /api/v1/recipes/{recipe_id}/items/{item_id}`
+
+**Удалить компонент из рецепта.**
+
+**Ответ:**
+```json
+{
+  "message": "Компонент удален"
+}
+```
+
+**Ошибки:**
+- `404` — рецепт не найден или принадлежит другой организации.
+- `404` — компонент не найден в рецепте.
+
+**Права:** ADMIN, PLANNER.
 
 ---
 
@@ -290,17 +427,25 @@ REST API системы **APS Production Scheduler**.
     "equipment": 10,
     "products": 7,
     "operations": 27,
-    "calendar_events": 5
+    "calendar_events": 5,
+    "recipes": 4,
+    "recipe_items": 14
   }
 }
 ```
 
 **Права:** ADMIN, PLANNER.
 
-**Логика (Итерация 13.15):**
+**Логика (Итерация 13.15 + 17.2):**
 1. `INSERT INTO schedule_version`.
 2. Триггер `copy_app_settings_to_plan` копирует `app_settings` → `plan_settings`.
-3. `snapshot_all_catalogs()` заполняет снапшоты.
+3. `snapshot_all_catalogs()` заполняет снапшоты:
+    - `equipment_snapshot`;
+    - `product_snapshot`;
+    - `operation_snapshot`;
+    - `calendar_snapshot`;
+    - `recipe_snapshot` (**Итерация 17.2**);
+    - `recipe_item_snapshot` (**Итерация 17.2**).
 
 ---
 
@@ -970,6 +1115,7 @@ REST API системы **APS Production Scheduler**.
   "settings": {
     "horizon_hours": 1440,
     "timeout_seconds": 900,
+    "planning_start_date": "2026-11-01T08:00:00",
     "auto_archive_on_recalc": true
   }
 }
@@ -978,6 +1124,10 @@ REST API системы **APS Production Scheduler**.
 **Права:** ADMIN, PLANNER.
 
 **Итерация 13.21:** настройка `auto_archive_on_recalc` управляет архивацией старой версии при пересчёте.
+
+**Итерация 17.3:** `planning_start_date` — дата старта планирования (МСК),
+формат `YYYY-MM-DDTHH:mm:ss`. Используется планировщиком в
+`core.py::_resolve_t0`. Если не задана — fallback `2026-09-01 05:00:00 UTC`.
 
 ---
 
@@ -1632,6 +1782,14 @@ Authorization: Bearer <token>
 - Если задан — работают с указанным планом.
 - Если не задан — с последней активной версией (`is_active = TRUE`).
 
+**Список поддерживающих `version_id`:**
+- `equipment`, `products`, `operations`, `calendar`;
+- `recipes` (**Итерация 17.2** — читает из снапшота);
+- `schedule`, `gantt`, `shift`, `lab`, `cz`, `personnel`;
+- `audit`, `whatif`.
+
+**Исключения:** `settings`, `plan-settings` — используют `version_id` в пути.
+
 ### `has_snapshot` (Итерация 13.15)
 
 `GET /api/v1/schedule/versions` возвращает `has_snapshot` для каждой версии:
@@ -1645,6 +1803,18 @@ Authorization: Bearer <token>
 - С `include_archived=true` — возвращает все, включая архивные.
 - Каждая версия имеет поле `is_archived: bool`.
 - Разархивация — через `PUT /versions/{id}/unarchive`.
+
+### Рецептуры — версионирование (Итерация 17.2)
+
+- `GET /api/v1/recipes/?version_id=<UUID>` — читает из снапшота.
+- `GET /api/v1/recipes/` (без `version_id`) — читает из живых таблиц.
+- Все **мутации** (`POST`, `PUT`, `DELETE`) работают **только** с живыми
+  таблицами. В режиме версии UI скрывает элементы редактирования
+  (`isReadOnly = true`), поэтому конфликта нет.
+- Снапшот рецепта **имутабелен**: изменение живого рецепта не влияет на
+  уже сохранённые версии.
+- Если версия создана **до** миграции `add_29_recipe_snapshots.sql` —
+  снапшот рецептов пуст. Вернётся **пустой список**.
 
 ### Справка (Итерация 15.1)
 
@@ -1697,6 +1867,9 @@ Authorization: Bearer <token>
 - `snapshot_all_catalogs` (внутренняя функция) — идемпотентна (`ON CONFLICT DO NOTHING`).
 - `PUT /api/v1/schedule/versions/{id}/unarchive` — идемпотентен (повторная разархивация → `400`, но не сломает данные).
 - `POST /api/v1/help/articles` — **не** идемпотентен (повторный вызов с тем же slug → `409`).
+- `POST /api/v1/recipes/{id}/items` — **не** идемпотентен (создаёт новую строку компонента).
+- `PUT /api/v1/recipes/{id}/items/{item_id}` — идемпотентен (обновление одного компонента).
+- `DELETE /api/v1/recipes/{id}/items/{item_id}` — идемпотентен при повторном вызове возвращает `404`.
 
 ### Роли
 

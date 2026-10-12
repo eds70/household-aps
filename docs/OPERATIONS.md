@@ -18,6 +18,7 @@
 - [Интерактивный туториал (Итерация 15.3)](#интерактивный-туториал-итерация-153)
 - [FAQ (Итерация 15.4)](#faq-итерация-154)
 - [Редактирование статей через UI (Итерация 15.5)](#редактирование-статей-через-ui-итерация-155)
+- [Снапшоты рецептур (Итерация 17.2)](#снапшоты-рецептур-итерация-172)
 - [Проверка prod-развёртывания](#проверка-prod-развёртывания)
 - [Диагностика](#диагностика)
 
@@ -158,9 +159,9 @@ git pull
 docker compose -f docker-compose.prod.yml build
 
 # 4. Применить новые миграции (если есть)
-docker compose -f docker-compose.prod.yml cp backend/migrations/add_29.sql postgres:/tmp/
+docker compose -f docker-compose.prod.yml cp backend/migrations/add_29_recipe_snapshots.sql postgres:/tmp/
 docker compose -f docker-compose.prod.yml exec -T postgres \
-    psql -U aps -d household -f /tmp/add_29.sql
+    psql -U aps -d household -f /tmp/add_29_recipe_snapshots.sql
 
 # 5. Перезапустить сервисы
 docker compose -f docker-compose.prod.yml up -d
@@ -349,21 +350,22 @@ docker exec -i aps_postgres psql -U aps -d household -f /tmp/seed_demo_data.sql
 | `add_26_seed_3.sql` | 15.4 | FAQ: лаборатория, advisor (5) |
 | `add_27_seed_1.sql` | 15.3 | Туториал (`tutorial-interactive`) |
 | `add_28.sql` | 16.2 | `audit_saved_view` |
+| `add_29_recipe_snapshots.sql` | 17.2 | **`recipe_snapshot`, `recipe_item_snapshot`** |
 | `fix_shift_names.sql` | — | Пересоздание смен с корректной кириллицей |
 | `fix_work_time.sql` | — | Исправление `work_start_time` / `work_end_time` |
 
 ### Правильный способ применения миграции
 
 ```bash
-docker cp backend/migrations/add_28.sql aps_postgres:/tmp/add_28.sql
-docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_28.sql
+docker cp backend/migrations/add_29_recipe_snapshots.sql aps_postgres:/tmp/add_29.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_29.sql
 ```
 
 ### Неправильный способ (НЕ ИСПОЛЬЗОВАТЬ)
 
 ```bash
 # ❌ PowerShell испортит кириллицу
-Get-Content backend/migrations/add_28.sql | docker exec -i aps_postgres psql -U aps -d household
+Get-Content backend/migrations/add_29_recipe_snapshots.sql | docker exec -i aps_postgres psql -U aps -d household
 ```
 
 ### Применить все миграции по порядку (dev)
@@ -380,7 +382,7 @@ $migrations = @(
     "add_24.sql", "add_24_seed_1.sql", "add_24_seed_2.sql", "add_24_seed_3.sql",
     "add_25.sql", "add_25_seed.sql",
     "add_26_seed_1.sql", "add_26_seed_2.sql", "add_26_seed_3.sql",
-    "add_27_seed_1.sql", "add_28.sql",
+    "add_27_seed_1.sql", "add_28.sql", "add_29_recipe_snapshots.sql",
     "fix_shift_names.sql", "fix_work_time.sql"
 )
 
@@ -425,6 +427,17 @@ docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT EXISTS (
     SELECT 1 FROM information_schema.tables
     WHERE table_name = 'audit_saved_view'
+);
+"
+```
+
+Для `add_29_recipe_snapshots.sql` (снапшоты рецептур):
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT EXISTS (
+    SELECT 1 FROM information_schema.tables
+    WHERE table_name = 'recipe_snapshot'
 );
 "
 ```
@@ -569,7 +582,7 @@ curl http://localhost:5173
 curl http://your-server-ip/health
 
 # Ожидаемо:
-# {"status":"healthy","version":"4.9.0","timestamp":"..."}
+# {"status":"healthy","version":"4.10.0","timestamp":"..."}
 ```
 
 ### Проверить логи backend
@@ -764,6 +777,48 @@ WHERE organization_id = '00000000-0000-0000-0000-000000000001'
 
 ---
 
+### `app_settings` — настройка planning_start_date (Итерация 17.3)
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT setting_key, setting_value, value_type, category, label
+FROM app_settings
+WHERE organization_id = '00000000-0000-0000-0000-000000000001'
+  AND setting_key = 'planning_start_date';
+"
+```
+
+**Ожидаемый вывод:**
+
+| setting_key | setting_value | value_type | category | label |
+|-------------|---------------|------------|----------|-------|
+| `planning_start_date` | `"2026-09-01T08:00:00"` | `str` | `planning` | Дата начала планирования |
+
+**Изменить через SQL:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+UPDATE app_settings
+SET setting_value = '\"2026-11-01T08:00:00\"'::jsonb, updated_at = NOW()
+WHERE organization_id = '00000000-0000-0000-0000-000000000001'
+  AND setting_key = 'planning_start_date';
+"
+```
+
+**Проверка, что планировщик использует эту дату** — после расчёта плана:
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT MIN(planned_start) AS first_task, MAX(planned_end) AS last_task
+FROM scheduled_task
+WHERE schedule_version_id = (SELECT id FROM schedule_version WHERE is_active = TRUE LIMIT 1);
+"
+```
+
+`first_task` должен быть близко к `planning_start_date` (в UTC — минус 3 часа от МСК).
+
+---
+
 ### `plan_settings` (Итерация 13.14)
 
 **Структура:**
@@ -817,7 +872,7 @@ SELECT
 
 ---
 
-### `snapshot`-таблицы (Итерация 13.15)
+### `snapshot`-таблицы (Итерация 13.15 + 17.2)
 
 **Снапшоты всех планов (последние 10):**
 
@@ -831,6 +886,8 @@ SELECT
     (SELECT COUNT(*) FROM equipment_snapshot WHERE version_id = sv.id) AS equipment,
     (SELECT COUNT(*) FROM operation_snapshot WHERE version_id = sv.id) AS ops,
     (SELECT COUNT(*) FROM calendar_snapshot WHERE version_id = sv.id) AS cal,
+    (SELECT COUNT(*) FROM recipe_snapshot WHERE version_id = sv.id) AS recipes,
+    (SELECT COUNT(*) FROM recipe_item_snapshot WHERE version_id = sv.id) AS recipe_items,
     (SELECT COUNT(*) FROM plan_settings WHERE schedule_version_id = sv.id) AS settings
 FROM schedule_version sv
 WHERE sv.organization_id = '00000000-0000-0000-0000-000000000001'
@@ -1534,6 +1591,110 @@ WHERE slug = 'planning-build-plan';
 
 ---
 
+## Снапшоты рецептур (Итерация 17.2)
+
+Раздел посвящён версионированию рецептов. Таблицы `recipe_snapshot` и
+`recipe_item_snapshot` заполняются автоматически при создании/расчёте
+плана (см. `snapshot.py::snapshot_all_catalogs`).
+
+### Проверить, что таблицы созданы
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "\d recipe_snapshot"
+docker exec -i aps_postgres psql -U aps -d household -c "\d recipe_item_snapshot"
+```
+
+**Ожидаемо:**
+- Составной PK `(id, version_id)`.
+- FK `version_id → schedule_version(id) ON DELETE CASCADE`.
+- Индексы `idx_recipe_snap_ver`, `idx_recipe_snap_org_ver` для `recipe_snapshot`;
+  `idx_recipe_item_snap_ver`, `idx_recipe_item_snap_recipe_ver` для `recipe_item_snapshot`.
+
+### Проверить заполнение снапшотов
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT version_id, COUNT(*) AS recipes FROM recipe_snapshot GROUP BY version_id ORDER BY version_id DESC LIMIT 5;
+"
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT version_id, COUNT(*) AS items FROM recipe_item_snapshot GROUP BY version_id ORDER BY version_id DESC LIMIT 5;
+"
+```
+
+**Ожидаемо:** для каждой **новой** версии (созданной после применения
+миграции `add_29_recipe_snapshots.sql`) — те же числа, что и в живых
+`recipe` / `recipe_item`.
+
+### Сравнить снапшот с живыми таблицами
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT
+    (SELECT COUNT(*) FROM recipe) AS live_recipes,
+    (SELECT COUNT(*) FROM recipe_item) AS live_items,
+    (SELECT COUNT(*) FROM recipe_snapshot WHERE version_id = (SELECT id FROM schedule_version WHERE is_active = TRUE LIMIT 1)) AS snapshot_recipes,
+    (SELECT COUNT(*) FROM recipe_item_snapshot WHERE version_id = (SELECT id FROM schedule_version WHERE is_active = TRUE LIMIT 1)) AS snapshot_items;
+"
+```
+
+Числа должны совпадать (при условии, что активная версия создана после
+применения миграции и с момента её создания живые рецепты не менялись).
+
+### Проверить, что версия без снапшота (старая) — «пустая»
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT
+    sv.id,
+    sv.name,
+    sv.created_at,
+    (SELECT COUNT(*) FROM recipe_snapshot WHERE version_id = sv.id) AS recipes
+FROM schedule_version sv
+WHERE sv.organization_id = '00000000-0000-0000-0000-000000000001'
+ORDER BY sv.created_at DESC
+LIMIT 10;
+"
+```
+
+Для версий, созданных **до** миграции `add_29`, `recipes = 0`. Это нормально —
+снапшоты рецептов заполняются только при создании новой версии.
+
+### Удалить снапшот рецептов для конкретной версии
+
+**⚠️ Обычно не требуется** — при удалении версии снапшоты удаляются
+автоматически (CASCADE). Команда ниже — для ручной очистки.
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+DELETE FROM recipe_item_snapshot WHERE version_id = '<version-uuid>';
+DELETE FROM recipe_snapshot WHERE version_id = '<version-uuid>';
+"
+```
+
+### Проверить, что снапшот имутабелен
+
+**Шаг 1.** Создать новую версию. Запомнить `version_id` и состав рецепта.
+
+**Шаг 2.** В **текущем плане** изменить тот же рецепт (добавить/удалить
+компонент или изменить `qty_per_base`).
+
+**Шаг 3.** Проверить снапшот версии:
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT ri.material_id, ri.qty_per_base
+FROM recipe_item_snapshot ri
+WHERE ri.version_id = '<version-uuid>'
+  AND ri.recipe_id = '<recipe-uuid>'
+ORDER BY ri.material_id;
+"
+```
+
+**Ожидаемо:** состав снапшота **не изменился**. Изменения отразились
+только в живых `recipe_item`.
+
+---
+
 ## Проверка prod-развёртывания
 
 Быстрая проверка после деплоя в облако.
@@ -1554,7 +1715,7 @@ curl http://your-server-ip/health
 
 Ожидаемо:
 ```json
-{"status":"healthy","version":"4.9.0","timestamp":"2026-10-07T..."}
+{"status":"healthy","version":"4.10.0","timestamp":"2026-10-12T..."}
 ```
 
 **В PowerShell** — использовать `curl.exe` (не алиас `curl`).
@@ -1618,7 +1779,17 @@ docker compose -f docker-compose.prod.yml exec -T postgres \
 
 Ожидаемо: `>= 1`.
 
-### 10. Вход в UI
+### 10. Снапшоты рецептур (Итерация 17.2)
+
+```bash
+docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U aps -d household -c "SELECT COUNT(*) FROM recipe_snapshot;"
+```
+
+Ожидаемо: `>= 0`. Для версий, созданных после миграции `add_29` — совпадает
+с количеством живых рецептов.
+
+### 11. Вход в UI
 
 Откройте `http://your-server-ip/` в браузере.
 Логин: `admin@household.ru` / `admin123`.
@@ -1666,7 +1837,9 @@ SELECT
     (SELECT COUNT(*) FROM product_snapshot WHERE version_id = sv.id) AS products,
     (SELECT COUNT(*) FROM equipment_snapshot WHERE version_id = sv.id) AS equipment,
     (SELECT COUNT(*) FROM operation_snapshot WHERE version_id = sv.id) AS ops,
-    (SELECT COUNT(*) FROM calendar_snapshot WHERE version_id = sv.id) AS cal
+    (SELECT COUNT(*) FROM calendar_snapshot WHERE version_id = sv.id) AS cal,
+    (SELECT COUNT(*) FROM recipe_snapshot WHERE version_id = sv.id) AS recipes,
+    (SELECT COUNT(*) FROM recipe_item_snapshot WHERE version_id = sv.id) AS recipe_items
 FROM schedule_version sv
 WHERE sv.is_active = true LIMIT 1;
 "
@@ -1695,6 +1868,11 @@ SELECT COUNT(*) AS tutorial_articles FROM help_article WHERE slug = 'tutorial-in
 docker exec -i aps_postgres psql -U aps -d household -c "
 SELECT COUNT(*) AS saved_views FROM audit_saved_view;
 "
+
+# Дата начала планирования (Итерация 17.3)
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT setting_value FROM app_settings WHERE setting_key = 'planning_start_date';
+"
 ```
 
 **Ожидаемые значения:**
@@ -1707,17 +1885,93 @@ SELECT COUNT(*) AS saved_views FROM audit_saved_view;
 | `tutorial_articles` | 1 |
 | `active` версия | 1 |
 | `plan_settings` активного плана | >0 |
+| `recipe_snapshot` активной версии | совпадает с живыми рецептами (если версия создана после `add_29`) |
 | `saved_views` | >= 0 |
+| `planning_start_date` | `"2026-09-01T08:00:00"` (default) или пользовательское |
 
 ---
 
-## Ссылки
+### Полная очистка и пересоздание
+
+**Dev** (PostgreSQL в Docker):
+
+```bash
+# 1. Снести контейнер
+docker rm -f aps_postgres
+
+# 2. Создать заново
+docker run --name aps_postgres \
+  -e POSTGRES_USER=aps \
+  -e POSTGRES_PASSWORD=aps_secret \
+  -e POSTGRES_DB=household \
+  -p 5432:5432 \
+  -d postgres:17
+
+# 3. Применить схему v4.9.0
+docker cp backend/init_schema_v4.9.sql aps_postgres:/tmp/init_schema_v4.9.sql
+docker cp backend/init_schema_v4.9_seed.sql aps_postgres:/tmp/init_schema_v4.9_seed.sql
+docker cp backend/seed_demo_data.sql aps_postgres:/tmp/seed_demo_data.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema_v4.9.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/init_schema_v4.9_seed.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/seed_demo_data.sql
+
+# 4. Применить add_29 (не входит в v4.9.0-консолидацию)
+docker cp backend/migrations/add_29_recipe_snapshots.sql aps_postgres:/tmp/add_29.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_29.sql
+
+# 5. Создать админа
+cd backend
+python -m scripts.create_admin_user
+
+# 6. Запустить backend и frontend
+python run_server.py
+cd ../frontend; npm run dev
+```
+
+**Prod** (полный стек):
+
+```bash
+# 1. Остановить (БЕЗ -v!)
+docker compose -f docker-compose.prod.yml down
+
+# 2. Если нужно — удалить volume (⚠️ потеря данных)
+# docker volume rm household-aps_pgdata
+
+# 3. Запустить заново
+docker compose -f docker-compose.prod.yml up -d
+
+# 4. Инициализировать БД
+./scripts/deploy_init.sh    # или .ps1
+
+# 5. Применить add_29
+docker compose -f docker-compose.prod.yml cp \
+    backend/migrations/add_29_recipe_snapshots.sql postgres:/tmp/
+docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U aps -d household -f /tmp/add_29_recipe_snapshots.sql
+```
+
+---
+
+### Полезные ссылки
 
 - [README.md](../README.md) — основная документация.
 - [docs/DEPLOYMENT.md](DEPLOYMENT.md) — развёртывание в облаке.
 - [docs/DOCKER.md](DOCKER.md) — Docker: устройство и отладка.
+- [docs/OPERATIONS.md](OPERATIONS.md) — операции с БД.
+- [docs/CONFIGURATION.md](CONFIGURATION.md) — настройки.
 - [docs/ARCHITECTURE.md](ARCHITECTURE.md) — архитектура.
 - [docs/API.md](API.md) — описание API.
-- [docs/CONFIGURATION.md](CONFIGURATION.md) — настройки.
-- [docs/TROUBLESHOOTING.md](TROUBLESHOOTING.md) — решение проблем.
 - [docs/DEVELOPMENT.md](DEVELOPMENT.md) — руководство разработчика.
+
+---
+
+## Если проблема не решена
+
+1. Проверьте логи backend.
+2. Проверьте логи PostgreSQL: `docker logs aps_postgres --tail 100`.
+3. Проверьте консоль браузера (F12).
+4. Откройте issue с описанием:
+  - Симптом.
+  - Шаги воспроизведения.
+  - Логи.
+  - Версия (см. README.md).

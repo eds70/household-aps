@@ -9,7 +9,260 @@
 
 ### Added
 
-- Заготовка для Итерации 17: см. Roadmap.
+- Заготовка для Итерации 18: см. Roadmap.
+
+---
+
+## [4.10.0] — 2026-10-12
+
+Итерации 17.1–17.4 — Редактирование и версионирование рецептур,
+дата начала планирования, копирование UUID версии плана.
+
+### Added
+
+#### Итерация 17.1 — Inline-edit рецептур в UI
+
+**Проблема:**
+Модуль «Рецептуры» позволял только создать рецепт (с пустым составом)
+и удалить его. Не было:
+- редактирования базовых полей (`base_volume_kg`, `comment`);
+- редактирования состава (добавить/удалить/изменить количество);
+- режима просмотра (readonly) для сохранённых версий плана.
+
+Пользователю приходилось удалять рецепт и создавать заново — теряя
+историю и ID.
+
+**Решение:**
+
+**1. Backend (`recipes.py`):**
+- ✅ `PUT /api/v1/recipes/{recipe_id}/items/{item_id}` — новый эндпоинт
+  для inline-edit `qty_per_base` компонента.
+- ✅ `POST /api/v1/recipes/{recipe_id}/items` переведён на **JSON body**
+  (`RecipeItemCreate`) — было через query-параметры.
+- ✅ Во все item-endpoint'ы добавлена проверка принадлежности рецепта
+  организации.
+
+**2. Frontend (`RecipesPage.tsx`):**
+- ✅ Inline-edit колонок `base_volume_kg` и `comment` в основной
+  таблице → `PUT /api/v1/recipes/{id}`.
+- ✅ Диалог состава переделан на редактируемый AG Grid:
+  - inline-edit `qty_per_base`;
+  - кнопки удаления компонентов;
+  - форма добавления материала (селект + кол-во).
+- ✅ Режим просмотра: `isReadOnly` через `currentVersionId`, баннер
+  «Режим просмотра», скрытие всех элементов редактирования.
+- ✅ `markPlanDirty()` вызывается на все изменения.
+
+**3. Frontend (`api.ts`):**
+- ✅ `recipesApi.addItem` переведён на JSON body.
+- ✅ Добавлен `recipesApi.updateItem(recipeId, itemId, materialId, qty)`.
+
+**Fixed:**
+
+- **`RecipesPage.tsx` — селект «Продукт (ПФ)» использовал материалы
+  вместо продуктов.**
+  - **Симптом:** создание рецепта через UI → `500 Internal Server Error`,
+    в логах — `ForeignKeyViolationError: insert or update on table "recipe"
+    violates foreign key constraint "recipe_product_id_fkey"`.
+  - **Причина:** в селект подставлялись `materials.filter(category === 'RAW')`,
+    их `id` уходил в `recipe.product_id`. FK `recipe.product_id → product.id`
+    падал, потому что это разные UUID.
+  - **Последствие:** рецепты через UI было невозможно создать; они
+    существовали только из seed-миграции.
+  - **Fix:** селект использует `productsApi.getAll()` (с учётом
+    `currentVersionId`), фильтр `type === 'PF'`. Плюс добавлена валидация
+    `formData.product_id !== ''` перед POST.
+
+#### Итерация 17.2 — Версионирование рецептур (снапшоты)
+
+**Проблема:**
+Рецептуры не версионировались. При открытии сохранённой версии плана
+всегда читались **актуальные** данные из `recipe` / `recipe_item`. Если
+пользователь менял рецепт после создания версии, история искажалась —
+старые планы «ссылались» на новые составы.
+
+**Решение:**
+
+**1. Миграция `add_29_recipe_snapshots.sql`:**
+- ✅ Таблица `recipe_snapshot`:
+  - составной PK `(id, version_id)`;
+  - FK `version_id → schedule_version(id) ON DELETE CASCADE`;
+  - индексы `idx_recipe_snap_ver`, `idx_recipe_snap_org_ver`.
+- ✅ Таблица `recipe_item_snapshot`:
+  - составной PK `(id, version_id)`;
+  - FK `version_id → schedule_version(id) ON DELETE CASCADE`;
+  - индексы `idx_recipe_item_snap_ver`, `idx_recipe_item_snap_recipe_ver`.
+- ✅ **Важно:** FK на `product` и `material` в снапшотах убраны —
+  снапшот имутабелен, а ссылочные записи могут быть удалены в живой БД.
+
+**2. `snapshot.py` — расширение `snapshot_all_catalogs`:**
+- ✅ Блок 5: `INSERT INTO recipe_snapshot SELECT ... FROM recipe`.
+- ✅ Блок 6: `INSERT INTO recipe_item_snapshot SELECT ... FROM recipe_item
+  JOIN recipe ON recipe.organization_id = :org_id`.
+- ✅ `stats` теперь содержит `recipes` и `recipe_items`.
+- ✅ `ON CONFLICT (id, version_id) DO NOTHING` — идемпотентно.
+
+**3. `recipes.py` — чтение с учётом версии:**
+- ✅ `GET /api/v1/recipes/?version_id=<UUID>` — новый параметр.
+- ✅ Если `version_id` задан — чтение из `recipe_snapshot` и
+  `recipe_item_snapshot`. Иначе — из живых `recipe` / `recipe_item`.
+- ✅ Все мутации (`POST`, `PUT`, `DELETE`) — только с живыми таблицами.
+
+**4. Frontend (`RecipesPage.tsx`):**
+- ✅ `loadData` передаёт `currentVersionId` в `GET /recipes/`.
+
+**5. Frontend (`api.ts`):**
+- ✅ `recipesApi.getAll(productId?, versionId?)` — второй параметр.
+
+**Ключевые гарантии:**
+
+- ✅ **Имутабельность** — снапшот не обновляется при изменении
+  живого рецепта (by design).
+- ✅ **Обратная совместимость** — `GET /recipes/` без `version_id`
+  работает как раньше.
+- ✅ **CASCADE DELETE** — при удалении версии снапшоты удаляются
+  автоматически.
+- ✅ **Мульти-тенантность** — снапшот содержит `organization_id`.
+
+**Проверено:**
+- Создание версии → `recipe_snapshot` содержит 4 рецепта / 14 компонентов
+  (для тестовой версии `b85988cf-...`).
+- Просмотр версии → данные из снапшота (`CHLORIDE=5`).
+- Редактирование в текущем плане (`CHLORIDE=15`) не влияет на версию.
+
+#### Итерация 17.3 — Дата начала планирования в UI
+
+**Проблема:**
+Настройка `planning_start_date` существовала в backend
+(`settings.py::SETTINGS_REGISTRY`, читается `data_loader.py`,
+используется `core.py::_resolve_t0`), но её можно было изменить только
+через раздел «Настройки». В панели «Параметры расчёта» на странице
+«Планирование» поля не было.
+
+**Решение:**
+
+**`SchedulePage.tsx`:**
+- ✅ Новый стейт `planningStartDate` (`YYYY-MM-DD` для `input[type=date]`).
+- ✅ `loadPlanningSettings` читает `planning_start_date` из `app_settings`,
+  обрезает до `YYYY-MM-DD`.
+- ✅ `savePlanningSettings` дополняет до `YYYY-MM-DDTHH:mm:ss`
+  (`T08:00:00` — начало первой смены по МСК, как в
+  `core.py::_resolve_t0`) и сохраняет в `app_settings`.
+- ✅ Поле `TextField type="date"` добавлено в панель между «Таймаут solver»
+  и «Построить план».
+- ✅ Выравнивание: обёртка кнопки `height: 40`, `alignItems: flex-start`
+  у контейнера — чтобы поле/кнопка/hint стояли на одной линии и
+  helper-тексты не сдвигали элементы.
+
+**Почему `T08:00:00`:** `core.py::_resolve_t0` парсит значение как
+`Europe/Moscow`. Без времени получилось бы `00:00:00 МСК` → `21:00 UTC`
+предыдущего дня. С `T08:00:00` — `05:00 UTC`, совпадает с дефолтом
+`2026-09-01 05:00:00 UTC`.
+
+#### Итерация 17.4 — Копирование UUID версии плана из UI
+
+**Проблема:**
+Чтобы получить `id` версии плана (для SQL-запросов, отладки,
+передачи в API), приходилось лезть в БД через `psql`. Это неудобно
+и требует доступа к серверу.
+
+**Решение:**
+
+**`SchedulePage.tsx` — `renderNameCell`:**
+- ✅ Имя плана обёрнуто в `Tooltip` с UUID версии и подсказкой
+  «Кликните, чтобы скопировать».
+- ✅ Клик по имени копирует UUID в буфер обмена
+  (`navigator.clipboard.writeText`).
+- ✅ Fallback для http-контекста — `document.execCommand('copy')`.
+- ✅ Обратная связь через существующий Alert `success`:
+  «ID плана скопирован: `<UUID>`» (авто-скрытие через 2.5 сек).
+
+### Changed
+
+- Версия проекта: `4.9.1` → `4.10.0` (функциональная итерация).
+- `backend/app/api/v1/recipes.py` — добавлен `PUT /{id}/items/{item_id}`,
+  `POST /{id}/items` переведён на JSON body, добавлен параметр `version_id`
+  в `GET /`.
+- `backend/app/scheduler/snapshot.py` — `snapshot_all_catalogs` расширен
+  блоками 5 и 6 (рецепты), `stats` содержит `recipes` и `recipe_items`.
+- `backend/migrations/add_29_recipe_snapshots.sql` — **новый файл**.
+- `frontend/src/services/api.ts` — `recipesApi.addItem` (JSON body),
+  `recipesApi.updateItem` (новый метод), `recipesApi.getAll` (второй
+  параметр `versionId`).
+- `frontend/src/pages/RecipesPage.tsx` — inline-edit, редактируемый
+  диалог состава, режим просмотра, `markPlanDirty`, фикс селекта
+  «Продукт (ПФ)», передача `version_id`.
+- `frontend/src/pages/SchedulePage.tsx` — поле «Дата начала
+  планирования», копирование UUID по клику на имя плана, выравнивание
+  панели «Параметры расчёта».
+
+### Fixed
+
+- **Создание рецепта через UI падало с 500 (FK violation).**
+  - **Симптом:** `POST /api/v1/recipes/` → `500 Internal Server Error`,
+    в логах — `ForeignKeyViolationError: recipe_product_id_fkey`.
+  - **Причина:** в `RecipesPage.tsx` селект «Продукт (ПФ)» использовал
+    `materials.filter(category === 'RAW')`. `material.id` ≠ `product.id`.
+  - **Fix:** селект использует `productsApi.getAll()` (фильтр
+    `type === 'PF'`). См. Итерацию 17.1.
+- **`POST /api/v1/recipes/{id}/items` не работал из UI.**
+  - **Причина:** endpoint принимал `material_id` и `qty_per_base` как
+    query-параметры, что не соответствует inline-edit паттерну.
+  - **Fix:** переведён на JSON body. См. Итерацию 17.1.
+- **Дата начала планирования не отражалась в UI.**
+  - **Причина:** настройка `planning_start_date` существовала в
+    `app_settings`, но не отображалась в панели «Параметры расчёта».
+  - **Fix:** добавлено поле `type="date"` в `SchedulePage.tsx`.
+    См. Итерацию 17.3.
+- **UUID версии плана было сложно получить.**
+  - **Fix:** клик по имени плана копирует UUID в буфер.
+    См. Итерацию 17.4.
+
+### Notes
+
+- Версия `4.10.0` — **функциональная итерация**, обратная совместимость
+  с `4.9.x` сохранена.
+- Тесты: **789 passed, 0 skipped** — новых тестов не добавлено
+  (изменения проверены вручную через UI и SQL).
+- `saver.py` менять не потребовалось — вызывающая сторона
+  `snapshot_all_catalogs` уже расширена.
+
+### Migration
+
+Для тех, кто уже развернул `4.9.x`:
+
+```bash
+# 1. Применить миграцию для снапшотов рецептур
+docker cp backend/migrations/add_29_recipe_snapshots.sql aps_postgres:/tmp/add_29.sql
+docker exec -i aps_postgres psql -U aps -d household -f /tmp/add_29.sql
+
+# 2. Проверить, что таблицы созданы
+docker exec -i aps_postgres psql -U aps -d household -c "\d recipe_snapshot"
+docker exec -i aps_postgres psql -U aps -d household -c "\d recipe_item_snapshot"
+
+# 3. Перезапустить backend (или пересобрать, если в Docker)
+docker compose -f docker-compose.prod.yml restart backend
+# Или в IntelliJ — Stop → Run
+
+# 4. Создать новую версию плана (снапшоты рецептов заполнятся автоматически)
+#    Через UI: «Планирование» → «Новый план» → «Создать»
+
+# 5. Проверить, что снапшот рецептов заполнен
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT version_id, COUNT(*) AS recipes FROM recipe_snapshot GROUP BY version_id ORDER BY version_id DESC LIMIT 5;"
+
+# 6. Пересобрать frontend (из-за правок в RecipesPage.tsx, SchedulePage.tsx, api.ts)
+docker compose -f docker-compose.prod.yml build frontend
+docker compose -f docker-compose.prod.yml up -d frontend
+```
+
+**Важно для старых версий планов:** снапшоты рецептов для версий,
+созданных **до** применения миграции `add_29_recipe_snapshots.sql`,
+**пусты**. При открытии такой версии раздел «Рецептуры» покажет пустой
+список. Для получения снапшота рецептов нужно **создать новую версию**
+плана (через UI или `POST /api/v1/schedule/versions`).
+
+Для новых развёртываний — применить миграцию `add_29_recipe_snapshots.sql`
+вместе с остальными (см. [docs/OPERATIONS.md](docs/OPERATIONS.md)).
 
 ---
 

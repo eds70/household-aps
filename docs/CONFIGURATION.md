@@ -63,11 +63,23 @@ plan_settings  →  app_settings  →  .env  →  значения по умол
 
 | Ключ | Тип | По умолчанию | Min | Max | Описание |
 |------|-----|--------------|-----|-----|----------|
-| `planning_start_date` | `str` | `2026-09-01` | — | — | Дата старта планирования |
+| `planning_start_date` | `str` | `2026-09-01T08:00:00` | — | — | Дата старта планирования (МСК) |
 | `horizon_hours` | `int` | `720` | `24` | `8760` | Горизонт планирования (ч) |
 | `timeout_seconds` | `int` | `600` | `10` | `3600` | Таймаут solver (сек) |
 | `max_fill_percent` | `float` | `0.70` | `0.1` | `1.0` | Макс. загрузка реактора |
 | `auto_archive_on_recalc` | `bool` | `true` | — | — | **Итерация 13.21:** архивировать старую версию после пересчёта |
+
+**Про `planning_start_date`:**
+- Формат: `YYYY-MM-DDTHH:mm:ss` (ISO-8601, **без таймзоны**).
+- Интерпретируется как **МСК** (`Europe/Moscow`).
+- Используется в `core.py::_resolve_t0`: планировщик начинает раскладку
+  задач с этой даты.
+- Если не задано — fallback `2026-09-01 05:00:00 UTC`
+  (эквивалентно `2026-09-01 08:00:00 МСК`).
+- **Итерация 17.3:** поле «Дата начала планирования» добавлено в панель
+  «Параметры расчёта» на странице «Планирование».
+  UI передаёт значение как `YYYY-MM-DD` (обрезка до даты),
+  backend сохраняет как `YYYY-MM-DDTHH:mm:ss` с временем `T08:00:00`.
 
 **Про `auto_archive_on_recalc`:**
 - `true` (по умолчанию) — при пересчёте плана старая версия уходит
@@ -216,6 +228,14 @@ plan_settings  →  app_settings  →  .env  →  значения по умол
 - При пересчёте с заменой — у новой версии свои `plan_settings`
   (создаются через триггер), настройки старой остаются.
 
+### Связь с версионированием рецептур (Итерация 17.2)
+
+`plan_settings` **не влияет** на версионирование рецептур. Снапшоты
+рецептов (`recipe_snapshot`, `recipe_item_snapshot`) создаются
+автоматически при создании/расчёте плана (см. `snapshot.py::snapshot_all_catalogs`).
+`plan_settings` — снапшот **настроек планирования**, снапшоты рецептов —
+снапшот **справочников**.
+
 ---
 
 ## .env
@@ -248,7 +268,7 @@ ALLOWED_ORIGINS=http://localhost:5173,http://localhost:5174,http://localhost:300
 
 # Application
 APP_NAME=APS Production Scheduler
-APP_VERSION=4.9.0
+APP_VERSION=4.10.0
 DEBUG=true
 DEFAULT_ORG_ID=00000000-0000-0000-0000-000000000001
 ```
@@ -278,7 +298,7 @@ DEFAULT_ORG_ID=00000000-0000-0000-0000-000000000001
 
 # Application
 APP_NAME=APS Production Scheduler
-APP_VERSION=4.9.0
+APP_VERSION=4.10.0
 DEBUG=false
 ```
 
@@ -299,7 +319,7 @@ docker compose -f docker-compose.prod.yml up -d
 | `ALLOWED_ORIGINS` | ❌ | ✅ | `http://localhost:5173,...` | CORS-источники через запятую |
 | `DEFAULT_ORG_ID` | ❌ | ❌ | `00000000-...-0001` | ID организации по умолчанию |
 | `APP_NAME` | ❌ | ❌ | `APS Production Scheduler` | Название приложения |
-| `APP_VERSION` | ❌ | ❌ | `4.9.0` | Версия приложения |
+| `APP_VERSION` | ❌ | ❌ | `4.10.0` | Версия приложения |
 | `DEBUG` | ❌ | ❌ | `false` | Режим отладки (в prod — `false`) |
 
 > **Про `VITE_API_URL`:** это **не backend env-переменная**, а build-time
@@ -427,7 +447,7 @@ docker compose -f docker-compose.prod.yml up -d
 | `ALLOWED_ORIGINS` | `http://localhost:5173` | Домен/IP облака |
 | `VITE_API_URL` | Не задаётся (fallback `localhost:8000`) | Домен/IP облака |
 | `DEBUG` | `true` | `false` |
-| `APP_VERSION` | `4.9.0` | `4.9.0` |
+| `APP_VERSION` | `4.10.0` | `4.10.0` |
 
 **Важно:** в Docker `backend/.env` **не читается** — переменные пробрасываются через `environment:` в compose. Файл `backend/.env` в образ **не копируется** (исключён в `backend/.dockerignore`).
 
@@ -461,6 +481,9 @@ docker compose -f docker-compose.prod.yml up -d
 - `SettingsPage.tsx` — группировка по категориям, слайдеры, чекбоксы.
 - `PlanSettingsWizard.tsx` — 9 шагов, индикация изменённых полей.
 - Системные настройки (`is_system`) — заблокированы с Tooltip.
+- `SchedulePage.tsx` — поле «Дата начала планирования» (`type="date"`),
+  сохраняется вместе с «Горизонт» и «Таймаут solver» через
+  `settingsApi.updateBulk`.
 
 ---
 
@@ -474,6 +497,24 @@ curl -X PUT http://localhost:8000/api/v1/settings/horizon_hours \
   -H "Content-Type: application/json" \
   -d '{"value": 1440}'
 ```
+
+### Изменить дату начала планирования (Итерация 17.3)
+
+```bash
+curl -X PUT http://localhost:8000/api/v1/settings/planning_start_date \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"value": "2026-11-01T08:00:00"}'
+```
+
+**Проверка:**
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT setting_key, setting_value FROM app_settings WHERE setting_key = 'planning_start_date';"
+```
+
+**В UI:** панель «Параметры расчёта» на странице «Планирование» → поле
+«Дата начала планирования». Значение сохраняется при нажатии
+«Сохранить настройки» или автоматически при «Построить план».
 
 ### Изменить настройку конкретного плана
 
@@ -584,6 +625,19 @@ LIMIT 10;
 seed-миграцию `add_27_seed_1.sql` (категория `getting-started`).
 
 **Дополнительных настроек** для туториала **не требуется**.
+
+### Снапшоты рецептур — Итерация 17.2
+
+Таблицы `recipe_snapshot`, `recipe_item_snapshot` заполняются автоматически
+при создании/расчёте плана. **Настроек нет** — включено всегда.
+
+**Проверка:**
+```
+docker exec -i aps_postgres psql -U aps -d household -c "SELECT version_id, COUNT(*) AS recipes FROM recipe_snapshot GROUP BY version_id ORDER BY version_id DESC LIMIT 5;"
+```
+
+**Отключить нельзя** — снапшот рецептов является обязательной частью
+версионирования плана.
 
 ### Docker (prod) — Итерация 16.x
 

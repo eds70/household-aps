@@ -31,7 +31,7 @@
 1. Форкните репозиторий.
 2. Создайте ветку от `main`:
    ```
-   git checkout -b feature/iteration-15-help
+   git checkout -b feature/iteration-17-recipes
    ```
 3. Убедитесь, что локально всё работает:
    ```
@@ -52,7 +52,7 @@
 ```
 feat(scheduler): add plan_settings support to DataLoader
 fix(shift): correct timezone comparison for by-date endpoint
-docs(readme): update version to 4.3.0
+docs(readme): update version to 4.10.0
 test(plan_settings): add integration tests for trigger
 ```
 
@@ -60,7 +60,7 @@ test(plan_settings): add integration tests for trigger
 
 1. Запушьте ветку:
    ```
-   git push origin feature/iteration-15-help
+   git push origin feature/iteration-17-recipes
    ```
 2. Откройте PR против `main`.
 3. Заполните шаблон PR:
@@ -165,31 +165,22 @@ export const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
 
 **Пример:**
 ```sql
--- Итерация 13.14: plan_settings
+-- Итерация 17.2: снапшоты рецептов для версионирования
 BEGIN;
 
-CREATE TABLE IF NOT EXISTS plan_settings (
-                                            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-   organization_id UUID NOT NULL,
-   schedule_version_id UUID NOT NULL REFERENCES schedule_version(id) ON DELETE CASCADE,
-   setting_key TEXT NOT NULL,
-   setting_value JSONB,
-   value_type TEXT NOT NULL DEFAULT 'str',
-   category TEXT NOT NULL DEFAULT 'general',
-   label TEXT,
-   description TEXT,
-   min_value NUMERIC,
-   max_value NUMERIC,
-   options JSONB,
-   display_order INT NOT NULL DEFAULT 0,
-   is_system BOOLEAN NOT NULL DEFAULT FALSE,
-   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-   UNIQUE (schedule_version_id, setting_key)
-   );
+CREATE TABLE IF NOT EXISTS recipe_snapshot (
+    id              UUID           NOT NULL,
+    organization_id UUID,
+    product_id      UUID           NOT NULL,
+    base_volume_kg  NUMERIC(10,2)  NOT NULL,
+    comment         TEXT,
+    version_id      UUID           NOT NULL
+        REFERENCES schedule_version(id) ON DELETE CASCADE,
+    PRIMARY KEY (id, version_id)
+);
 
-CREATE INDEX IF NOT EXISTS idx_plan_settings_version
-   ON plan_settings (schedule_version_id);
+CREATE INDEX IF NOT EXISTS idx_recipe_snap_ver
+    ON recipe_snapshot(version_id);
 
 COMMIT;
 ```
@@ -235,6 +226,7 @@ COMMIT;
 - `personnel` — персонал.
 - `gantt` — диаграмма Ганта.
 - `snapshot` — снапшоты справочников.
+- `recipes` — рецептуры и их снапшоты.
 - `help` — встроенная справка.
 - `docs` — документация.
 
@@ -324,6 +316,29 @@ feat(help): add article CRUD in UI (iteration 15.5)
 - +54 теста, всего 714 passed
 ```
 
+```
+feat(recipes): версионирование рецептов и inline-edit (iteration 17.1–17.2)
+
+- Миграция add_29_recipe_snapshots.sql: таблицы recipe_snapshot,
+  recipe_item_snapshot
+- snapshot.py: блоки 5 и 6 в snapshot_all_catalogs
+- recipes.py: PUT /items/{item_id}, POST /items (JSON body),
+  version_id в GET /
+- RecipesPage.tsx: inline-edit полей и состава, режим просмотра
+- Фикс: селект «Продукт (ПФ)» использует products, а не materials
+- Тесты не менялись, всего 789 passed
+```
+
+```
+fix(recipes): селект «Продукт (ПФ)» использовал материалы
+
+- Симптом: создание рецепта через UI → 500, FK violation
+- Причина: material.id уходил в recipe.product_id
+- Fix: селект использует productsApi.getAll() (фильтр type === 'PF')
+
+Fixes #789
+```
+
 ---
 
 ## Тестирование
@@ -398,10 +413,12 @@ npm run lint
 | Архитектурное решение | `docs/ARCHITECTURE.md` |
 | Команды БД | `docs/OPERATIONS.md`, `README.md` |
 | Troubleshooting | `docs/TROUBLESHOOTING.md`, `README.md` |
+| Новая таблица/миграция | `docs/OPERATIONS.md`, `README.md` |
 | Статья справки | `backend/migrations/add_24_seed_*.sql` |
 | Контекстная подсказка | `backend/migrations/add_25_seed.sql` |
 | FAQ-статья | `backend/migrations/add_26_seed_*.sql` |
 | Интерактивный тур | `frontend/src/tutorial/tours.ts` |
+| Версионирование справочника | `backend/migrations/add_NN_snapshots.sql`, `backend/app/scheduler/snapshot.py` |
 
 ### Стиль документации
 
@@ -432,6 +449,48 @@ npm run lint
 5. Добавьте тест в `test_<модуль>_migration.py`.
 6. Обновите `CHANGELOG.md`.
 
+**Пример миграции снапшотов** (`add_29_recipe_snapshots.sql`):
+
+```sql
+-- Итерация 17.2: снапшоты рецептов и компонентов
+BEGIN;
+
+CREATE TABLE IF NOT EXISTS recipe_snapshot (
+    id              UUID           NOT NULL,
+    organization_id UUID,
+    product_id      UUID           NOT NULL,
+    base_volume_kg  NUMERIC(10,2)  NOT NULL,
+    comment         TEXT,
+    version_id      UUID           NOT NULL
+        REFERENCES schedule_version(id) ON DELETE CASCADE,
+    PRIMARY KEY (id, version_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_recipe_snap_ver
+    ON recipe_snapshot(version_id);
+
+CREATE INDEX IF NOT EXISTS idx_recipe_snap_org_ver
+    ON recipe_snapshot(organization_id, version_id);
+
+CREATE TABLE IF NOT EXISTS recipe_item_snapshot (
+    id           UUID           NOT NULL,
+    recipe_id    UUID           NOT NULL,
+    material_id  UUID           NOT NULL,
+    qty_per_base NUMERIC(10,3)  NOT NULL,
+    version_id   UUID           NOT NULL
+        REFERENCES schedule_version(id) ON DELETE CASCADE,
+    PRIMARY KEY (id, version_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_recipe_item_snap_ver
+    ON recipe_item_snapshot(version_id);
+
+CREATE INDEX IF NOT EXISTS idx_recipe_item_snap_recipe_ver
+    ON recipe_item_snapshot(recipe_id, version_id);
+
+COMMIT;
+```
+
 ### Как добавить эндпоинт
 
 1. Создайте/откройте файл в `backend/app/api/v1/`.
@@ -457,6 +516,44 @@ npm run lint
    ```
 5. Добавьте тест в `test_<module>_api.py`.
 6. Обновите `docs/API.md` и `README.md`.
+
+**Пример: inline-edit эндпоинт** (как `PUT /recipes/{id}/items/{item_id}`):
+
+```python
+@router.put("/{recipe_id}/items/{item_id}", response_model=dict)
+async def update_recipe_item(
+        recipe_id: UUID,
+        item_id: UUID,
+        item: RecipeItemCreate,
+        org_id: UUID = Depends(get_current_org_id),
+        db: AsyncSession = Depends(get_db_session),
+):
+    """Обновить компонент рецепта (qty_per_base). Inline-edit из UI."""
+    check = await db.execute(
+        text("SELECT 1 FROM recipe WHERE id = :recipe_id AND organization_id = :org_id"),
+        {"recipe_id": recipe_id, "org_id": org_id},
+    )
+    if not check.fetchone():
+        raise HTTPException(status_code=404, detail="Рецепт не найден")
+
+    result = await db.execute(
+        text("""
+            UPDATE recipe_item
+            SET material_id = :material_id, qty_per_base = :qty
+            WHERE id = :item_id AND recipe_id = :recipe_id
+        """),
+        {
+            "item_id": item_id,
+            "recipe_id": recipe_id,
+            "material_id": item.material_id,
+            "qty": item.qty_per_base,
+        },
+    )
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Компонент не найден")
+    await db.commit()
+    return {"message": "Компонент обновлён"}
+```
 
 ### Как добавить настройку
 
@@ -505,6 +602,33 @@ npm run lint
    `data-tour-id="my-target"`.
 4. Добавьте тест в `frontend/src/tutorial/__tests__/tours.test.ts`.
 
+### Как добавить версионируемый справочник (снапшот)
+
+1. Создайте миграцию `add_NN_<name>_snapshots.sql` по паттерну
+   `add_29_recipe_snapshots.sql`:
+   - составной PK `(id, version_id)`;
+   - FK `version_id → schedule_version(id) ON DELETE CASCADE`;
+   - индексы на `version_id` и на бизнес-ключ.
+2. Добавьте блок в `snapshot.py::snapshot_all_catalogs`:
+   ```python
+   result = await session.execute(
+       text("""
+           INSERT INTO <name>_snapshot
+               (id, organization_id, ..., version_id)
+           SELECT id, organization_id, ..., :version_id
+           FROM <name>
+           WHERE organization_id = :org_id
+           ON CONFLICT (id, version_id) DO NOTHING
+       """),
+       {"version_id": version_id, "org_id": org_id},
+   )
+   ```
+3. Добавьте ключ в `stats` (`snapshot_all_catalogs`) и в логи.
+4. В API-эндпоинте чтения добавьте параметр `version_id` и
+   переключение таблицы.
+5. Обновите `docs/ARCHITECTURE.md` (раздел «Снапшоты») и
+   `docs/OPERATIONS.md` (команды проверки).
+
 ### Как обновить CHANGELOG
 
 1. Откройте `CHANGELOG.md`.
@@ -518,8 +642,10 @@ npm run lint
    ```
 3. При релизе — перенесите `[Unreleased]` в новую версию:
    ```
-   ## [4.8.0] — 2026-10-06
+   ## [4.10.0] — 2026-10-12
    ```
+4. Итерация без breaking changes и без новой функциональности —
+   patch-релиз (`X.Y.Z+1`, без bump `README.md`).
 
 ---
 

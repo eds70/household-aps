@@ -12,6 +12,7 @@
 - [Деградация охлаждения](#деградация-охлаждения)
 - [Multi-objective](#multi-objective)
 - [Снапшоты](#снапшоты)
+- [Версионирование рецептур (Итерация 17.2)](#версионирование-рецептур-итерация-172)
 - [Мульти-тенантность и RBAC](#мульти-тенантность-и-rbac)
 - [Версионирование планов](#версионирование-планов)
 - [Архивация версий (Итерация 13.21)](#архивация-версий-итерация-1321)
@@ -50,7 +51,7 @@
 │  │                     API Layer (api/v1/)                       │  │
 │  │  auth │ equipment │ orders │ schedule │ gantt │ shift │ ...   │  │
 │  │  advisor │ lab │ cz │ personnel │ settings │ plan-settings    │  │
-│  │  whatif │ reschedule │ calendar │ audit │ help                │  │
+│  │  whatif │ reschedule │ calendar │ audit │ help │ recipes      │  │
 │  └───────────────────────────┬───────────────────────────────────┘  │
 │                              │                                      │
 │  ┌───────────────────────────┴───────────────────────────────────┐  │
@@ -97,10 +98,10 @@
 │  │equipment_│ │ product_ │ │operation_│ │calendar_ │ │ help_    │  │
 │  │snapshot  │ │ snapshot │ │ snapshot │ │snapshot  │ │ article  │  │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘  │
-│  ┌──────────┐                                                       │
-│  │ help_    │                                                       │
-│  │ hint     │                                                       │
-│  └──────────┘                                                       │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐                            │
+│  │ recipe_  │ │ recipe_  │ │ help_    │                            │
+│  │snapshot  │ │item_snap │ │ hint     │                            │
+│  └──────────┘ └──────────┘ └──────────┘                            │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -127,6 +128,12 @@
 ### Рецептуры (`recipes`)
 
 Состав продукта: материалы, количества, операции.
+
+- `recipe` — шапка рецепта (`product_id`, `base_volume_kg`, `comment`).
+- `recipe_item` — компоненты (`material_id`, `qty_per_base`).
+
+**Важно:** `recipe.product_id → product.id` (FK). `recipe_item.material_id →
+material.id` (FK).
 
 ### Техкарты (`operations`)
 
@@ -364,13 +371,15 @@ plan_settings:
 
 **Подробнее:** см. [ADR 0003](adr/0003-plan-settings-per-plan.md).
 
-### Снапшоты справочников (Итерация 13.15)
+### Снапшоты справочников (Итерация 13.15 + 17.2)
 
 Помимо `plan_settings`, каждый план имеет **снапшоты справочников**:
 - `equipment_snapshot`
 - `product_snapshot`
 - `operation_snapshot`
 - `calendar_snapshot`
+- `recipe_snapshot`        — **Итерация 17.2**
+- `recipe_item_snapshot`   — **Итерация 17.2**
 
 Эти таблицы содержат «слепок» справочников на момент создания/расчёта плана. При открытии плана в readonly-режиме UI читает данные **из снапшотов**, а не из живых справочников.
 
@@ -388,7 +397,130 @@ plan_settings:
 - API возвращает `has_snapshot` — UI индицирует планы без снапшотов иконкой ⚠.
 - `GanttPage` показывает предупреждение вместо диаграммы для пустого плана.
 
+**Итерация 17.2 (рецепты):**
+- В `snapshot_all_catalogs` добавлены блоки 5 (`recipe → recipe_snapshot`)
+  и 6 (`recipe_item → recipe_item_snapshot` через JOIN с `recipe` по
+  `organization_id`).
+- `stats` теперь содержит `recipes` и `recipe_items`.
+- API чтения рецептов (`GET /api/v1/recipes/`) принимает `version_id`:
+  если задан — читает из снапшота, иначе — из живых таблиц.
+- Все мутации (`POST`, `PUT`, `DELETE`) — **только с живыми таблицами**.
+
 **Подробнее:** см. [ADR 0002](adr/0002-snapshot-tables-for-versioning.md).
+
+---
+
+## Версионирование рецептур (Итерация 17.2)
+
+### Проблема
+
+До Итерации 17.2 таблицы `recipe` и `recipe_item` **не версионировались**.
+При открытии сохранённой версии плана рецептуры всегда читались из живых
+таблиц. Если пользователь редактировал рецепт после создания версии,
+история искажалась — старые планы «ссылались» на новые составы.
+
+### Решение
+
+**1. Снапшот-таблицы (миграция `add_29_recipe_snapshots.sql`):**
+
+```sql
+CREATE TABLE recipe_snapshot (
+    id              UUID           NOT NULL,
+    organization_id UUID,
+    product_id      UUID           NOT NULL,
+    base_volume_kg  NUMERIC(10,2)  NOT NULL,
+    comment         TEXT,
+    version_id      UUID           NOT NULL
+        REFERENCES schedule_version(id) ON DELETE CASCADE,
+    PRIMARY KEY (id, version_id)
+);
+
+CREATE TABLE recipe_item_snapshot (
+    id           UUID           NOT NULL,
+    recipe_id    UUID           NOT NULL,
+    material_id  UUID           NOT NULL,
+    qty_per_base NUMERIC(10,3)  NOT NULL,
+    version_id   UUID           NOT NULL
+        REFERENCES schedule_version(id) ON DELETE CASCADE,
+    PRIMARY KEY (id, version_id)
+);
+```
+
+**Ключевое отличие от живых таблиц:**
+- FK на `product` и `material` **убраны** — снапшот имутабелен,
+  а ссылочные записи могут быть удалены в живой БД.
+- `product_id` и `material_id` хранятся как обычные UUID.
+- JOIN с `product` / `material` при чтении — `LEFT JOIN`, чтобы не
+  терять строки при удалении живых справочников.
+
+**2. Заполнение (`snapshot.py`):**
+
+```python
+# Блок 5: recipe → recipe_snapshot
+INSERT INTO recipe_snapshot
+    (id, organization_id, product_id, base_volume_kg, comment, version_id)
+SELECT id, organization_id, product_id, base_volume_kg, comment, :version_id
+FROM recipe
+WHERE organization_id = :org_id
+ON CONFLICT (id, version_id) DO NOTHING
+
+# Блок 6: recipe_item → recipe_item_snapshot
+INSERT INTO recipe_item_snapshot
+    (id, recipe_id, material_id, qty_per_base, version_id)
+SELECT ri.id, ri.recipe_id, ri.material_id, ri.qty_per_base, :version_id
+FROM recipe_item ri
+JOIN recipe r ON r.id = ri.recipe_id
+WHERE r.organization_id = :org_id
+ON CONFLICT (id, version_id) DO NOTHING
+```
+
+**3. Чтение (`recipes.py`):**
+
+```python
+@router.get("/")
+async def get_all_recipes(
+        product_id: Optional[UUID] = Query(default=None),
+        version_id: Optional[UUID] = Query(default=None),
+        ...
+):
+    if version_id:
+        recipe_table = "recipe_snapshot"
+        item_table = "recipe_item_snapshot"
+        version_filter = "AND r.version_id = :version_id"
+    else:
+        recipe_table = "recipe"
+        item_table = "recipe_item"
+        version_filter = ""
+    ...
+```
+
+**4. Мутации — только с живыми таблицами:**
+
+`POST`, `PUT`, `DELETE` в `recipes.py` работают **только** с `recipe` /
+`recipe_item`. В режиме версии UI не позволяет редактировать
+(`isReadOnly = true`), так что конфликта не возникает.
+
+### Ключевые гарантии
+
+- ✅ **Имутабельность** — снапшот не обновляется при изменении живого рецепта.
+- ✅ **Воспроизводимость** — зная `version_id`, всегда можно получить
+  тот же состав рецепта.
+- ✅ **Сравнимость** — можно корректно сравнивать два плана.
+- ✅ **CASCADE DELETE** — при удалении версии снапшоты удаляются автоматически.
+- ✅ **Обратная совместимость** — старые версии планов (до миграции
+  `add_29`) имеют пустые снапшоты рецептов. UI покажет пустой список.
+  Нужна новая версия.
+
+### Известные ограничения
+
+- ⚠️ **Материалы (`material`) не версионируются.** Если в версии открыть
+  рецепт, имя материала будет **текущим** (JOIN с `material`), а не на
+  момент снапшота. Для решения требуется `material_snapshot` (отдельная
+  задача).
+- ⚠️ **Старые версии** (созданные до `add_29`) имеют **пустые** снапшоты
+  рецептов. UI покажет пустой список.
+- ⚠️ **`qty_per_base` не валидируется** на `> 0` — можно ввести 0 или
+  отрицательное значение.
 
 ---
 
@@ -490,6 +622,8 @@ POST /api/v1/schedule/versions
    INSERT INTO product_snapshot SELECT ... FROM product
    INSERT INTO operation_snapshot SELECT ... FROM operation_template
    INSERT INTO calendar_snapshot SELECT ... FROM calendar_event
+   INSERT INTO recipe_snapshot SELECT ... FROM recipe              ← 17.2
+   INSERT INTO recipe_item_snapshot SELECT ... FROM recipe_item    ← 17.2
     ↓
 4. Ответ: {id, name, has_snapshot: true, snapshot_stats: {...}}
 ```
@@ -1403,7 +1537,7 @@ FAQ — это **не новая таблица**, а **новая катего�
 - **[DOCKER.md](DOCKER.md)** — детали Docker-инфраструктуры (Dockerfile, отладка, обновление).
 - **[CONFIGURATION.md](CONFIGURATION.md)** — переменные окружения (dev vs prod).
 - **[OPERATIONS.md](OPERATIONS.md)** — операции с БД в Docker.
-- **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** — проблемы Docker / облака (пп. 120–146).
+- **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** — проблемы Docker / облака (пп. 120–152).
 
 ---
 
@@ -1453,6 +1587,10 @@ FAQ — это **не новая таблица**, а **новая катего�
 42. **Редактирование статей (15.5):** редактирование доступно только роли ADMIN. Остальные роли получают 403.
 43. **Редактирование статей (15.5):** глобальные статьи (`organization_id IS NULL`) недоступны для редактирования через UI — только через seed-миграции. Через UI редактируются только статьи текущей организации.
 44. **Редактирование статей (15.5):** удаление физическое. Для скрытия — `is_published = false`.
+45. **Рецептуры (17.1):** изменение `product_id` у существующего рецепта — только через удаление/создание; inline-edit не реализован.
+46. **Рецептуры (17.2):** старые версии планов (созданные до миграции `add_29_recipe_snapshots.sql`) имеют пустые снапшоты рецептов — отображают пустой список. Нужна новая версия.
+47. **Рецептуры (17.2):** материалы (`material`) не версионируются — если материал переименован после снапшота, в старой версии отобразится новое имя (JOIN с живой таблицей).
+48. **Рецептуры (17.x):** `qty_per_base` не проверяется на `> 0` — можно ввести 0 или отрицательное значение. Валидация только на уровне UI (не жёсткая).
 
 ---
 
