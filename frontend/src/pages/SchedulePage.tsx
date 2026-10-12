@@ -168,6 +168,8 @@ const SchedulePage: React.FC = () => {
 
     const [horizonHours, setHorizonHours] = useState<number>(DEFAULT_HORIZON_HOURS);
     const [solverTimeout, setSolverTimeout] = useState<number>(DEFAULT_TIMEOUT_SECONDS);
+    // Итерация 17.x: дата начала планирования (МСК, ISO-8601 без TZ)
+    const [planningStartDate, setPlanningStartDate] = useState<string>('');
     const [settingsLoaded, setSettingsLoaded] = useState(false);
     const [settingsSaving, setSettingsSaving] = useState(false);
 
@@ -208,6 +210,13 @@ const SchedulePage: React.FC = () => {
             if (typeof settings.timeout_seconds === 'number') {
                 setSolverTimeout(settings.timeout_seconds);
             }
+            // Итерация 17.x: подтягиваем дату начала планирования.
+            // Бэкенд хранит её как строку "2026-09-01T08:00:00".
+            // Для input[type=date] нужен формат "YYYY-MM-DD" — обрезаем.
+            if (typeof settings.planning_start_date === 'string'
+                && settings.planning_start_date.length > 0) {
+                setPlanningStartDate(settings.planning_start_date.slice(0, 10));
+            }
         } catch (err: any) {
             console.warn('[SchedulePage] Не удалось загрузить настройки planning:', err);
         } finally {
@@ -218,13 +227,26 @@ const SchedulePage: React.FC = () => {
     const savePlanningSettings = useCallback(async (
         horizon: number,
         timeout: number,
+        startDate: string,
     ): Promise<boolean> => {
         setSettingsSaving(true);
         try {
-            await settingsApi.updateBulk({
+            // Итерация 17.x: планировщик ожидает "YYYY-MM-DDTHH:mm:ss"
+            // (см. core.py::_resolve_t0). Из input[type=date] приходит
+            // "YYYY-MM-DD" — дополняем временем 08:00:00 (начало смены).
+            const planningStartIso = startDate
+                ? `${startDate}T08:00:00`
+                : undefined;
+
+            const payload: Record<string, any> = {
                 horizon_hours: horizon,
                 timeout_seconds: timeout,
-            });
+            };
+            if (planningStartIso) {
+                payload.planning_start_date = planningStartIso;
+            }
+
+            await settingsApi.updateBulk(payload);
             return true;
         } catch (err: any) {
             const detail = err.response?.data?.detail;
@@ -260,7 +282,7 @@ const SchedulePage: React.FC = () => {
         setError(null);
         setResult(null);
         try {
-            await savePlanningSettings(horizonHours, solverTimeout);
+            await savePlanningSettings(horizonHours, solverTimeout, planningStartDate);
             const data = await scheduleApi.build({
                 horizon_hours: horizonHours,
                 timeout_seconds: solverTimeout,
@@ -282,7 +304,7 @@ const SchedulePage: React.FC = () => {
     };
 
     const handleSaveSettings = async () => {
-        const ok = await savePlanningSettings(horizonHours, solverTimeout);
+        const ok = await savePlanningSettings(horizonHours, solverTimeout, planningStartDate);
         if (ok) setError(null);
     };
 
@@ -995,7 +1017,17 @@ const SchedulePage: React.FC = () => {
                             </Button>
                         </Box>
                     </Box>
-                    <Box sx={{ display: 'flex', gap: 2, mb: 1.5, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <Box
+                        sx={{
+                            display: 'flex',
+                            gap: 2,
+                            mb: 1.5,
+                            flexWrap: 'wrap',
+                            // Итерация 17.x: выравниваем по верхнему краю, чтобы
+                            // helper-тексты полей не сдвигали их по вертикали.
+                            alignItems: 'flex-start',
+                        }}
+                    >
                         <TextField
                             label="Горизонт (часы)"
                             type="number"
@@ -1014,18 +1046,46 @@ const SchedulePage: React.FC = () => {
                             sx={{ width: 180 }}
                             helperText="Сохраняется в app_settings"
                         />
-                        <Button
-                            data-tour-id="build-plan-button"
-                            variant="contained"
-                            startIcon={loading ? <CircularProgress size={20} /> : <PlayIcon />}
-                            onClick={handleBuildSchedule}
-                            disabled={loading}
-                            sx={{ textTransform: 'none' }}
+                        <TextField
+                            label="Дата начала планирования"
+                            type="date"
+                            value={planningStartDate}
+                            onChange={(e) => setPlanningStartDate(e.target.value)}
+                            size="small"
+                            sx={{ width: 200 }}
+                            helperText="Отсчёт горизонта (МСК)"
+                            slotProps={{ inputLabel: { shrink: true } }}
+                        />
+                        {/* Кнопки — в обёртке с фиксированной высотой поля (40px),
+        чтобы иконка/текст кнопки вставали по центру input'ов. */}
+                        <Box
+                            sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 1,
+                                height: 40,
+                                // Компенсируем helper-тексты полей: у MUI small
+                                // input = 40px, helper добавляет ~22px снизу. Кнопка
+                                // должна встать по центру верхних 40px — без сдвига
+                                // вниз из-за helper-ов.
+                                mt: 0,
+                            }}
                         >
-                            {loading ? 'Расчёт...' : 'Построить план'}
-                        </Button>
-                        {/* Итерация 15.2: подсказка про пересчёт */}
-                        <Hint id="planning.recalc" size="medium"/>
+                            <Button
+                                data-tour-id="build-plan-button"
+                                variant="contained"
+                                startIcon={loading ? <CircularProgress size={20} /> : <PlayIcon />}
+                                onClick={handleBuildSchedule}
+                                disabled={loading}
+                                sx={{
+                                    textTransform: 'none',
+                                    height: 40,     // явно как у input size="small"
+                                }}
+                            >
+                                {loading ? 'Расчёт...' : 'Построить план'}
+                            </Button>
+                            <Hint id="planning.recalc" size="medium"/>
+                        </Box>
                     </Box>
                     <Typography variant="caption" color="text.secondary">
                         💡 Параметры автоматически сохраняются в app_settings при построении плана
