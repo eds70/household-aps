@@ -1,10 +1,12 @@
 # backend/app/api/v1/orders.py
-from fastapi import APIRouter, HTTPException, Depends, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
 from typing import List, Optional
 from uuid import UUID, uuid4
-from datetime import datetime
+
+from fastapi import APIRouter, HTTPException, Depends, Query
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth.dependencies import get_current_org_id, get_db_session
 from .material_models import (
     ProductionOrderCreate,
     ProductionOrderUpdate,
@@ -13,9 +15,57 @@ from .material_models import (
     BatchUpdate,
     BatchResponse,
 )
-from app.auth.dependencies import get_current_org_id, get_db_session
 
 router = APIRouter(prefix="/api/v1/orders", tags=["Производственные заказы"])
+
+
+# ==========================================
+# Итерация 17.5 (fix): определение продукта партии
+# ==========================================
+# Проблема: заказы в UI создаются на ГП (type='GP'), а operation_template
+# заведены на ПФ (type='PF'). Если партия создаётся с product_id = ГП, то
+# build_routing() в routing.py возвращает [] → партия молча выпадает из
+# плана (см. лог [routing] пропущена партия ...).
+#
+# Решение: продукт партии всегда выводится из заказа:
+#   COALESCE(product.parent_pf_id, product.id)
+# Для заказов на ПФ это даёт сам ПФ, для заказов на ГП — родительский ПФ.
+# ==========================================
+
+async def _resolve_batch_product_id(
+        db: AsyncSession,
+        order_id: UUID,
+        org_id: UUID,
+) -> UUID:
+    """
+    Возвращает эффективный product_id для партии заказа.
+
+    Логика:
+      - Берём product_id заказа.
+      - Если у продукта задан parent_pf_id → используем его (ГП → ПФ).
+      - Иначе → используем сам product_id (чисто-ПФ-заказ).
+
+    Raises:
+        HTTPException(404) — заказ или продукт не найдены.
+    """
+    result = await db.execute(
+        text("""
+            SELECT COALESCE(p.parent_pf_id, p.id) AS effective_product_id,
+                   p.code AS product_code,
+                   p.type AS product_type
+            FROM production_order o
+            JOIN product p ON p.id = o.product_id
+            WHERE o.id = :order_id AND o.organization_id = :org_id
+        """),
+        {"order_id": order_id, "org_id": org_id},
+    )
+    row = result.fetchone()
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail="Заказ не найден (или его продукт отсутствует)",
+        )
+    return row.effective_product_id
 
 
 @router.get("/", response_model=List[ProductionOrderResponse])
@@ -212,7 +262,15 @@ async def create_batch(
         org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
-    """Создать партию для заказа"""
+    """
+    Создать партию для заказа.
+
+    Итерация 17.5 (fix): продукт партии выводится из заказа —
+    COALESCE(product.parent_pf_id, product.id). Поле batch.product_id
+    больше не принимается от клиента.
+    """
+    effective_product_id = await _resolve_batch_product_id(db, order_id, org_id)
+
     new_id = uuid4()
     result = await db.execute(
         text("""
@@ -230,7 +288,7 @@ async def create_batch(
             "id": new_id,
             "org_id": org_id,
             "order_id": order_id,
-            "product_id": batch.product_id,
+            "product_id": effective_product_id,
             "volume_kg": batch.volume_kg,
             "eq_id": batch.assigned_equipment_id,
             "comment": batch.comment,
@@ -316,11 +374,18 @@ async def auto_split_order(
 ):
     """
     Автоматически разбить заказ на партии по объёму оборудования.
+
+    Итерация 17.5 (fix): продукт партии выводится из заказа —
+    COALESCE(product.parent_pf_id, product.id). Раньше брался
+    order.product_id (ГП), из-за чего партии выпадали из плана.
     """
-    # Получаем заказ
+    # Эффективный product_id для партии (ПФ для ГП-заказов).
+    effective_product_id = await _resolve_batch_product_id(db, order_id, org_id)
+
+    # Получаем target_qty заказа.
     order_result = await db.execute(
         text("""
-            SELECT id, product_id, target_qty
+            SELECT target_qty
             FROM production_order
             WHERE id = :order_id AND organization_id = :org_id
         """),
@@ -376,7 +441,7 @@ async def auto_split_order(
                 "id": batch_id,
                 "org_id": org_id,
                 "order_id": order_id,
-                "product_id": order_row.product_id,
+                "product_id": effective_product_id,
                 "volume_kg": batch_volume,
                 "eq_id": equipment_id,
             },

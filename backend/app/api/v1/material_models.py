@@ -257,9 +257,13 @@ class ProductionOrderResponse(ProductionOrderBase):
 # ==========================================
 # BATCH (Итерация 5: лаборатория)
 # ==========================================
+# Итерация 17.5 (fix): продукт партии больше не принимается от клиента.
+# Backend выводит его из заказа: COALESCE(parent_pf_id, product_id).
+# Поле product_id осталось в BatchResponse (для чтения), но убрано из
+# BatchCreate (для создания).
+# ==========================================
 
 class BatchBase(BaseModel):
-    product_id: UUID
     volume_kg: float
     assigned_equipment_id: Optional[UUID] = None
     comment: Optional[str] = None
@@ -271,6 +275,12 @@ class BatchBase(BaseModel):
 
 
 class BatchCreate(BatchBase):
+    """
+    Создание партии.
+
+    Итерация 17.5 (fix): поле product_id убрано. Продукт партии
+    определяется backend'ом из заказа (COALESCE(parent_pf_id, id)).
+    """
     organization_id: UUID = Field(
         default=UUID("00000000-0000-0000-0000-000000000001")
     )
@@ -289,11 +299,16 @@ class BatchUpdate(BaseModel):
 
 
 class BatchResponse(BatchBase):
+    """
+    Ответ с партией. product_id — вычисленный backend'ом
+    (ПФ для ГП-заказов), выводится для чтения.
+    """
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
     organization_id: UUID
     order_id: UUID
+    product_id: UUID
     status: str
     planned_start: Optional[datetime] = None
     planned_end: Optional[datetime] = None

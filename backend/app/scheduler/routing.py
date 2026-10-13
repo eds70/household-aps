@@ -36,11 +36,25 @@
 Итерация 13.6 (fix #roles):
   - PUMPING-операции пропускаются для DIRECT-маршрута.
     Ранее они попадали в цепочку как REACTOR_OP, что было неверно.
+
+Итерация 17.5 (fix #silent-skip):
+  - Если у продукта партии нет operation_template — вместо
+    молчаливого `return []` пишем WARNING в лог. Позволяет быстро
+    диагностировать партии, которые выпадают из плана (например,
+    ГП без parent_pf_id, см. orders.py::_resolve_batch_product_id).
 """
 
+import logging
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Dict, List, Optional, Any, Union
+
+from .logging_config import setup_scheduler_logging, log_with_context
+
+# --- Логгер модуля ---
+
+logger = setup_scheduler_logging(level=logging.INFO)
+
 
 # --- Константы ---
 
@@ -353,8 +367,32 @@ def build_routing(
 
     Итерация 13.6 (fix #roles): PUMPING-операции пропускаются для
     DIRECT-маршрута (у них нет танка).
+
+    Итерация 17.5 (fix #silent-skip): если у продукта нет
+    operation_template — логируем WARNING, а не возвращаем [] молча.
     """
+    # ==========================================
+    # Итерация 17.5 (fix #silent-skip): логируем пропуск
+    # ==========================================
+    # Раньше партии с продуктом без операций молча выпадали из плана.
+    # Теперь пишем WARNING с batch_id, product_code, product_type,
+    # чтобы такие случаи было видно в логах backend.
+    #
+    # Типичный сценарий: партия создана на ГП (product.type='GP'),
+    # у которого нет parent_pf_id (или parent_pf_id не задан).
+    # См. orders.py::_resolve_batch_product_id — там ГП → ПФ по
+    # COALESCE(parent_pf_id, id).
+    # ==========================================
     if not operations:
+        log_with_context(
+            logger, logging.WARNING,
+            f"[routing] Пропущена партия {batch.get('id')}: "
+            f"у продукта {product.get('code', product.get('id'))} "
+            f"(type={product.get('type', '?')}) "
+            f"нет operation_template. "
+            f"Партия выпадет из плана.",
+            stage="routing",
+        )
         return []
 
     # 1. Определяем ключевые ресурсы
