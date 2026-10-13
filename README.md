@@ -88,6 +88,7 @@ APS (Advanced Planning and Scheduling) — полнофункциональна�
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Решение проблем |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Руководство разработчика |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | План развития |
+| [docs/BACKLOG.md](docs/BACKLOG.md) | Реестр доработок на будущее |
 | [docs/adr/](docs/adr/) | Архитектурные решения |
 | [CHANGELOG.md](CHANGELOG.md) | История изменений |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Как внести вклад |

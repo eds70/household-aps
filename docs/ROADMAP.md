@@ -8,6 +8,7 @@
 - [CHANGELOG.md](../CHANGELOG.md) — история изменений.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — архитектура.
 - [DEVELOPMENT.md](DEVELOPMENT.md) — руководство разработчика.
+- [BACKLOG.md](BACKLOG.md) — реестр доработок на будущее.
 - [AI_WORKFLOW.md](../tools/prompts/AI_WORKFLOW.md) — работа с AI-ассистентом.
 
 ---
@@ -518,6 +519,7 @@
 - [CHANGELOG.md](../CHANGELOG.md) — история изменений.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — архитектура.
 - [DEVELOPMENT.md](DEVELOPMENT.md) — руководство разработчика.
+- [BACKLOG.md](BACKLOG.md) — реестр доработок на будущее.
 - [AI_WORKFLOW.md](../tools/prompts/AI_WORKFLOW.md) — работа с AI-ассистентом.
 - [COLLECT_PROJECT_CHEATSHEET.md](../tools/prompts/COLLECT_PROJECT_CHEATSHEET.md) — шпаргалка по `collect_project.py`.
 - [NEW_CHAT_PROMPT.md](../tools/prompts/NEW_CHAT_PROMPT.md) — промт для нового чата.
