@@ -3,7 +3,7 @@
 API интеграции с Честным Знаком (Итерация 8).
 
 Эндпоинты:
-  POST   /api/v1/cz/scan                — приём скана от камеры (API-key)
+  POST   /api/v1/cz/scan                — приём скана от камеры (API-key, БЕЗ JWT)
   GET    /api/v1/cz/batch/{id}/progress — прогресс маркировки партии
   GET    /api/v1/cz/pending             — партии в ожидании маркировки
   GET    /api/v1/cz/log                 — журнал сканирований
@@ -11,12 +11,18 @@ API интеграции с Честным Знаком (Итерация 8).
   POST   /api/v1/cz/scan/{id}/attach    — ручное сопоставление сироты
   DELETE /api/v1/cz/scan/{id}           — удаление скана
 
-Аутентификация скана — через заголовок X-CZ-Api-Key.
-Остальные эндпоинты — через JWT.
+Аутентификация:
+  - POST /scan — только через заголовок X-CZ-Api-Key (БЕЗ JWT!).
+    Камера не может иметь пользовательский JWT, поэтому org_id
+    берётся из settings.DEFAULT_ORG_ID.
+  - Остальные эндпоинты — через JWT (org_id из токена).
 
 Итерация 11 (Шаг 5): чтение настроек через settings_reader (app_settings).
 Итерация 13.14: опциональный version_id — настройки ЧЗ читаются
                 из plan_settings плана (fallback на app_settings).
+Итерация 17.6 (fix): POST /scan больше НЕ требует JWT.
+                Убран Depends(get_current_org_id) — камера отправляет
+                только X-CZ-Api-Key. org_id = settings.DEFAULT_ORG_ID.
 """
 
 import logging
@@ -33,6 +39,7 @@ from app.auth.dependencies import (
     get_current_user,
     get_db_session,
 )
+from app.core.config import settings
 from app.scheduler.cz import (
     get_batch_progress,
     recalc_batch_cz_status,
@@ -96,7 +103,7 @@ async def _get_cz_settings(
 
     Итерация 13.14: если version_id задан — читаем из plan_settings.
     """
-    settings = await read_settings_dict(
+    settings_dict = await read_settings_dict(
         db, org_id,
         keys=[
             "enable_cz_integration",
@@ -108,14 +115,14 @@ async def _get_cz_settings(
     )
 
     flags = FeatureFlags({
-        "enable_cz_integration": settings.get("enable_cz_integration"),
+        "enable_cz_integration": settings_dict.get("enable_cz_integration"),
     })
 
     return {
         "enable_cz_integration": flags.enable_cz_integration,
-        "threshold": read_float(settings.get("cz_completion_threshold"), 0.95),
-        "api_key": read_str(settings.get("cz_api_key"), ""),
-        "auto_close": read_bool(settings.get("enable_cz_auto_close"), False),
+        "threshold": read_float(settings_dict.get("cz_completion_threshold"), 0.95),
+        "api_key": read_str(settings_dict.get("cz_api_key"), ""),
+        "auto_close": read_bool(settings_dict.get("enable_cz_auto_close"), False),
     }
 
 
@@ -126,8 +133,8 @@ async def _check_api_key(
         version_id: Optional[UUID] = None,
 ) -> None:
     """Проверяет API-ключ для вебхука от камер."""
-    settings = await _get_cz_settings(db, org_id, version_id=version_id)
-    expected = settings["api_key"]
+    cz_settings = await _get_cz_settings(db, org_id, version_id=version_id)
+    expected = cz_settings["api_key"]
 
     if not expected:
         raise HTTPException(
@@ -150,6 +157,11 @@ async def _check_api_key(
 # ==========================================
 # POST /scan — приём скана
 # ==========================================
+# Итерация 17.6 (fix): эндпоинт публичный (без JWT).
+# Камера технического зрения не может иметь пользовательский JWT,
+# поэтому org_id берётся из settings.DEFAULT_ORG_ID.
+# Аутентификация — только через X-CZ-Api-Key.
+# ==========================================
 
 @router.post("/scan", response_model=CzScanResponse)
 async def receive_scan(
@@ -159,20 +171,25 @@ async def receive_scan(
             default=None,
             description="ID плана. Если не задан — настройки из app_settings.",
         ),
-        org_id: UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db_session),
 ):
     """
     Приём скана кода ЧЗ от камеры технического зрения.
 
-    Аутентификация — через заголовок X-CZ-Api-Key.
+    Аутентификация — только через заголовок X-CZ-Api-Key (без JWT).
+
     Идемпотентность: повторный cz_code вернёт duplicate=true без
     изменения cz_marked_qty.
+
+    Итерация 17.6 (fix): убран Depends(get_current_org_id) — камера
+    не может иметь JWT. org_id берётся из settings.DEFAULT_ORG_ID.
     """
+    org_id: UUID = settings.DEFAULT_ORG_ID
+
     await _check_cz_enabled(db, org_id, version_id=version_id)
     await _check_api_key(db, org_id, x_cz_api_key, version_id=version_id)
 
-    settings = await _get_cz_settings(db, org_id, version_id=version_id)
+    cz_settings = await _get_cz_settings(db, org_id, version_id=version_id)
 
     # Время скана
     scanned_at = payload.scanned_at or datetime.now(timezone.utc)
@@ -284,7 +301,7 @@ async def receive_scan(
             session=db,
             org_id=org_id,
             batch_id=resolved_batch_id,
-            threshold=settings["threshold"],
+            threshold=cz_settings["threshold"],
         )
 
     await db.commit()
@@ -326,13 +343,13 @@ async def get_batch_cz_progress(
 ):
     """Возвращает прогресс маркировки партии."""
     await _check_cz_enabled(db, org_id, version_id=version_id)
-    settings = await _get_cz_settings(db, org_id, version_id=version_id)
+    cz_settings = await _get_cz_settings(db, org_id, version_id=version_id)
 
     progress = await get_batch_progress(
         session=db,
         org_id=org_id,
         batch_id=batch_id,
-        threshold=settings["threshold"],
+        threshold=cz_settings["threshold"],
     )
 
     if not progress:
@@ -360,8 +377,8 @@ async def list_pending_batches(
     include_completed=true — все, включая COMPLETED.
     """
     await _check_cz_enabled(db, org_id, version_id=version_id)
-    settings = await _get_cz_settings(db, org_id, version_id=version_id)
-    threshold = settings["threshold"]
+    cz_settings = await _get_cz_settings(db, org_id, version_id=version_id)
+    threshold = cz_settings["threshold"]
 
     statuses = ["PENDING", "IN_PROGRESS"]
     if include_completed:
@@ -513,7 +530,7 @@ async def get_cz_stats(
 ):
     """Сводная статистика по маркировке."""
     await _check_cz_enabled(db, org_id, version_id=version_id)
-    settings = await _get_cz_settings(db, org_id, version_id=version_id)
+    cz_settings = await _get_cz_settings(db, org_id, version_id=version_id)
 
     # Статусы партий
     statuses_result = await db.execute(
@@ -552,7 +569,7 @@ async def get_cz_stats(
         completed=by_status.get("COMPLETED", 0),
         total_scans=total_scans,
         unresolved_scans=unresolved_scans,
-        threshold=settings["threshold"],
+        threshold=cz_settings["threshold"],
     )
 
 
@@ -674,12 +691,12 @@ async def attach_scan(
         {"qty": qty, "batch_id": batch_id, "org_id": org_id},
     )
 
-    settings = await _get_cz_settings(db, org_id, version_id=version_id)
+    cz_settings = await _get_cz_settings(db, org_id, version_id=version_id)
     await recalc_batch_cz_status(
         session=db,
         org_id=org_id,
         batch_id=batch_id,
-        threshold=settings["threshold"],
+        threshold=cz_settings["threshold"],
     )
 
     await db.commit()
@@ -753,12 +770,12 @@ async def delete_scan(
             {"qty": qty, "batch_id": batch_id, "org_id": org_id},
         )
 
-        settings = await _get_cz_settings(db, org_id, version_id=version_id)
+        cz_settings = await _get_cz_settings(db, org_id, version_id=version_id)
         await recalc_batch_cz_status(
             session=db,
             org_id=org_id,
             batch_id=batch_id,
-            threshold=settings["threshold"],
+            threshold=cz_settings["threshold"],
         )
 
     await db.commit()

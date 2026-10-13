@@ -2,7 +2,7 @@
 
 **Система автоматического планирования производства на базе OR-Tools CP-SAT**
 
-Версия: **4.10.1** (Итерации 0–16 завершены, Итерации 17.1–17.4 завершены, patch-релиз 4.10.1)
+Версия: **4.10.2** (Итерации 0–16 завершены, Итерации 17.1–17.4 завершены, patch-релизы 4.10.1–4.10.2)
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -438,6 +438,24 @@ ORDER BY b.id DESC LIMIT 10;
 
 **Ожидаемо:** `batch_type = PF` для всех (даже для заказов на ГП).
 
+### Проверить, что POST /cz/scan работает без JWT (4.10.2)
+```powershell
+$body = @{
+    cz_code = "TEST_NOJWT_$(Get-Random)"
+    gtin = "04600000000001"
+    line_code = "LINE_1"
+    camera_id = "CAM-TEST"
+} | ConvertTo-Json -Compress
+
+Invoke-RestMethod -Method POST `
+  -Uri "http://localhost:8000/api/v1/cz/scan" `
+  -ContentType "application/json" `
+  -Headers @{"X-CZ-Api-Key" = "dev-cz-api-key-change-in-production"} `
+  -Body $body
+```
+
+**Ожидаемо:** `200 OK`, JSON с `duplicate: false`. **Без JWT** — только с `X-CZ-Api-Key`.
+
 ## ⚠️ Известные ограничения
 
 Полный список — в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#известные-ограничения).
@@ -462,6 +480,7 @@ ORDER BY b.id DESC LIMIT 10;
 - **Рецептуры (17.2):** материалы (`material`) не версионируются — если материал переименован после снапшота, в старой версии отобразится новое имя.
 - **Валидация (17.x):** `qty_per_base` не проверяется на `> 0` — можно ввести 0 или отрицательное значение.
 - **Партии (4.10.1):** партии, созданные до фикса 4.10.1, всё ещё ссылаются на ГП и не планируются. Разово исправить — SQL в `docs/CHANGELOG.md`, секция `[4.10.1] → Migration`.
+- **ЧЗ (4.10.2):** `POST /cz/scan` использует `DEFAULT_ORG_ID` — если нужно **несколько организаций**, требуется привязка API-ключа к организации. См. `docs/BACKLOG.md` п. 5.8.
 
 ## 🐛 Troubleshooting
 
@@ -491,6 +510,7 @@ ORDER BY b.id DESC LIMIT 10;
 - **Поле «Дата начала планирования» не сохраняется** → `planning_start_date` в `app_settings`; проверить, что миграция применена и в UI выбран `type="date"`.
 - **Снапшоты рецептов пусты для старых версий** → миграция `add_29_recipe_snapshots.sql` применена позже создания этих версий. Нужна новая версия.
 - **Партии ГП-заказов не появляются в плане** → фикс 4.10.1: `batch.product_id` должен быть родительским ПФ. Проверить, что backend пересобран.
+- **`POST /cz/scan` возвращает 401 `Not authenticated`** → фикс 4.10.2: убран `Depends(get_current_org_id)`. Проверить, что backend пересобран — см. п. 156 в TROUBLESHOOTING.
 
 ## 🗺️ Roadmap
 
@@ -546,4 +566,4 @@ ORDER BY b.id DESC LIMIT 10;
 
 ---
 
-Итерации 0–16 завершены. Итерации 17.1–17.4 завершены: inline-edit рецептур, версионирование рецептур через снапшоты, дата начала планирования в UI, копирование UUID версии. Patch 4.10.1 — фикс привязки партий ГП-заказов к родительскому ПФ. Следующая — Итерация 18: Резерв (⏳).
+Итерации 0–16 завершены. Итерации 17.1–17.4 завершены: inline-edit рецептур, версионирование рецептур через снапшоты, дата начала планирования в UI, копирование UUID версии. Patch 4.10.1 — фикс привязки партий ГП-заказов к родительскому ПФ. Patch 4.10.2 — фикс `POST /cz/scan` (без JWT). Следующая — Итерация 18: Резерв (⏳).

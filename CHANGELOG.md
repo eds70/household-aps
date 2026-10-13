@@ -13,6 +13,123 @@
 
 ---
 
+## [4.10.2] — 2026-10-13
+
+Patch-релиз: исправление бага в API Честного Знака, найденного
+при интеграции с камерами технического зрения.
+
+### Fixed
+
+#### `POST /api/v1/cz/scan` требовал JWT — камера не могла отправить скан
+
+- **`backend/app/api/v1/cz.py`** — из `receive_scan` убран
+  `Depends(get_current_org_id)`. `org_id` берётся из
+  `settings.DEFAULT_ORG_ID`.
+  - **Симптом:** камера технического зрения отправляет скан на
+    `POST /api/v1/cz/scan` с заголовком `X-CZ-Api-Key`, но получает
+    `401 {"detail":"Not authenticated"}`. Ошибка возникает **до**
+    проверки API-ключа (`_check_api_key`) — на этапе аутентификации.
+  - **Причина:** `receive_scan` был объявлен с
+    `org_id: UUID = Depends(get_current_org_id)`. Внутри
+    `get_current_org_id` → `get_current_user`, который требует
+    валидный JWT (`Authorization: Bearer <token>`). То есть эндпоинт
+    фактически требовал **и** JWT, **и** API-ключ. Но камера — это
+    не пользователь, у неё нет логина и JWT.
+  - **Противоречие документации:** `docs/API.md` утверждает, что
+    `POST /cz/scan` — **публичный** (только `X-CZ-Api-Key`, без JWT):
+    «Все эндпоинты, кроме login и POST /cz/scan, требуют
+    `Authorization: Bearer`». Код не соответствовал доке.
+  - **Fix:** убран `Depends(get_current_org_id)` из `receive_scan`.
+    `org_id` берётся из `settings.DEFAULT_ORG_ID`
+    (`00000000-0000-0000-0000-000000000001`). Аутентификация —
+    **только** через `X-CZ-Api-Key`.
+  - **Совместимость:** UI-кнопка «Тестовый скан» (`api.ts`)
+    продолжает работать — axios подставляет JWT автоматически, но
+    теперь это не требуется. Реальные камеры (без JWT) теперь
+    могут отправлять сканы.
+  - **Мульти-тенантность (на будущее):** сейчас `org_id` жёстко
+    `DEFAULT_ORG_ID`. Если понадобится **несколько организаций**,
+    нужно привязать API-ключ к организации
+    (`app_settings.cz_api_key_org_id`). Задача добавлена в
+    `docs/BACKLOG.md` как **5.8**.
+
+**Что НЕ изменилось:**
+- Остальные эндпоинты `/cz/*` (`/pending`, `/log`, `/stats`,
+  `/batch/{id}/progress`, `/scan/{id}/attach`, `/scan/{id}`)
+  по-прежнему требуют JWT — они предназначены для UI.
+- Модели `CzScanRequest`, `CzScanResponse` — без изменений.
+- Схема БД — миграции нет.
+
+### Changed
+
+- **`docs/TROUBLESHOOTING.md`** — добавлен пункт **156**
+  «POST /cz/scan требует JWT — камера не может отправить скан»
+  (Симптом → Причина → Решение → Проверка).
+  - Новая секция `## Честный Знак (17.5)` перед старой секцией
+    `## Честный Знак`.
+  - Раздел «Диагностика» перенумерован: **156 → 157**, **157 → 158**,
+    **158 → 159** (непрерывная нумерация).
+
+- **`docs/BACKLOG.md`** — добавлена задача **5.8**
+  «Мульти-тенантный ЧЗ-API» (1 день, 🟢):
+  - Привязка API-ключа к организации через
+    `app_settings.cz_api_key_org_id`.
+  - Актуально, если камеры ЧЗ будут слать сканы от имени
+    нескольких организаций.
+
+### Notes
+
+- Версия `4.10.2` — **patch-релиз**, обратная совместимость
+  с `4.10.1` сохранена.
+- Все правки — **не меняют функциональность**, только устраняют
+  архитектурный баг.
+
+### Проверено end-to-end
+
+1. **`Invoke-RestMethod` без JWT**, только `X-CZ-Api-Key` →
+   `200 OK`.
+2. Скан `TEST_NOJWT_004` записан в `cz_scan_log`,
+   `organization_id = DEFAULT_ORG_ID`.
+3. `resolve_batch_for_scan` автоматически сопоставил скан
+   с партией `5d09850d-...` и задачей `6a9f7613-...`.
+4. `batch.cz_marked_qty = 1`, `cz_status = IN_PROGRESS`,
+   `cz_last_scan_at = 2026-10-13 08:18:20 UTC`.
+
+### Migration
+
+Обновление для тех, кто уже развернул `4.10.x`:
+
+```bash
+# 1. Получить изменения
+git pull
+# или вручную применить backend/app/api/v1/cz.py,
+#   docs/TROUBLESHOOTING.md, docs/BACKLOG.md
+
+# 2. Пересобрать backend (в Docker)
+docker compose -f docker-compose.prod.yml build backend
+docker compose -f docker-compose.prod.yml up -d backend
+
+# Или в dev (IntelliJ): Stop → Run
+
+# 3. Проверить фикс — скан без JWT:
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT cz_code, line_code, camera_id, organization_id
+FROM cz_scan_log
+WHERE cz_code LIKE 'TEST_NOJWT%'
+ORDER BY scanned_at DESC;
+"
+
+# Ожидаемо: строка с organization_id = DEFAULT_ORG_ID.
+
+# 4. Проверить, что остальные /cz/* требуют JWT:
+curl.exe -s "http://localhost:8000/api/v1/cz/pending"
+# Ожидаемо: 401 {"detail":"Not authenticated"}
+```
+
+**Для новых развёртываний** — просто использовать обновлённый код.
+
+---
+
 ## [4.10.1] — 2026-10-13
 
 Patch-релиз: исправление бага, найденного при тестировании

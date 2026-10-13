@@ -17,6 +17,7 @@
 - [Архивация версий (13.21)](#архивация-версий-1321)
 - [Снапшоты справочников (13.15)](#снапшоты-справочников-1315)
 - [Рецептуры (17.1–17.2)](#рецептуры-171172)
+- [Честный Знак (17.5)](#честный-знак-175)
 - [Честный Знак](#честный-знак)
 - [Лаборатория](#лаборатория)
 - [Смены](#смены)
@@ -1523,6 +1524,110 @@ WHERE schedule_version_id = (SELECT id FROM schedule_version WHERE is_active = T
 
 ---
 
+## Честный Знак (17.5)
+
+### 156. POST /cz/scan требует JWT — камера не может отправить скан
+
+**Симптом:** камера технического зрения пытается отправить скан на
+`POST /api/v1/cz/scan` с заголовком `X-CZ-Api-Key`, но получает:
+
+```
+HTTP 401
+{"detail":"Not authenticated"}
+```
+
+В логах backend — ошибка **до** проверки API-ключа (`_check_api_key`),
+то есть на этапе аутентификации.
+
+**Причина (архитектурная):**
+`receive_scan` в `backend/app/api/v1/cz.py` был объявлен с
+`org_id: UUID = Depends(get_current_org_id)`. Внутри
+`get_current_org_id` → `get_current_user`, который требует валидный
+JWT (`Authorization: Bearer <token>`).
+
+**Итог:** эндпоинт фактически требовал **и** JWT, **и** API-ключ.
+Но камера — это не пользователь, у неё нет логина и JWT.
+
+Это **противоречило документации** (`docs/API.md`): «Все эндпоинты,
+кроме login и POST /cz/scan, требуют Authorization: Bearer». То есть
+`/cz/scan` задумывался публичным (только API-key), но код это не
+реализовывал.
+
+**Проверка гипотезы:**
+
+```bash
+# БЕЗ JWT — падает с 401 «Not authenticated»
+docker exec -i aps_backend curl -s -X POST http://localhost:8000/api/v1/cz/scan \
+  -H "Content-Type: application/json" \
+  -H "X-CZ-Api-Key: dev-cz-api-key-change-in-production" \
+  -d '{"cz_code":"TEST_NOJWT_001","gtin":"04600000000001","line_code":"LINE_1","camera_id":"CAM-TEST"}'
+```
+
+**Ожидаемо после фикса:** `200 OK` (или `400`, если ЧЗ отключён).
+**До фикса было:** `401 {"detail":"Not authenticated"}`.
+
+**Решение (Итерация 17.5 / фикс 4.10.2):**
+
+`backend/app/api/v1/cz.py`:
+- Убран `Depends(get_current_org_id)` из `receive_scan`.
+- `org_id` берётся из `settings.DEFAULT_ORG_ID`
+  (`00000000-0000-0000-0000-000000000001`).
+- Аутентификация — **только** через `X-CZ-Api-Key`.
+- Остальные эндпоинты `/cz/*` (read-only для UI) — **без изменений**,
+  по-прежнему требуют JWT.
+
+**После применения — перезапустить backend:**
+
+```bash
+docker compose -f docker-compose.prod.yml restart backend
+# Или в IntelliJ — Stop → Run
+```
+
+**Проверка:**
+
+```bash
+# Без JWT, только API-key — должно работать
+docker exec -i aps_backend curl -s -X POST http://localhost:8000/api/v1/cz/scan \
+  -H "Content-Type: application/json" \
+  -H "X-CZ-Api-Key: dev-cz-api-key-change-in-production" \
+  -d '{"cz_code":"TEST_NOJWT_002","gtin":"04600000000001","line_code":"LINE_1","camera_id":"CAM-TEST"}'
+```
+
+Ожидаемо: `{"id":"...","cz_code":"TEST_NOJWT_002","duplicate":false,...}`.
+
+**Проверка, что скан в БД:**
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT cz_code, line_code, camera_id, scanned_at
+FROM cz_scan_log
+WHERE cz_code LIKE 'TEST_NOJWT%'
+ORDER BY scanned_at DESC;
+"
+```
+
+**Что НЕ изменилось:**
+- `/cz/pending`, `/cz/log`, `/cz/stats`, `/cz/batch/{id}/progress`,
+  `/cz/scan/{id}/attach`, `/cz/scan/{id}` — всё ещё требуют JWT.
+  Они предназначены для UI, где пользователь авторизован.
+- UI-кнопка «Тестовый скан» (`frontend/src/services/api.ts:732`)
+  продолжает работать — axios подставляет JWT автоматически, но
+  теперь это не требуется.
+
+**Мульти-тенантность (на будущее):**
+Сейчас `org_id` для `/cz/scan` — жёстко `DEFAULT_ORG_ID`. Если
+понадобится **несколько организаций**, отправляющих сканы, нужно
+привязать API-ключ к организации (`app_settings.cz_api_key_org_id`)
+и читать организацию из этой привязки. Это задача для Итерации 18+
+(см. `docs/BACKLOG.md`).
+
+**Связанные статьи:**
+- [docs/API.md](API.md) — раздел «Честный Знак».
+- Пункт 62 (Скан не привязывается к партии).
+- Пункт 63 (Дубликаты сканов).
+
+---
+
 ## Честный Знак
 
 ### 62. Скан не привязывается к партии
@@ -2943,18 +3048,18 @@ gunzip -c backup_YYYYMMDD_HHMMSS.sql.gz | \
 **Шаг 1.** Проверить `docker-compose.prod.yml`:
 ```yaml
 depends_on:
-  postgres:
-    condition: service_healthy
+   postgres:
+      condition: service_healthy
 ```
 
 **Шаг 2.** Проверить, что у `postgres` есть `healthcheck`:
 ```yaml
 healthcheck:
-  test: ["CMD-SHELL", "pg_isready -U aps -d household"]
-  interval: 5s
-  timeout: 5s
-  retries: 12
-  start_period: 20s
+   test: ["CMD-SHELL", "pg_isready -U aps -d household"]
+   interval: 5s
+   timeout: 5s
+   retries: 12
+   start_period: 20s
 ```
 
 **Шаг 3.** Проверить статус:
@@ -3170,10 +3275,10 @@ docker compose -f docker-compose.prod.yml restart postgres
 **Вариант 3 — настроить pool_size** в `backend/app/auth/dependencies.py`:
 ```python
 _engine = create_async_engine(
-    settings.DATABASE_URL,
-    echo=False,
-    pool_size=3,
-    max_overflow=5,
+   settings.DATABASE_URL,
+   echo=False,
+   pool_size=3,
+   max_overflow=5,
 )
 ```
 
@@ -3355,10 +3460,10 @@ sudo truncate -s 0 /var/lib/docker/containers/*/*-json.log
 **Шаг 3.** Настроить ограничение в `docker-compose.prod.yml`:
 ```yaml
 logging:
-  driver: json-file
-  options:
-    max-size: "10m"
-    max-file: "3"
+   driver: json-file
+   options:
+      max-size: "10m"
+      max-file: "3"
 ```
 
 **Шаг 4.** Пересоздать контейнеры:
@@ -3798,7 +3903,7 @@ location: http://localhost:8080/api/v1/equipment/   ← с портом
 
 ## Диагностика
 
-### 156. Общая проверка системы
+### 157. Общая проверка системы
 
 ```bash
 # PostgreSQL
@@ -3890,7 +3995,7 @@ SELECT setting_value FROM app_settings WHERE setting_key = 'planning_start_date'
 
 ---
 
-### 157. Полная очистка и пересоздание
+### 158. Полная очистка и пересоздание
 
 **Dev** (PostgreSQL в Docker):
 
@@ -3951,7 +4056,7 @@ docker compose -f docker-compose.prod.yml exec -T postgres \
 
 ---
 
-### 158. Полезные ссылки
+### 159. Полезные ссылки
 
 - [README.md](../README.md) — основная документация.
 - [docs/DEPLOYMENT.md](DEPLOYMENT.md) — развёртывание в облаке.
