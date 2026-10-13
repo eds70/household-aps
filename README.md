@@ -2,7 +2,7 @@
 
 **Система автоматического планирования производства на базе OR-Tools CP-SAT**
 
-Версия: **4.10.0** (Итерации 0–16 завершены, Итерации 17.1–17.4 завершены)
+Версия: **4.10.1** (Итерации 0–16 завершены, Итерации 17.1–17.4 завершены, patch-релиз 4.10.1)
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -242,6 +242,7 @@ household-aps/
 │   ├── TROUBLESHOOTING.md
 │   ├── DEVELOPMENT.md
 │   ├── ROADMAP.md
+│   ├── BACKLOG.md
 │   ├── adr/
 │   └── requirements/ТЗ.txt
 └── tools/prompts/
@@ -424,6 +425,19 @@ docker exec -i aps_postgres psql -U aps -d household -c "\d recipe_item_snapshot
 docker exec -i aps_postgres psql -U aps -d household -c "SELECT setting_key, setting_value FROM app_settings WHERE setting_key = 'planning_start_date';"
 ```
 
+### Проверить, что партии создаются с ПФ, а не с ГП (4.10.1)
+```
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT b.id AS batch_id, b.volume_kg,
+       p.code AS batch_product, p.type AS batch_type
+FROM batch b
+JOIN product p ON p.id = b.product_id
+ORDER BY b.id DESC LIMIT 10;
+"
+```
+
+**Ожидаемо:** `batch_type = PF` для всех (даже для заказов на ГП).
+
 ## ⚠️ Известные ограничения
 
 Полный список — в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#известные-ограничения).
@@ -447,6 +461,7 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT setting_key, set
 - **Рецептуры (17.2):** старые версии планов (созданные до миграции `add_29_recipe_snapshots.sql`) имеют пустые снапшоты рецептов — отображают пустой список.
 - **Рецептуры (17.2):** материалы (`material`) не версионируются — если материал переименован после снапшота, в старой версии отобразится новое имя.
 - **Валидация (17.x):** `qty_per_base` не проверяется на `> 0` — можно ввести 0 или отрицательное значение.
+- **Партии (4.10.1):** партии, созданные до фикса 4.10.1, всё ещё ссылаются на ГП и не планируются. Разово исправить — SQL в `docs/CHANGELOG.md`, секция `[4.10.1] → Migration`.
 
 ## 🐛 Troubleshooting
 
@@ -475,6 +490,7 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT setting_key, set
 - **Создание рецепта падает с 500 (FK violation)** → использован `material.id` вместо `product.id` — см. п. 152 в TROUBLESHOOTING.
 - **Поле «Дата начала планирования» не сохраняется** → `planning_start_date` в `app_settings`; проверить, что миграция применена и в UI выбран `type="date"`.
 - **Снапшоты рецептов пусты для старых версий** → миграция `add_29_recipe_snapshots.sql` применена позже создания этих версий. Нужна новая версия.
+- **Партии ГП-заказов не появляются в плане** → фикс 4.10.1: `batch.product_id` должен быть родительским ПФ. Проверить, что backend пересобран.
 
 ## 🗺️ Roadmap
 
@@ -522,10 +538,12 @@ docker exec -i aps_postgres psql -U aps -d household -c "SELECT setting_key, set
 
 Полный Roadmap — в [docs/ROADMAP.md](docs/ROADMAP.md).
 
+Реестр доработок на будущее — в [docs/BACKLOG.md](docs/BACKLOG.md).
+
 ## 📄 Лицензия
 
 Внутренний проект.
 
 ---
 
-Итерации 0–16 завершены. Patch 4.9.1 — исправления для развёртывания в VM/Docker. Итерации 17.1–17.4 завершены: inline-edit рецептур, версионирование рецептур через снапшоты, дата начала планирования в UI, копирование UUID версии. Следующая — Итерация 18: Резерв (⏳).
+Итерации 0–16 завершены. Итерации 17.1–17.4 завершены: inline-edit рецептур, версионирование рецептур через снапшоты, дата начала планирования в UI, копирование UUID версии. Patch 4.10.1 — фикс привязки партий ГП-заказов к родительскому ПФ. Следующая — Итерация 18: Резерв (⏳).

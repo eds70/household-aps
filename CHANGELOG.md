@@ -9,7 +9,152 @@
 
 ### Added
 
-- Заготовка для Итерации 18: см. Roadmap.
+- Заготовка для Итерации 18: см. Roadmap и BACKLOG.
+
+---
+
+## [4.10.1] — 2026-10-13
+
+Patch-релиз: исправление бага, найденного при тестировании
+автоматического разбиения заказов на партии.
+
+### Fixed
+
+#### Партии ГП-заказов привязывались к ГП вместо родительского ПФ
+
+- **`backend/app/api/v1/orders.py`** — при создании партии продукт
+  берётся из заказа через `COALESCE(parent_pf_id, product_id)`.
+  - **Симптом:** после «Разбить» заказа на ГП партии создавались
+    с `batch.product_id = <ГП>`. При пересчёте плана эти партии
+    **молча выпадали** из расписания. Пользователь видел, что
+    заказ есть, партии есть, но на Ганте их нет.
+  - **Причина:** `auto_split_order` и `create_batch` использовали
+    `order.product_id` (это `type='GP'`). `operation_template`
+    заведены только на ПФ (`type='PF'`), поэтому
+    `build_routing()` в `routing.py:357` возвращал `[]`
+    (см. ниже — второе исправление).
+  - **Пример:** заказ `TEST_E` (ГП, `parent_pf_id = TEST_1`) →
+    партии ссылались на `TEST_E` (0 операций) вместо `TEST_1`
+    (3 операции). Партии не попадали в план.
+  - **Fix:** добавлен helper `_resolve_batch_product_id()`,
+    который берёт `COALESCE(product.parent_pf_id, product.id)`
+    из заказа. Для ПФ-заказов работает как раньше
+    (возвращает сам ПФ), для ГП-заказов — родительский ПФ.
+    Используется в `auto_split_order` и `create_batch`.
+
+- **`backend/app/api/v1/material_models.py`** — `BatchCreate`
+  больше не принимает `product_id`.
+  - **Симптом:** UI передавал `product_id = order.product_id` (ГП),
+    и backend сохранял его в `batch.product_id`. Это источник
+    бага выше.
+  - **Причина:** продукт партии определяется заказом и не должен
+    задаваться клиентом. Иначе клиент может ошибиться
+    (что и произошло).
+  - **Fix:** поле `product_id` удалено из `BatchCreate`. `BatchResponse`
+    сохраняет `product_id` (вычисленный backend'ом) — для чтения.
+  - **Совместимость:** `OrdersPage.tsx` не передаёт `product_id`
+    (использует только `autoSplit(orderId, equipmentId, maxFill)`),
+    поэтому UI правок не требует. Старые кастомные клиенты,
+    передающие `product_id`, получат `422 Unprocessable Entity`.
+
+- **`backend/app/scheduler/routing.py`** — при отсутствии
+  `operation_template` пишется WARNING в лог.
+  - **Симптом:** партии с продуктом без операций **молча
+    выпадали** из плана. Не было ни ошибки, ни предупреждения —
+    пользователь не понимал, почему заказ не планируется.
+  - **Причина:** `if not operations: return []` без логирования.
+  - **Fix:** добавлен `log_with_context(WARNING, ...)` с
+    `batch_id`, `product_code`, `product_type`. Теперь такие
+    случаи видны в логах backend:
+    ```
+    [routing] Пропущена партия <uuid>: у продукта TEST_E
+    (type=GP) нет operation_template. Партия выпадет из плана.
+    ```
+  - **Дополнительно:** docstring `build_routing` дополнен
+    блоком `Итерация 17.5 (fix #silent-skip)`.
+
+**Что НЕ изменилось:**
+- `frontend/src/pages/OrdersPage.tsx` — не требует правок.
+- Схема БД — миграции нет (это fix на уровне кода).
+
+### Notes
+
+- Версия `4.10.1` — **patch-релиз**, обратная совместимость
+  с `4.10.0` сохранена.
+- Все правки — **не меняют функциональность**, только
+  устраняют баг.
+
+### Проверено end-to-end
+
+1. Создан ПФ `TEST_1` (3 операции: `water_loading`, `mixing`, `washing`).
+2. Создан ГП `TEST_E` с `parent_pf_id = TEST_1`.
+3. Заказ на `TEST_E` → «Разбить» →
+   `batch.product_id = TEST_1` (PF), а не `TEST_E` (GP).
+4. Пересчёт → 4 задачи в плане:
+  - `Загрузка сырья (вода)` — `REACTOR_OP` на `REACTOR_1`
+  - `Перемешивание` — `REACTOR_OP` на `REACTOR_1`
+  - `Слив на линию розлива` — `LINE_FILL` на `LINE_1`
+  - `Промывка реактора` — `WASH` на `REACTOR_1`
+
+### Migration
+
+Обновление для тех, кто уже развернул `4.10.0`:
+
+```bash
+# 1. Получить изменения
+git pull
+# или rsync, или вручную применить 3 файла
+
+# 2. Пересобрать backend (в Docker)
+docker compose -f docker-compose.prod.yml build backend
+docker compose -f docker-compose.prod.yml up -d backend
+
+# Или в dev (IntelliJ): Stop → Run
+
+# 3. Проверить, что фикс работает:
+#    - Создать/открыть ГП-заказ.
+#    - «Разбить» на партии.
+#    - Проверить batch.product_id:
+
+docker exec -i aps_postgres psql -U aps -d household -c "
+SELECT b.id AS batch_id, b.volume_kg,
+       p.code AS batch_product, p.type AS batch_type
+FROM batch b
+JOIN product p ON p.id = b.product_id
+WHERE b.order_id = (
+    SELECT id FROM production_order
+    WHERE product_id = (SELECT id FROM product WHERE code = 'TEST_E')
+    ORDER BY created_at DESC LIMIT 1
+);
+"
+
+# Ожидаемо: batch_product = TEST_1 (PF), НЕ TEST_E (GP).
+
+# 4. Пересчитать план:
+#    - «Планирование» → «Построить план»
+#    - Проверить, что партии появились в расписании.
+
+# 5. Проверить логи — не должно быть WARNING:
+docker compose -f docker-compose.prod.yml logs backend --tail 200 | grep routing
+# Ожидаемо: пусто.
+```
+
+**Для существующих партий с ГП:** если в БД уже есть партии,
+созданные до этого фикса, они всё ещё ссылаются на ГП и не будут
+планироваться. Разово исправить:
+
+```bash
+docker exec -i aps_postgres psql -U aps -d household -c "
+UPDATE batch b
+SET product_id = p.parent_pf_id
+FROM product p
+WHERE b.product_id = p.id
+  AND p.type = 'GP'
+  AND p.parent_pf_id IS NOT NULL;
+"
+```
+
+Затем — пересчитать план.
 
 ---
 
