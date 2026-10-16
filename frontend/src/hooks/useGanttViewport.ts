@@ -2,12 +2,12 @@
 import type {MutableRefObject, RefObject} from 'react';
 /**
  * Хук для управления viewport диаграммы Ганта
- * (Итерация 13.17 + 14.1).
+ * (Итерация 13.17 + 14.1 + 21).
  *
  * Отвечает за:
  *  - Pan (влево/вправо).
  *  - Zoom (in/out).
- *  - Fit (показать всё, ограничение 7 дней).
+ *  - Fit (показать весь план; лимит — MAX_FIT_WINDOW_MS).
  *  - Go to today.
  *  - Сохранение viewport в localStorage (per version).
  *  - Восстановление viewport при смене версии.
@@ -21,6 +21,15 @@ import type {MutableRefObject, RefObject} from 'react';
  *    так как пользователь обычно не переключает режим
  *    при каждой смене плана.
  *  - Аналогично для showBatchBrackets.
+ *
+ * Итерация 21 (fix):
+ *  - handleFitAll больше не обрезает окно до 7 дней.
+ *    Лимит вынесен в MAX_FIT_WINDOW_MS (180 дней).
+ *  - Добавлен padding по краям: FIT_PADDING_RATIO (5%)
+ *    с минимумом FIT_PADDING_MIN_MS (1 час).
+ *  - Убран магический setTimeout(400) — синхронизация
+ *    по завершении анимации setWindow.
+ *  - Убраны неиспользуемые windowStart / windowEnd.
  */
 import {useCallback, useEffect, useRef} from 'react';
 import type {Timeline} from 'vis-timeline/standalone';
@@ -29,7 +38,10 @@ import type {GroupByMode} from '../types';
 import {
     DEFAULT_GROUP_BY_MODE,
     DEFAULT_SHOW_BATCH_BRACKETS,
+    FIT_PADDING_MIN_MS,
+    FIT_PADDING_RATIO,
     getViewportStorageKey,
+    MAX_FIT_WINDOW_MS,
     PAN_FACTOR,
     STORAGE_KEYS,
     ZOOM_IN_FACTOR,
@@ -248,15 +260,24 @@ export const useGanttViewport = (
         if (!timelineRef.current) return;
         suppressViewportSyncRef.current = true;
 
-        const MAX_FIT_WINDOW_MS = 1000 * 60 * 60 * 24 * 7;
+        const timeline = timelineRef.current;
+
+        // ==========================================
+        // Итерация 21 (fix):
+        //  - считаем реальные границы по items;
+        //  - добавляем padding 5% (мин. 1 час) по краям;
+        //  - ограничиваем окно MAX_FIT_WINDOW_MS (180 дней),
+        //    а не 7 дней, как раньше.
+        // ==========================================
 
         try {
-            const timelineAny = timelineRef.current as any;
+            const timelineAny = timeline as any;
             const itemsData = timelineAny.itemsData;
             const ids = itemsData ? itemsData.getIds() : [];
 
             if (ids.length === 0) {
-                timelineRef.current.fit({animation: false});
+                // Нет items — отдаём стандартному fit'у
+                timeline.fit({animation: false});
             } else {
                 const allItems = itemsData.get(ids) as any[];
                 let minStart = Infinity;
@@ -266,43 +287,66 @@ export const useGanttViewport = (
                     if (!item || !item.start || !item.end) continue;
                     const s = new Date(item.start).getTime();
                     const e = new Date(item.end).getTime();
-                    if (s < minStart) minStart = s;
-                    if (e > maxEnd) maxEnd = e;
+                    if (Number.isFinite(s) && s < minStart) minStart = s;
+                    if (Number.isFinite(e) && e > maxEnd) maxEnd = e;
                 }
 
-                if (!isFinite(minStart) || !isFinite(maxEnd)) {
-                    timelineRef.current.fit({animation: false});
+                if (!Number.isFinite(minStart) || !Number.isFinite(maxEnd)) {
+                    timeline.fit({animation: false});
                 } else {
-                    let windowStart = minStart;
-                    let windowEnd = maxEnd;
+                    const rawSpan = maxEnd - minStart;
 
-                    if (windowEnd - windowStart > MAX_FIT_WINDOW_MS) {
-                        windowEnd = windowStart + MAX_FIT_WINDOW_MS;
+                    // Padding: 5% от ширины, но не меньше 1 часа
+                    const pad = Math.max(
+                        rawSpan * FIT_PADDING_RATIO,
+                        FIT_PADDING_MIN_MS,
+                    );
+
+                    let wStart = minStart - pad;
+                    let wEnd = maxEnd + pad;
+
+                    // Soft cap: не даём окну разрастись до абсурда
+                    if (wEnd - wStart > MAX_FIT_WINDOW_MS) {
+                        wEnd = wStart + MAX_FIT_WINDOW_MS;
                     }
 
-                    timelineRef.current.setWindow(
-                        new Date(windowStart),
-                        new Date(windowEnd),
-                        {animation: {duration: 300, easingFunction: 'easeInOutQuad'}},
+                    timeline.setWindow(
+                        new Date(wStart),
+                        new Date(wEnd),
+                        {
+                            animation: {
+                                duration: 300,
+                                easingFunction: 'easeInOutQuad',
+                            },
+                        },
                     );
                 }
             }
         } catch {
-            timelineRef.current.fit({animation: false});
+            // На любой внутренней ошибке — стандартный fit
+            try {
+                timeline.fit({animation: false});
+            } catch {
+                // ignore
+            }
         }
 
+        // Синхронизация после анимации: 300 мс + запас 100 мс
+        const ANIMATION_MS = 300;
         setTimeout(() => {
             suppressViewportSyncRef.current = false;
             if (timelineRef.current) {
                 const range = timelineRef.current.getWindow();
-                const view: ViewportState = {
-                    start: new Date(range.start).toISOString(),
-                    end: new Date(range.end).toISOString(),
-                };
-                viewportRef.current = view;
-                saveViewportToStorage(view);
+                if (range && range.start && range.end) {
+                    const view: ViewportState = {
+                        start: new Date(range.start).toISOString(),
+                        end: new Date(range.end).toISOString(),
+                    };
+                    viewportRef.current = view;
+                    saveViewportToStorage(view);
+                }
             }
-        }, 400);
+        }, ANIMATION_MS + 100);
     }, [saveViewportToStorage, timelineRef]);
 
     const handleGoToToday = useCallback(() => {

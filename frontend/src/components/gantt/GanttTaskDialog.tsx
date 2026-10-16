@@ -8,6 +8,12 @@
  *  - Таблицу всех операций партии.
  *  - Баннер для свёрнутой группы LINE_FILL с кнопкой «Развернуть N частей».
  *
+ * Итерация 20 (fix #comment):
+ *  - Chip «Перенесена» в заголовке, если у задачи есть comment.
+ *  - Жёлтый Alert с комментарием планировщика в карточке партии.
+ *  - Иконка ⚠ в таблице операций партии для задач с comment
+ *    (с titleAccess=comment для tooltip).
+ *
  * Не знает про API. Всё — через props.
  */
 import React from 'react';
@@ -26,7 +32,7 @@ import {
     TextField,
     Typography,
 } from '@mui/material';
-import {UnfoldMore as UnfoldMoreIcon,} from '@mui/icons-material';
+import {UnfoldMore as UnfoldMoreIcon, Warning as WarningIcon,} from '@mui/icons-material';
 import DraggableDialog from '../common/DraggableDialog';
 import {NON_BATCH_VALUES} from './constants';
 import {isGroupTask} from '../../utils/ganttGroups';
@@ -134,9 +140,20 @@ const GanttTaskDialog: React.FC<GanttTaskDialogProps> = ({
                     {isGroup && (
                         <Chip
                             size="small"
-                            icon={<UnfoldMoreIcon />}
+                            icon={<UnfoldMoreIcon/>}
                             label={`Группа · ${groupPartsCount} частей`}
                             color="info"
+                            variant="filled"
+                        />
+                    )}
+                    {/* Итерация 20 (fix #comment): иконка ⚠,
+                        если задача была перенесена календарём */}
+                    {task?.comment && (
+                        <Chip
+                            size="small"
+                            icon={<WarningIcon sx={{fontSize: 14}}/>}
+                            label="Перенесена"
+                            color="warning"
                             variant="filled"
                         />
                     )}
@@ -179,7 +196,7 @@ const GanttTaskDialog: React.FC<GanttTaskDialogProps> = ({
                     {isGroup && (
                         <Alert
                             severity="info"
-                            icon={<UnfoldMoreIcon />}
+                            icon={<UnfoldMoreIcon/>}
                         >
                             <Typography variant="body2" sx={{mb: 1}}>
                                 Это свёрнутая группа из{' '}
@@ -192,7 +209,7 @@ const GanttTaskDialog: React.FC<GanttTaskDialogProps> = ({
                                 <Button
                                     size="small"
                                     variant="outlined"
-                                    startIcon={<UnfoldMoreIcon />}
+                                    startIcon={<UnfoldMoreIcon/>}
                                     onClick={() => {
                                         onToggleGroup(groupKey);
                                         onClose();
@@ -311,6 +328,47 @@ const GanttTaskDialog: React.FC<GanttTaskDialogProps> = ({
                             >
                                 📦 Информация о партии
                             </Typography>
+
+                            {/* ==========================================
+                                Итерация 20 (fix #comment):
+                                Комментарий планировщика — причина
+                                переноса цепочки календарём.
+                            ========================================== */}
+                            {task.comment && (
+                                <Alert
+                                    severity="warning"
+                                    icon={<WarningIcon fontSize="small"/>}
+                                    sx={{
+                                        mb: 1.5,
+                                        py: 0.5,
+                                        bgcolor: '#fef3c7',
+                                        border: '1px solid #fbbf24',
+                                        '& .MuiAlert-message': {
+                                            fontSize: '0.8rem',
+                                        },
+                                    }}
+                                >
+                                    <Typography
+                                        variant="body2"
+                                        sx={{
+                                            fontWeight: 600,
+                                            color: '#78350f',
+                                        }}
+                                    >
+                                        ⚠ Комментарий планировщика
+                                    </Typography>
+                                    <Typography
+                                        variant="body2"
+                                        sx={{
+                                            color: '#78350f',
+                                            mt: 0.5,
+                                        }}
+                                    >
+                                        {task.comment}
+                                    </Typography>
+                                </Alert>
+                            )}
+
                             <Box
                                 sx={{
                                     display: 'grid',
@@ -703,9 +761,22 @@ const GanttTaskDialog: React.FC<GanttTaskDialogProps> = ({
                                                                     isCurrent
                                                                         ? 700
                                                                         : 400,
+                                                                display: 'flex',
+                                                                alignItems: 'center',
+                                                                gap: 0.5,
                                                             }}
                                                         >
                                                             {t.is_pinned ? '📌 ' : ''}
+                                                            {/* Итерация 20 (fix #comment) */}
+                                                            {t.comment && (
+                                                                <WarningIcon
+                                                                    sx={{
+                                                                        fontSize: 12,
+                                                                        color: '#f39c12',
+                                                                    }}
+                                                                    titleAccess={t.comment}
+                                                                />
+                                                            )}
                                                             {
                                                                 t.operation_name
                                                             }

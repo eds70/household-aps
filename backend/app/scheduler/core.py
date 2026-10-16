@@ -35,6 +35,46 @@
   - Веса из app_settings (category=optimization).
   - Если все веса кроме makespan = 0 → работает как раньше.
   - Аккумуляторы собираются во время построения модели.
+
+Итерация 18 (fix #gap):
+  - Верхняя граница зазора между последовательными операциями партии:
+    start(next) <= end(prev) + step.max_gap_after_minutes.
+  - По ТЗ операции внутри партии идут непрерывно (gap=0).
+
+Итерация 18 (fix #gap-multi):
+  - Если у операции НЕСКОЛЬКО предков (например, лаб.анализ после
+    параллельной группы Перемешивание ∥ Охлаждение), gap НЕ применяется
+    — иначе возникает противоречие start == end(prev1) и
+    start == end(prev2) при разных end.
+
+Итерация 18 (fix #parallel):
+  - Параллельные операции (is_parallel_with) получают одинаковый start.
+
+Итерация 18 (fix #parallel-nooverlap):
+  - NoOverlap НЕ применяется между операциями одной parallel_group.
+  - По ТЗ параллельные операции (Перемешивание ∥ Охлаждение) идут
+    одновременно на ОДНОМ реакторе, используя разные его подсистемы
+    (мешалка + рубашка охлаждения). Поэтому NoOverlap между ними
+    физически неверен и делает модель неразрешимой.
+  - Для каждой parallel_group в NoOverlap включается только ОДИН
+    представитель (первый) — он «держит» реактор как единый ресурс.
+
+Итерация 19 (fix #tz-saver):
+  - Правка timezone перенесена из core.py в saver.py.
+  - В core.py start_dt/end_dt остаются naive-UTC (как раньше) —
+    это исключает TypeError 'offset-naive and offset-aware' при
+    вычитании t["end"] - self.t0.
+  - В saver.py при сохранении в БД явно ставится tzinfo=timezone.utc,
+    чтобы asyncpg не сдвигал naive datetime в локальную TZ клиента.
+
+Итерация 21 (fix #line-fill-nooverlap):
+  - При формировании intervals_meta для задач с role == LINE_FILL
+    принудительно устанавливается pg = None.
+  - Это гарантирует, что LINE_FILL всегда попадает в AddNoOverlap
+    (singles), а не выпадает из него из-за случайного
+    parallel_group_id, унаследованного от шаблона операции.
+  - Причина: реальный инцидент с двумя LINE_FILL разных партий
+    на одной линии розлива, идущими одновременно (118 мин наложения).
 """
 
 import asyncio
@@ -45,7 +85,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from ortools.sat.python import cp_model
-from sqlalchemy.ext.asyncio import AsyncSession   # Итерация 12 (fix)
+from sqlalchemy.ext.asyncio import AsyncSession  # Итерация 12 (fix)
 
 from .constraints.plugins import CONSTRAINT_PLUGINS
 from .data_loader import DataLoader
@@ -78,21 +118,9 @@ class ProductionScheduler:
             horizon_hours: int = 720,
             timeout_seconds: int = 600,
             org_id: UUID = None,
-            session: Optional[AsyncSession] = None,   # Итерация 12 (fix)
-            version_id: Optional[UUID] = None,        # Итерация 13.14
+            session: Optional[AsyncSession] = None,
+            version_id: Optional[UUID] = None,
     ):
-        """
-        Итерация 10: horizon_hours по умолчанию 720 (30 дней),
-        timeout_seconds по умолчанию 600.
-
-        Итерация 12 (fix): опциональная session.
-        Если передана — DataLoader использует её (для what-if),
-        чтобы видеть незакоммиченные изменения из транзакции №1.
-
-        Итерация 13.14: опциональный version_id.
-        Если задан — настройки читаются из plan_settings этого плана,
-        а не из глобальных app_settings.
-        """
         self.horizon_minutes = horizon_hours * 60
         self.timeout_seconds = timeout_seconds
         self.org_id = org_id
@@ -101,15 +129,13 @@ class ProductionScheduler:
         self.data_loader = DataLoader(
             org_id=org_id,
             session=session,
-            version_id=version_id,   # ← прокидываем
+            version_id=version_id,
         )
         self.tasks: Dict[Tuple[str, str], Dict] = {}
         self.t0: Optional[datetime] = None
         self.flags: Optional[FeatureFlags] = None
         self.skipped_batches: List[Dict[str, Any]] = []
         self.cooling_degradation_factor: float = 1.3
-
-        # Итерация 12: веса multi-objective (заполняются при build_schedule).
         self.weights: Optional[OptimizationWeights] = None
 
     # ==========================================
@@ -149,10 +175,7 @@ class ProductionScheduler:
         return max(0, int(delta.total_seconds() / 60))
 
     def _resolve_t0(self, org_settings: Dict[str, Any]) -> datetime:
-        """
-        Возвращает t0 — начало планирования (naive-UTC).
-        Наивное planning_start_date интерпретируется как МСК.
-        """
+        """Возвращает t0 — начало планирования (naive-UTC)."""
         raw = org_settings.get("planning_start_date")
         if raw is not None:
             try:
@@ -293,9 +316,6 @@ class ProductionScheduler:
         resource_pools = data.get("resource_pools", [])
         equipment_capability = data.get("equipment_capability", [])
 
-        # ==========================================
-        # Итерация 11 (Шаг 6): смены и настройки смен
-        # ==========================================
         shift_settings = data.get("shift_settings", {})
         shift_mode = shift_settings.get("shift_mode", "2x12")
         allow_weekend_work = shift_settings.get("allow_weekend_work", False)
@@ -319,9 +339,6 @@ class ProductionScheduler:
             org_settings
         )
 
-        # ==========================================
-        # Итерация 12: загрузка весов multi-objective
-        # ==========================================
         self.weights = OptimizationWeights.from_settings(org_settings)
         try:
             self.weights.validate()
@@ -332,7 +349,7 @@ class ProductionScheduler:
                 f"Fallback на single-objective makespan.",
                 stage="init", org_id=str(self.org_id),
             )
-            self.weights = OptimizationWeights()  # только makespan = 1.0
+            self.weights = OptimizationWeights()
 
         log_with_context(
             logger, logging.INFO,
@@ -436,7 +453,6 @@ class ProductionScheduler:
             else:
                 equipment_links_for_routing = equipment_links
 
-            # Итерация 11 (Шаг 6): передаём shift_mode
             steps = build_routing(
                 batch=batch,
                 product=product,
@@ -458,7 +474,8 @@ class ProductionScheduler:
                 logger, logging.DEBUG,
                 f"Партия {batch_id[:8]}: {summary['total_steps']} шагов, "
                 f"роли={summary['roles']}, длительность={summary['total_duration']} мин, "
-                f"пулы={summary.get('operator_pools', [])}",
+                f"пулы={summary.get('operator_pools', [])}, "
+                f"gaps={summary.get('max_gap_after_minutes', [])}",
                 stage="routing", org_id=str(self.org_id),
             )
 
@@ -484,9 +501,6 @@ class ProductionScheduler:
                 "message": "Нет доступных партий для планирования",
             }
 
-        # ==========================================
-        # СОЗДАНИЕ ПЕРЕМЕННЫХ
-        # ==========================================
         cooling_count = 0
         for batch_id, steps in routing_steps.items():
             for step in steps:
@@ -567,6 +581,7 @@ class ProductionScheduler:
                         "is_parallel_with": step.is_parallel_with,
                         "is_first_in_batch": step.is_first_in_batch,
                         "is_last_in_batch": step.is_last_in_batch,
+                        "max_gap_after_minutes": step.max_gap_after_minutes,
                         "needs_boiler": step.op.get("needs_boiler", False),
                         "needs_cooling": needs_cooling,
                         "needs_operator": step.op.get("needs_operator", False),
@@ -599,6 +614,7 @@ class ProductionScheduler:
                         "is_parallel_with": step.is_parallel_with,
                         "is_first_in_batch": step.is_first_in_batch,
                         "is_last_in_batch": step.is_last_in_batch,
+                        "max_gap_after_minutes": step.max_gap_after_minutes,
                         "needs_boiler": step.op.get("needs_boiler", False),
                         "needs_cooling": needs_cooling,
                         "needs_operator": step.op.get("needs_operator", False),
@@ -627,9 +643,14 @@ class ProductionScheduler:
         # ЗАВИСИМОСТИ
         # ==========================================
         deps_count = 0
+        gap_count = 0
+        gap_skipped_multi = 0
         for batch_id, steps in routing_steps.items():
             for step in steps:
                 key = (batch_id, step.op_id)
+                gap = int(step.max_gap_after_minutes or 0)
+                n_predecessors = len(step.depends_on_op_ids)
+
                 for dep_op_id in step.depends_on_op_ids:
                     dep_key = (batch_id, dep_op_id)
                     if dep_key in self.tasks:
@@ -639,52 +660,140 @@ class ProductionScheduler:
                         )
                         deps_count += 1
 
+                if n_predecessors == 1:
+                    dep_op_id = step.depends_on_op_ids[0]
+                    dep_key = (batch_id, dep_op_id)
+                    if dep_key in self.tasks and gap >= 0:
+                        model.Add(
+                            self.tasks[key]["start"]
+                            <= self.tasks[dep_key]["end"] + gap
+                        )
+                        gap_count += 1
+                elif n_predecessors > 1:
+                    gap_skipped_multi += 1
+
         log_with_context(
             logger, logging.INFO,
-            f"Ограничений зависимостей: {deps_count}",
+            f"Ограничений зависимостей: {deps_count}, "
+            f"из них gap-ограничений (один предок): {gap_count}, "
+            f"пропущено gap (несколько предков): {gap_skipped_multi}",
             stage="build", org_id=str(self.org_id),
         )
 
         # ==========================================
+        # Итерация 18 (fix #parallel): параллельные операции
+        # ==========================================
+        parallel_count = 0
+        for batch_id, steps in routing_steps.items():
+            for step in steps:
+                if not step.is_parallel_with:
+                    continue
+
+                key = (batch_id, step.op_id)
+                if key not in self.tasks:
+                    continue
+
+                anchor_op_id = step.is_parallel_with[0]
+                anchor_key = (batch_id, anchor_op_id)
+
+                if anchor_key not in self.tasks:
+                    continue
+
+                model.Add(
+                    self.tasks[key]["start"]
+                    == self.tasks[anchor_key]["start"]
+                )
+                parallel_count += 1
+
+        if parallel_count > 0:
+            log_with_context(
+                logger, logging.INFO,
+                f"Итерация 18 (fix #parallel): применено "
+                f"parallel-ограничений: {parallel_count}",
+                stage="build", org_id=str(self.org_id),
+            )
+
+        # ==========================================
         # NOOVERLAP
         # ==========================================
-        intervals_by_equipment: Dict[str, List] = {}
-        for key, task in self.tasks.items():
-            primary = task["primary_equipment_id"]
-            secondary = task["secondary_equipment_id"]
-            if primary:
-                intervals_by_equipment.setdefault(primary, []).append(
-                    task["interval"]
-                )
-            if secondary:
-                intervals_by_equipment.setdefault(secondary, []).append(
-                    task["interval"]
-                )
-
         cooling_zone_ids = set()
         for eq_id, eq in equipment_map.items():
             if eq.get("type") == "COOLING_ZONE":
                 cooling_zone_ids.add(str(eq_id))
 
+        intervals_meta: Dict[str, List[Tuple[Any, Optional[str], Tuple[str, str]]]] = {}
+
+        for key, task in self.tasks.items():
+            primary = task["primary_equipment_id"]
+            secondary = task["secondary_equipment_id"]
+
+            # Итерация 21 (fix #line-fill-nooverlap):
+            # LINE_FILL — непрерывная операция на линии розлива.
+            # Она НИКОГДА не должна попадать в parallel_group:
+            # если по ошибке (или через шаблон операции) у неё
+            # окажется parallel_group_id, она будет исключена из
+            # AddNoOverlap по своему primary — и две LINE_FILL
+            # разных партий смогут пересечься по времени.
+            if task.get("role") == TaskRole.LINE_FILL:
+                pg = None
+            else:
+                pg = task["op"].get("parallel_group_id") if task.get("op") else None
+                pg = str(pg) if pg else None
+
+            if primary:
+                intervals_meta.setdefault(primary, []).append(
+                    (task["interval"], pg, key)
+                )
+            if secondary:
+                intervals_meta.setdefault(secondary, []).append(
+                    (task["interval"], pg, key)
+                )
+
         nooverlap_count = 0
-        for eq_id, intervals in intervals_by_equipment.items():
+        nooverlap_skipped_groups = 0
+        for eq_id, meta_list in intervals_meta.items():
             if eq_id in cooling_zone_ids:
                 continue
-            if len(intervals) > 1:
-                model.AddNoOverlap(intervals)
+
+            singles = [
+                (interval, key)
+                for (interval, pg, key) in meta_list
+                if pg is None
+            ]
+
+            seen_groups: Dict[str, Any] = {}
+            for (interval, pg, key) in meta_list:
+                if pg is None:
+                    continue
+                if pg not in seen_groups:
+                    seen_groups[pg] = (interval, key)
+                else:
+                    nooverlap_skipped_groups += 1
+
+            representatives = list(seen_groups.values())
+
+            nooverlap_intervals = [interval for (interval, _) in singles]
+            nooverlap_intervals.extend(
+                interval for (interval, _) in representatives
+            )
+
+            if len(nooverlap_intervals) > 1:
+                model.AddNoOverlap(nooverlap_intervals)
                 nooverlap_count += 1
 
         log_with_context(
             logger, logging.INFO,
-            f"NoOverlap по {nooverlap_count} ресурсам",
+            f"NoOverlap по {nooverlap_count} ресурсам "
+            f"(исключено {nooverlap_skipped_groups} параллельных операций "
+            f"из одной группы — они идут одновременно на одном ресурсе)",
             stage="build", org_id=str(self.org_id),
         )
 
         # ==========================================
-        # SETUP (Итерация 12: + сбор setup_pairs для целевой функции)
+        # SETUP
         # ==========================================
         setup_count = 0
-        setup_pairs: List[Tuple] = []  # (i_before_j_var, setup_mins, pair_name)
+        setup_pairs: List[Tuple] = []
         last_by_reactor: Dict[str, List[Dict]] = {}
         first_by_reactor: Dict[str, List[Dict]] = {}
 
@@ -742,9 +851,6 @@ class ProductionScheduler:
                     model.Add(i_before_j + j_before_i == 1)
                     setup_count += 1
 
-                    # Итерация 12: собираем setup_pairs для целевой функции.
-                    # Используем i_before_j с длительностью setup_ij.
-                    # (Если i_before_j = 1, то вклад = setup_ij, иначе 0.)
                     pair_name = (
                         f"{last_task['batch_id'][:8]}_"
                         f"{first_task['batch_id'][:8]}"
@@ -758,9 +864,6 @@ class ProductionScheduler:
             stage="build", org_id=str(self.org_id),
         )
 
-        # ==========================================
-        # КАЛЕНДАРНЫЕ ОГРАНИЧЕНИЯ — ОТКЛЮЧЕНЫ (Итерация 10, fix #13)
-        # ==========================================
         log_with_context(
             logger, logging.INFO,
             "Календарные ограничения отключены "
@@ -799,17 +902,12 @@ class ProductionScheduler:
         )
 
         # ==========================================
-        # ИТЕРАЦИЯ 12: ЦЕЛЕВАЯ ФУНКЦИЯ (MULTI-OBJECTIVE)
+        # ИТЕРАЦИЯ 12: ЦЕЛЕВАЯ ФУНКЦИЯ
         # ==========================================
-        # Makespan (базовый компонент)
         makespan = model.NewIntVar(0, self.horizon_minutes, "makespan")
         for task in self.tasks.values():
             model.Add(makespan >= task["end"])
 
-        # --------------------------------------------------
-        # Сбор batch_end_vars для tardiness
-        # --------------------------------------------------
-        # Для каждой партии: batch_end = max(end всех её задач).
         batch_end_vars: Dict[str, cp_model.IntVar] = {}
         for batch_id, steps in routing_steps.items():
             batch_end = model.NewIntVar(
@@ -825,12 +923,8 @@ class ProductionScheduler:
             if has_tasks:
                 batch_end_vars[batch_id] = batch_end
 
-        # --------------------------------------------------
-        # Аккумуляторы (условно — только если вес > 0)
-        # --------------------------------------------------
         weights_int = self.weights.to_int()
 
-        # Setup accumulator
         setup_sum_var: Optional[cp_model.IntVar] = None
         if weights_int["setup"] > 0:
             setup_sum_var = build_setup_accumulator(
@@ -845,11 +939,9 @@ class ProductionScheduler:
                 stage="optimization", org_id=str(self.org_id),
             )
 
-        # Underload accumulator
         underload_sum_var: Optional[cp_model.IntVar] = None
         total_max_fill_kg = 0
         if weights_int["underload"] > 0:
-            # Читаем max_fill_percent из настроек
             max_fill_raw = org_settings.get("max_fill_percent", 0.70)
             try:
                 if isinstance(max_fill_raw, str):
@@ -861,7 +953,6 @@ class ProductionScheduler:
             except (ValueError, TypeError):
                 max_fill_percent = 0.70
 
-            # Исключаем заблокированные партии
             active_batches = [
                 b for b in batches if not self._is_batch_blocked(b)
             ]
@@ -878,7 +969,6 @@ class ProductionScheduler:
                 stage="optimization", org_id=str(self.org_id),
             )
 
-        # Cooling slow accumulator
         cooling_slow_count_var: Optional[cp_model.IntVar] = None
         total_cooling_count = 0
         if weights_int["cooling_slow"] > 0:
@@ -898,7 +988,6 @@ class ProductionScheduler:
                 stage="optimization", org_id=str(self.org_id),
             )
 
-        # Tardiness accumulator
         tardiness_sum_var: Optional[cp_model.IntVar] = None
         num_batches_for_tardiness = 0
         if weights_int["tardiness"] > 0:
@@ -920,9 +1009,6 @@ class ProductionScheduler:
                 stage="optimization", org_id=str(self.org_id),
             )
 
-        # --------------------------------------------------
-        # Собираем целевую функцию
-        # --------------------------------------------------
         build_multi_objective(
             model=model,
             weights=self.weights,
@@ -965,9 +1051,6 @@ class ProductionScheduler:
             )
             result["skipped_batches"] = self.skipped_batches
 
-            # ==========================================
-            # Итерация 11 (Шаг 6): постобработка календаря
-            # ==========================================
             from .calendar_postprocess import apply_calendar_postprocess
             postprocess_stats = apply_calendar_postprocess(
                 tasks=result["tasks"],
@@ -1112,6 +1195,12 @@ class ProductionScheduler:
             batch_id, op_id = key
             start = solver.Value(task["start"])
             end = solver.Value(task["end"])
+
+            # Итерация 19 (fix #tz-saver):
+            # Оставляем naive-UTC, чтобы избежать TypeError при
+            # вычитании t["end"] - self.t0 (naive - aware).
+            # Пометка tzinfo=utc теперь делается в saver.py перед
+            # записью в БД — это защита от asyncpg.
             start_dt = self.t0 + timedelta(minutes=start)
             end_dt = self.t0 + timedelta(minutes=end)
 
@@ -1157,7 +1246,6 @@ class ProductionScheduler:
                 "operation_name": operation_name,
                 "operator_pool": task.get("operator_pool"),
                 "cooling_mode": cooling_mode,
-                # Итерация 11: needed for postprocess (topological sort)
                 "depends_on_op_ids": task.get("depends_on_op_ids", []),
             })
 

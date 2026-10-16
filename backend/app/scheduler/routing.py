@@ -35,19 +35,33 @@
 
 Итерация 13.6 (fix #roles):
   - PUMPING-операции пропускаются для DIRECT-маршрута.
-    Ранее они попадали в цепочку как REACTOR_OP, что было неверно.
 
 Итерация 17.5 (fix #silent-skip):
-  - Если у продукта партии нет operation_template — вместо
-    молчаливого `return []` пишем WARNING в лог. Позволяет быстро
-    диагностировать партии, которые выпадают из плана (например,
-    ГП без parent_pf_id, см. orders.py::_resolve_batch_product_id).
+  - Если у продукта партии нет operation_template — пишем WARNING.
+
+Итерация 18 (fix #gap):
+  - В RoutingStep добавлено поле max_gap_after_minutes.
+  - Для всех технологических переходов внутри партии зазор = 0.
+
+Итерация 18 (fix #parallel-deps):
+  - При выходе из параллельной группы операция вне группы зависит
+    от ВСЕХ операций группы, а не только от последней по порядку.
+
+Итерация 19 (fix #parallel-last):
+  - При выходе из параллельной группы операция вне группы зависит
+    ТОЛЬКО от операции с МАКСИМАЛЬНОЙ длительностью.
+  - Это гарантирует, что зависимость — ровно одна, и gap=0
+    применяется корректно (без пропуска, как при нескольких предках).
+  - Длительности операций детерминированы (calc_duration — чистая
+    функция), поэтому «последняя» операция вычисляется заранее.
+  - Устраняет 38-часовые разрывы между параллельной группой
+    и следующей операцией (например, «Лаб.анализ»).
 """
 
 import logging
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any, Tuple, Union
 
 from .logging_config import setup_scheduler_logging, log_with_context
 
@@ -113,6 +127,11 @@ class RoutingStep:
     is_first_in_batch: bool = False
     is_last_in_batch: bool = False
     operator_pool: Optional[str] = None
+    # Итерация 18 (fix #gap): максимально допустимый зазор ПОСЛЕ
+    # этой операции до начала следующей зависимой операции.
+    # 0 = следующая операция начинается строго после завершения этой
+    # (по ТЗ: операции внутри партии идут непрерывно).
+    max_gap_after_minutes: int = 0
 
 
 # --- Вспомогательные функции ---
@@ -230,15 +249,7 @@ def _calc_fill_duration(
         product: Dict,
         gp_product: Optional[Dict] = None,
 ) -> int:
-    """
-    Считает длительность слива партии на линию.
-
-    Логика (по ТЗ):
-      1. bottles = volume_kg / bottle_volume_l
-      2. duration_minutes = bottles / fill_speed_per_min
-      3. Если ГП известен — используем его данные.
-      4. Если нет — fallback на ПФ.
-    """
+    """Считает длительность слива партии на линию."""
     volume_kg = _to_float(batch.get("volume_kg"))
     if volume_kg <= 0:
         return 0
@@ -263,17 +274,7 @@ def _assign_operator_pool(
         op: Dict,
         line_equipment: Optional[Dict] = None,
 ) -> Optional[str]:
-    """
-    Назначает пул ресурса для операции.
-
-    Приоритет (сверху вниз):
-      1. Операции на линии (fill_*) → пул линии.
-      2. Лабораторные операции → LAB.
-      3. Охлаждение → COOLING_ZONE.
-      4. Нагрев → BOILER.
-      5. Явно заданный в шаблоне operator_pool.
-      6. NULL.
-    """
+    """Назначает пул ресурса для операции."""
     if line_equipment is not None:
         pool = _get_line_operator_pool(line_equipment)
         if pool:
@@ -299,30 +300,15 @@ def _split_fill_duration(
         total_duration: int,
         shift_mode: str = "2x12",
 ) -> List[int]:
-    """
-    Разбивает длительность слива на N частей.
-
-    Итерация 11 (Шаг 6): максимальная длительность части зависит
-    от режима смен:
-      - 1x8:  6 часов = 360 мин
-      - 3x8:  6 часов = 360 мин
-      - 2x12: 10 часов = 600 мин
-    Fallback: 8 часов = 480 мин.
-
-    Примеры:
-        _split_fill_duration(1400, "3x8") → [467, 467, 466]
-        _split_fill_duration(1400, "2x12") → [700, 700]
-        _split_fill_duration(560, "3x8")  → [560]
-        _split_fill_duration(200, "2x12") → [200]
-    """
+    """Разбивает длительность слива на N частей."""
     if shift_mode == "1x8":
-        max_part = 6 * 60   # 360 мин
+        max_part = 6 * 60
     elif shift_mode == "3x8":
-        max_part = 6 * 60   # 360 мин
+        max_part = 6 * 60
     elif shift_mode == "2x12":
-        max_part = 10 * 60  # 600 мин
+        max_part = 10 * 60
     else:
-        max_part = 8 * 60   # fallback
+        max_part = 8 * 60
 
     if total_duration <= max_part:
         return [total_duration]
@@ -336,6 +322,24 @@ def _split_fill_duration(
         parts[i] += 1
 
     return parts
+
+
+# ==========================================
+# Итерация 18 (fix #gap): проставление зазоров
+# ==========================================
+
+def _apply_gap_defaults(steps: List[RoutingStep]) -> List[RoutingStep]:
+    """Проставляет max_gap_after_minutes для всех шагов цепочки."""
+    if not steps:
+        return steps
+
+    for step in steps:
+        gap = int(step.op.get("wait_after_mins", 0) or 0)
+        if gap < 0:
+            gap = 0
+        step.max_gap_after_minutes = gap
+
+    return steps
 
 
 # ==========================================
@@ -356,33 +360,7 @@ def build_routing(
         truncate_after_lab: bool = False,
         shift_mode: str = "2x12",
 ) -> List[RoutingStep]:
-    """
-    Строит цепочку шагов для партии.
-
-    Итерация 11 (Шаг 6): shift_mode используется для разбиения
-    длинных LINE_FILL на подзадачи подходящей длины.
-
-    Итерация 13.4 (fix C1): WASH зависит от TANK_TRANSFER (VIA_TANK)
-    или LINE_FILL (DIRECT) — параллельно сливу при VIA_TANK.
-
-    Итерация 13.6 (fix #roles): PUMPING-операции пропускаются для
-    DIRECT-маршрута (у них нет танка).
-
-    Итерация 17.5 (fix #silent-skip): если у продукта нет
-    operation_template — логируем WARNING, а не возвращаем [] молча.
-    """
-    # ==========================================
-    # Итерация 17.5 (fix #silent-skip): логируем пропуск
-    # ==========================================
-    # Раньше партии с продуктом без операций молча выпадали из плана.
-    # Теперь пишем WARNING с batch_id, product_code, product_type,
-    # чтобы такие случаи было видно в логах backend.
-    #
-    # Типичный сценарий: партия создана на ГП (product.type='GP'),
-    # у которого нет parent_pf_id (или parent_pf_id не задан).
-    # См. orders.py::_resolve_batch_product_id — там ГП → ПФ по
-    # COALESCE(parent_pf_id, id).
-    # ==========================================
+    """Строит цепочку шагов для партии."""
     if not operations:
         log_with_context(
             logger, logging.WARNING,
@@ -395,7 +373,6 @@ def build_routing(
         )
         return []
 
-    # 1. Определяем ключевые ресурсы
     reactor_id = _find_reactor_for_batch(batch, equipment_map)
     if reactor_id is None:
         return []
@@ -420,10 +397,13 @@ def build_routing(
     )
     line_equipment = equipment_map.get(line_id, {}) if line_id else None
 
-    # 2. Строим основную часть цепочки
     steps: List[RoutingStep] = []
     prev_op_id: Optional[str] = None
     parallel_group_last_op: Dict[str, str] = {}
+
+    # Итерация 19 (fix #parallel-last): храним (op_id, duration) в группе.
+    group_ops_by_id: Dict[str, List[Tuple[str, int]]] = {}
+
     lab_seen = False
 
     postponed_wash: Optional[Dict] = None
@@ -442,27 +422,14 @@ def build_routing(
             postponed_wash = op
             continue
 
-        # ==========================================
-        # Итерация 13.6 (fix #roles): правильная обработка PUMPING
-        # ==========================================
-        # По ТЗ (Раздел 2.1.6): операция «Перекачка в накопительную
-        # ёмкость» имеет смысл ТОЛЬКО для VIA_TANK-маршрута.
-        #
-        # Логика:
-        #   - VIA_TANK + tank: postpone, станет TANK_TRANSFER.
-        #   - DIRECT (без танка): операция ПРОПУСКАЕТСЯ,
-        #     потому что слив идёт напрямую на линию через LINE_FILL.
-        # ==========================================
         if is_pumping:
             if route_type == RouteType.VIA_TANK and tank_id:
-                # Откладываем до этапа «Перекачка в танк»
                 postponed_pumping = op
-            # В обоих случаях — не добавляем как REACTOR_OP
             continue
 
         duration = calc_duration(op, batch, reactor, product)
         depends_on, is_parallel_with = _calculate_dependencies(
-            op, prev_op_id, parallel_group_last_op
+            op, prev_op_id, parallel_group_last_op, group_ops_by_id, duration
         )
 
         steps.append(RoutingStep(
@@ -484,7 +451,6 @@ def build_routing(
     if truncate_after_lab and lab_seen:
         return _finalize_steps(steps)
 
-    # 3. Добавляем перекачку в танк (если есть)
     last_op_before_fill = prev_op_id
     if postponed_pumping is not None and tank_id:
         duration = calc_duration(postponed_pumping, batch, reactor, product)
@@ -503,7 +469,6 @@ def build_routing(
 
     # ==========================================
     # 4. Добавляем слив на линию
-    #    Итерация 11 (Шаг 6): разбиение с учётом shift_mode
     # ==========================================
     if line_id:
         fill_duration = _calc_fill_duration(batch, product, gp_product)
@@ -524,7 +489,6 @@ def build_routing(
             "needs_boiler": False,
         }
 
-        # Итерация 11 (Шаг 6): разбиение с учётом shift_mode
         part_durations = _split_fill_duration(
             fill_duration,
             shift_mode=shift_mode,
@@ -580,24 +544,11 @@ def build_routing(
             prev_op_id = prev_part_id
 
     # ==========================================
-    # 5. Замыв реактора (Итерация 13.4 — fix C1)
+    # 5. Замыв реактора
     # ==========================================
-    # По ТЗ (Раздел 3, п. 2): «Замыв реактора начинается после его
-    # освобождения — либо после перелива в накопительную ёмкость,
-    # либо после слива ПФ на линии розлива по бутылкам».
-    #
-    # Семантика:
-    #   - VIA_TANK: реактор освобождается после TANK_TRANSFER.
-    #     Замыв может идти ПАРАЛЛЕЛЬНО сливу на линию (LINE_FILL).
-    #     Зависимость: WASH зависит от TANK_TRANSFER.
-    #   - DIRECT: реактор освобождается после LINE_FILL.
-    #     Замыв идёт ПОСЛЕ слива. Зависимость: WASH → LINE_FILL.
     if postponed_wash is not None:
         duration = calc_duration(postponed_wash, batch, reactor, product)
 
-        # Точка привязки WASH:
-        #   - VIA_TANK: последняя операция на реакторе = TANK_TRANSFER
-        #   - DIRECT: последняя операция = LINE_FILL
         if route_type == RouteType.VIA_TANK and tank_id:
             wash_deps = [last_op_before_fill] if last_op_before_fill else []
         else:
@@ -617,19 +568,69 @@ def build_routing(
     return _finalize_steps(steps)
 
 
-def _calculate_dependencies(op, prev_op_id, parallel_group_last_op):
-    """Вычисляет зависимости для операции."""
+def _calculate_dependencies(
+        op,
+        prev_op_id,
+        parallel_group_last_op,
+        group_ops_by_id,
+        current_duration,
+):
+    """
+    Вычисляет зависимости для операции.
+
+    Итерация 19 (fix #parallel-last):
+      - При выходе из параллельной группы depends_on = [op_id операции
+        с МАКСИМАЛЬНОЙ длительностью] (не все, а ровно одна).
+      - Это гарантирует, что gap=0 применится корректно.
+
+    Args:
+        op: текущая операция (dict).
+        prev_op_id: op_id предыдущей операции.
+        parallel_group_last_op: Dict[group_id → op_id «якоря»].
+        group_ops_by_id: Dict[group_id → List[(op_id, duration)]].
+        current_duration: длительность текущей операции (для регистрации
+            в группе, если она в группе).
+    """
     depends_on, is_parallel_with = [], []
     op_parallel_group = op.get("parallel_group_id")
 
     if op_parallel_group:
+        # Операция внутри параллельной группы.
         if op_parallel_group in parallel_group_last_op:
             is_parallel_with.append(parallel_group_last_op[op_parallel_group])
         elif prev_op_id:
             depends_on.append(prev_op_id)
+
         parallel_group_last_op[op_parallel_group] = str(op["id"])
-    elif prev_op_id:
-        depends_on.append(prev_op_id)
+        group_ops_by_id.setdefault(op_parallel_group, []).append(
+            (str(op["id"]), int(current_duration))
+        )
+    else:
+        # Операция вне группы.
+        if prev_op_id:
+            # Ищем, в какой группе была prev_op_id.
+            prev_group_id: Optional[str] = None
+            for gid, ops in group_ops_by_id.items():
+                for (oid, _dur) in ops:
+                    if oid == prev_op_id:
+                        prev_group_id = gid
+                        break
+                if prev_group_id:
+                    break
+
+            if prev_group_id is not None:
+                # Итерация 19: берём операцию с МАКСИМАЛЬНОЙ длительностью
+                # (она закончится последней при параллельном старте).
+                ops_in_group = group_ops_by_id[prev_group_id]
+                if ops_in_group:
+                    last_op_id, _last_dur = max(
+                        ops_in_group, key=lambda pair: pair[1]
+                    )
+                    depends_on.append(last_op_id)
+                else:
+                    depends_on.append(prev_op_id)
+            else:
+                depends_on.append(prev_op_id)
 
     return depends_on, is_parallel_with
 
@@ -638,8 +639,12 @@ def _finalize_steps(steps: List[RoutingStep]) -> List[RoutingStep]:
     """Устанавливает флаги is_first_in_batch и is_last_in_batch."""
     if not steps:
         return []
+
     steps[0].is_first_in_batch = True
     steps[-1].is_last_in_batch = True
+
+    _apply_gap_defaults(steps)
+
     return steps
 
 
@@ -659,4 +664,5 @@ def get_routing_summary(steps: List[RoutingStep]) -> Dict[str, Any]:
         "operator_pools": sorted(list({
             s.operator_pool for s in steps if s.operator_pool
         })),
+        "max_gap_after_minutes": [s.max_gap_after_minutes for s in steps],
     }

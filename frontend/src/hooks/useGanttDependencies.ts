@@ -2,30 +2,26 @@
 import type {RefObject} from 'react';
 /**
  * Хук для отрисовки связей между задачами на Ганте
- * (Итерация 13.17 + 14.1).
- *
- * Вынесено из GanttPage.tsx.
+ * (Итерация 13.17 + 14.1 + 23).
  *
  * Логика:
  *  - Рисует SVG-overlay с ортогональными проводами между задачами
  *    (по depends_on_task_ids).
- *  - При hover на задаче — показывает её связи.
+ *  - При hover на задаче — показывает ИСХОДЯЩИЕ (кто предки) и
+ *    ВХОДЯЩИЕ (кто зависит от неё) связи.
+ *  - При hover на виртуальной группе LINE_FILL — собирает
+ *    depends_on_task_ids со ВСЕХ частей группы (объединение) и
+ *    рисует связи от предков К группе, а также от группы К
+ *    успессорам частей.
  *  - При showAllDependencies — показывает все связи.
  *  - При pan/zoom — throttled перерисовка.
  *
- * Итерация 14.1: добавлен режим группировки groupByMode:
- *   - 'equipment' — показываем ВСЕ связи (внутри- и межпартийные),
- *     как было.
- *   - 'batch' — показываем ТОЛЬКО межпартийные связи (те, что идут
- *     от задачи одной партии к задаче другой партии). Внутрипартийные
- *     связи скрыты, так как партия уже визуально сгруппирована в
- *     одну строку.
+ * Итерация 14.1: добавлен режим группировки groupByMode.
  *
- * Возвращает:
- *  - drawDependencies — полная перерисовка (для ручного вызова).
- *  - scheduleRedraw — throttled через requestAnimationFrame.
- *  - handleItemOver / handleItemOut — колбэки для Timeline.on('itemover'/'itemout').
- *  - resetHover — сбросить hover (при смене версии).
+ * Итерация 23 (fix #group-deps):
+ *   - boxMap регистрирует реальные ID частей виртуальных групп.
+ *   - Hover на группе даёт связи в ОБА направления (раньше —
+ *     только входящие).
  */
 import {useCallback, useRef} from 'react';
 import type {Timeline} from 'vis-timeline/standalone';
@@ -39,44 +35,44 @@ import {
 import type {GroupByMode, TaskData} from '../types';
 
 export interface UseGanttDependenciesOptions {
-    /** Ссылка на контейнер с Timeline (для поиска DOM-элементов задач). */
     containerRef: RefObject<HTMLElement | null>;
-    /** Ссылка на SVG-overlay (создаётся в JSX). */
     svgRef: RefObject<SVGSVGElement | null>;
-    /** Ссылка на Timeline (для проверки, что он есть). */
     timelineRef: RefObject<Timeline | null>;
-    /** Список всех задач (включая группы, setup, downtime). */
     tasks: TaskData[];
-    /** Показывать ли связи вообще. */
     showDependencies: boolean;
-    /** Показывать ли все связи (true) или только при hover (false). */
     showAllDependencies: boolean;
-    /**
-     * Итерация 14.1: режим группировки.
-     * В режиме 'batch' показываем только межпартийные связи.
-     */
     groupByMode: GroupByMode;
-    /**
-     * Колбэк при изменении hovered-партии.
-     * Используется, если снаружи нужно реагировать на hover.
-     */
     onHoverBatch?: (batchId: string | null) => void;
 }
 
 export interface UseGanttDependenciesResult {
-    /** Полная перерисовка связей. */
     drawDependencies: (tasks: TaskData[]) => void;
-    /** Throttled перерисовка (через requestAnimationFrame). */
     scheduleRedraw: () => void;
-    /** Обработчик Timeline.on('itemover'). */
     handleItemOver: (props: any) => void;
-    /** Обработчик Timeline.on('itemout'). */
     handleItemOut: (props: any) => void;
-    /** Текущий hovered task id (для отладки/логики). */
     getHoveredTaskId: () => string | null;
-    /** Сбросить hover. */
     resetHover: () => void;
 }
+
+// ==========================================
+// ИТЕРАЦИЯ 23: утилиты для разворота групп
+// ==========================================
+
+const GROUP_PREFIX = '__group__';
+const SEGMENT_SUFFIX_REGEX = /__seg\d+$/;
+const PART_SUFFIX_REGEX = / \(часть \d+\/\d+\)$/;
+
+const getBaseFillName = (operationName: string): string =>
+    operationName.replace(PART_SUFFIX_REGEX, '');
+
+const getGroupKeyForTask = (task: TaskData): string | null => {
+    if (!task.batch_id || !task.operation_name) return null;
+    if (!PART_SUFFIX_REGEX.test(task.operation_name)) return null;
+    return `${task.batch_id}__${getBaseFillName(task.operation_name)}`;
+};
+
+const getBaseGroupKey = (groupKeyFromId: string): string =>
+    groupKeyFromId.replace(SEGMENT_SUFFIX_REGEX, '');
 
 export const useGanttDependencies = (
     options: UseGanttDependenciesOptions,
@@ -92,58 +88,37 @@ export const useGanttDependencies = (
         onHoverBatch,
     } = options;
 
-    // --- Refs ---
     const hoveredTaskIdRef = useRef<string | null>(null);
     const hoveredBatchIdRef = useRef<string | null>(null);
     const redrawRafRef = useRef<number | null>(null);
 
     // ==========================================
-    // Определение цвета провода
+    // Цвет провода
     // ==========================================
     const getLinkColor = useCallback(
         (fromTask: TaskData, toTask: TaskData): LinkColorKey => {
-            if (toTask.task_role === 'WASH') {
-                return 'to_wash';
-            }
+            if (toTask.task_role === 'WASH') return 'to_wash';
             if (
                 fromTask.task_role === 'REACTOR_OP' &&
                 toTask.task_role === 'TANK_TRANSFER'
-            ) {
-                return 'to_tank';
-            }
+            ) return 'to_tank';
             if (
                 fromTask.task_role === 'TANK_TRANSFER' &&
                 toTask.task_role === 'LINE_FILL'
-            ) {
-                return 'to_line';
-            }
+            ) return 'to_line';
             if (
                 fromTask.task_role === 'REACTOR_OP' &&
                 toTask.task_role === 'LINE_FILL'
-            ) {
-                return 'direct';
-            }
+            ) return 'direct';
             return 'same_row';
         },
         [],
     );
 
-    /**
-     * Итерация 14.1: является ли связь межпартийной?
-     *
-     * Межпартийная = задачи принадлежат РАЗНЫМ партиям
-     * (batch_id различаются). Внутрипартийные связи
-     * (batch_id совпадают) считаются «скрытыми» в режиме 'batch'.
-     *
-     * Setup и downtime не имеют batch_id — они считаются
-     * «внепартийными» и всегда отображаются, если есть связи.
-     */
     const isInterBatchLink = useCallback(
         (fromTask: TaskData, toTask: TaskData): boolean => {
             const fromBatch = fromTask.batch_id;
             const toBatch = toTask.batch_id;
-
-            // Setup / downtime / не-партия → всегда показываем
             const fromIsNonBatch =
                 !fromBatch ||
                 NON_BATCH_VALUES.has(fromBatch) ||
@@ -152,11 +127,7 @@ export const useGanttDependencies = (
                 !toBatch ||
                 NON_BATCH_VALUES.has(toBatch) ||
                 (toTask.item_type && toTask.item_type !== 'task');
-
-            if (fromIsNonBatch || toIsNonBatch) {
-                return true;
-            }
-
+            if (fromIsNonBatch || toIsNonBatch) return true;
             return fromBatch !== toBatch;
         },
         [],
@@ -171,10 +142,7 @@ export const useGanttDependencies = (
             const containerEl = containerRef.current;
             if (!svg || !containerEl) return;
 
-            // Очищаем SVG
-            while (svg.firstChild) {
-                svg.removeChild(svg.firstChild);
-            }
+            while (svg.firstChild) svg.removeChild(svg.firstChild);
 
             if (!showDependencies) {
                 svg.style.display = 'none';
@@ -183,12 +151,6 @@ export const useGanttDependencies = (
 
             const hoveredId = hoveredTaskIdRef.current;
 
-            // ==========================================
-            // Итерация 14.1: в режиме 'batch' рисуем только
-            // связи при hover (даже если showAllDependencies = true).
-            // Иначе диаграмма превратится в «спагетти» из связей
-            // между всеми партиями.
-            // ==========================================
             const drawAll =
                 groupByMode === 'equipment'
                     ? showAllDependencies && !hoveredId
@@ -202,7 +164,6 @@ export const useGanttDependencies = (
 
             const ganttContainer = containerEl.parentElement;
             if (!ganttContainer) return;
-
             if (svg.parentElement !== ganttContainer) {
                 ganttContainer.appendChild(svg);
             }
@@ -218,13 +179,14 @@ export const useGanttDependencies = (
             svg.style.pointerEvents = 'none';
             svg.style.overflow = 'hidden';
             svg.style.zIndex = '6';
-
             svg.setAttribute(
                 'viewBox',
                 `0 0 ${containerRect.width} ${containerRect.height}`,
             );
 
-            // Карта координат задач в контейнере
+            // ==========================================
+            // boxMap (с разворотом групп)
+            // ==========================================
             const boxMap = new Map<
                 string,
                 {left: number; right: number; top: number; bottom: number}
@@ -233,6 +195,17 @@ export const useGanttDependencies = (
             const itemEls = containerEl.querySelectorAll<HTMLElement>(
                 '.vis-item.vis-range',
             );
+
+            // Индексируем все реальные части по базовому ключу группы.
+            const partsByGroupKey = new Map<string, TaskData[]>();
+            allTasks.forEach((t) => {
+                const key = getGroupKeyForTask(t);
+                if (!key) return;
+                if (!partsByGroupKey.has(key)) {
+                    partsByGroupKey.set(key, []);
+                }
+                partsByGroupKey.get(key)!.push(t);
+            });
 
             itemEls.forEach((el) => {
                 const visItem = (el as any)['vis-item'];
@@ -244,17 +217,29 @@ export const useGanttDependencies = (
                 const rect = domEl.getBoundingClientRect();
                 if (rect.width === 0 || rect.height === 0) return;
 
-                boxMap.set(itemId, {
+                const box = {
                     left: rect.left - containerRect.left,
                     right: rect.right - containerRect.left,
                     top: rect.top - containerRect.top,
                     bottom: rect.bottom - containerRect.top,
-                });
+                };
+
+                boxMap.set(itemId, box);
+
+                if (itemId.startsWith(GROUP_PREFIX)) {
+                    const groupKeyFromId = itemId.substring(GROUP_PREFIX.length);
+                    const baseKey = getBaseGroupKey(groupKeyFromId);
+                    const parts = partsByGroupKey.get(baseKey);
+                    if (parts) {
+                        for (const part of parts) {
+                            boxMap.set(part.id, box);
+                        }
+                    }
+                }
             });
 
             if (boxMap.size === 0) return;
 
-            // Карта задач по id (только "настоящие" task, без setup/downtime)
             const taskMap = new Map<string, TaskData>();
             allTasks.forEach((t) => {
                 if (!t.item_type || t.item_type === 'task') {
@@ -278,13 +263,7 @@ export const useGanttDependencies = (
             ) => {
                 const isInterBatch = isInterBatchLink(fromTask, toTask);
 
-                // ==========================================
-                // Итерация 14.1: в режиме 'batch' — фильтруем
-                // внутрипартийные связи.
-                // ==========================================
-                if (groupByMode === 'batch' && !isInterBatch) {
-                    return;
-                }
+                if (groupByMode === 'batch' && !isInterBatch) return;
 
                 const colorKey = getLinkColor(fromTask, toTask);
 
@@ -297,9 +276,6 @@ export const useGanttDependencies = (
                     return;
                 }
 
-                // Цвет: подсвеченный — оранжевый.
-                // Межпартийная связь в режиме 'batch' — красный
-                // (чтобы отличать от внутрипартийных).
                 let color: string;
                 if (isHighlighted) {
                     color = HOVER_COLOR;
@@ -318,25 +294,91 @@ export const useGanttDependencies = (
                 });
             };
 
+            // ==========================================
+            // Hover-режим
+            // ==========================================
             if (hoveredId) {
+                const isHoveredGroup = hoveredId.startsWith(GROUP_PREFIX);
                 const hoveredTask = taskMap.get(hoveredId);
-                if (hoveredTask) {
-                    // Исходящие — predecessors
-                    (hoveredTask.depends_on_task_ids || []).forEach((fromId) => {
-                        const fromTask = taskMap.get(fromId);
-                        if (fromTask) {
-                            addLink(fromTask, hoveredTask, true);
-                        }
-                    });
 
-                    // Входящие — successors
-                    allTasks.forEach((toTask) => {
-                        if (!toTask.depends_on_task_ids) return;
-                        if (toTask.depends_on_task_ids.includes(hoveredTask.id)) {
-                            addLink(hoveredTask, toTask, true);
-                        }
-                    });
+                // Реальные ID частей, если hovered — группа.
+                // Иначе — [id самой задачи].
+                let hoveredRealIds: string[] = [];
+                if (isHoveredGroup) {
+                    const groupKeyFromId = hoveredId.substring(
+                        GROUP_PREFIX.length,
+                    );
+                    const baseKey = getBaseGroupKey(groupKeyFromId);
+                    const parts = partsByGroupKey.get(baseKey) || [];
+                    hoveredRealIds = parts.map((p) => p.id);
+                } else if (hoveredTask) {
+                    hoveredRealIds = [hoveredTask.id];
                 }
+                const hoveredRealIdsSet = new Set(hoveredRealIds);
+
+                // ------------------------------------------
+                // 1. ИСХОДЯЩИЕ (predecessors): от кого зависит hovered.
+                //    Для группы — объединение depends_on_task_ids
+                //    всех её частей.
+                // ------------------------------------------
+                const predecessorIds = new Set<string>();
+                if (isHoveredGroup) {
+                    for (const id of hoveredRealIds) {
+                        const part = taskMap.get(id);
+                        if (!part) continue;
+                        for (const predId of part.depends_on_task_ids || []) {
+                            predecessorIds.add(predId);
+                        }
+                    }
+                } else if (hoveredTask) {
+                    for (const predId of hoveredTask.depends_on_task_ids || []) {
+                        predecessorIds.add(predId);
+                    }
+                }
+
+                // «Виртуальный» объект, представляющий hovered
+                // (реальная задача или группа) для addLink.
+                const hoveredAsTask: TaskData = hoveredTask
+                    ? hoveredTask
+                    : ({
+                        id: hoveredId,
+                        batch_id: '',
+                        operation_name: '',
+                        equipment_id: '',
+                        product_id: '',
+                        start: '',
+                        end: '',
+                        duration_minutes: 0,
+                        task_role: 'LINE_FILL',
+                        item_type: 'task',
+                        depends_on_task_ids: [],
+                    } as unknown as TaskData);
+
+                predecessorIds.forEach((predId) => {
+                    const predTask = taskMap.get(predId);
+                    if (predTask) {
+                        // from=предок → to=hovered
+                        addLink(predTask, hoveredAsTask, true);
+                    }
+                });
+
+                // ------------------------------------------
+                // 2. ВХОДЯЩИЕ (successors): кто зависит от hovered.
+                //    Для группы — ищем задачи, которые зависят
+                //    от ЛЮБОЙ из её частей.
+                // ------------------------------------------
+                allTasks.forEach((candidateTask) => {
+                    if (!candidateTask.depends_on_task_ids) return;
+                    if (candidateTask.depends_on_task_ids.length === 0) return;
+
+                    const hasMatch = candidateTask.depends_on_task_ids.some(
+                        (id) => hoveredRealIdsSet.has(id),
+                    );
+                    if (!hasMatch) return;
+
+                    // from=hovered → to=candidateTask
+                    addLink(hoveredAsTask, candidateTask, true);
+                });
             } else if (drawAll) {
                 allTasks.forEach((toTask) => {
                     if (
@@ -354,7 +396,9 @@ export const useGanttDependencies = (
                 });
             }
 
-            // Отрисовка каждой связи
+            // ==========================================
+            // Отрисовка
+            // ==========================================
             linksToDraw.forEach(
                 ({fromId, toId, color, isHighlighted, isInterBatch}) => {
                     const fromBox = boxMap.get(fromId);
@@ -376,11 +420,8 @@ export const useGanttDependencies = (
                     } else {
                         const gap = x2 - x1;
                         let midX: number;
-                        if (gap > 20) {
-                            midX = x1 + 10;
-                        } else {
-                            midX = x1 + Math.max(4, gap / 2);
-                        }
+                        if (gap > 20) midX = x1 + 10;
+                        else midX = x1 + Math.max(4, gap / 2);
 
                         if (midX > x2 - 2) {
                             const backMidX = x2 - 10;
@@ -465,9 +506,7 @@ export const useGanttDependencies = (
         }
         redrawRafRef.current = requestAnimationFrame(() => {
             redrawRafRef.current = null;
-            if (timelineRef.current) {
-                drawDependencies(tasks);
-            }
+            if (timelineRef.current) drawDependencies(tasks);
         });
     }, [drawDependencies, tasks, timelineRef]);
 
@@ -478,27 +517,29 @@ export const useGanttDependencies = (
         (props: any) => {
             if (!props.item) return;
             const itemId = String(props.item);
+
+            const isGroup = itemId.startsWith(GROUP_PREFIX);
             const task = tasks.find((t) => t.id === itemId);
+
             if (
-                !task ||
-                task.item_type === 'downtime' ||
-                task.item_type === 'setup'
+                !isGroup &&
+                (!task ||
+                    task.item_type === 'downtime' ||
+                    task.item_type === 'setup')
             ) {
                 return;
             }
 
             hoveredTaskIdRef.current = itemId;
 
-            if (task.batch_id && !NON_BATCH_VALUES.has(task.batch_id)) {
+            if (task?.batch_id && !NON_BATCH_VALUES.has(task.batch_id)) {
                 if (hoveredBatchIdRef.current !== task.batch_id) {
                     hoveredBatchIdRef.current = task.batch_id;
                     if (onHoverBatch) onHoverBatch(task.batch_id);
                 }
             }
 
-            if (timelineRef.current) {
-                drawDependencies(tasks);
-            }
+            if (timelineRef.current) drawDependencies(tasks);
         },
         [tasks, drawDependencies, onHoverBatch, timelineRef],
     );
@@ -508,18 +549,15 @@ export const useGanttDependencies = (
             if (!props.item) return;
             const itemId = String(props.item);
             const task = tasks.find((t) => t.id === itemId);
-            if (!task) return;
 
             hoveredTaskIdRef.current = null;
 
-            if (hoveredBatchIdRef.current === task.batch_id) {
+            if (task?.batch_id && hoveredBatchIdRef.current === task.batch_id) {
                 hoveredBatchIdRef.current = null;
                 if (onHoverBatch) onHoverBatch(null);
             }
 
-            if (timelineRef.current) {
-                drawDependencies(tasks);
-            }
+            if (timelineRef.current) drawDependencies(tasks);
         },
         [tasks, drawDependencies, onHoverBatch, timelineRef],
     );
@@ -527,9 +565,7 @@ export const useGanttDependencies = (
     // ==========================================
     // Утилиты
     // ==========================================
-    const getHoveredTaskId = useCallback(() => {
-        return hoveredTaskIdRef.current;
-    }, []);
+    const getHoveredTaskId = useCallback(() => hoveredTaskIdRef.current, []);
 
     const resetHover = useCallback(() => {
         hoveredTaskIdRef.current = null;

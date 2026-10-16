@@ -15,14 +15,25 @@
                 snapshot.py (snapshot_all_catalogs). Здесь только
                 вызываем эту функцию.
 Итерация 13.21: параметр replace_version_id — архивация старой версии
-                при пересчёте. Если передана, старая версия помечается
-                is_archived = TRUE перед созданием новой.
-                Если версия используется в whatif_scenario — архивация
-                пропускается (флаг replace_blocked в результате).
+                при пересчёте.
+
+Итерация 19 (fix #tz-saver):
+  - При сохранении planned_start / planned_end явно указывается
+    tzinfo=timezone.utc. Это защита от asyncpg, который иначе может
+    интерпретировать naive datetime в локальной TZ клиента
+    (например, МСК) и сохранить в БД время со сдвигом −3 часа.
+
+Итерация 20 (fix #comment):
+  - Сохраняем комментарий планировщика из task["comment"] в
+    scheduled_task.comment. Используется постобработкой календаря
+    для указания причины переноса цепочки («Перенос с 16.10 15:56
+    на 19.10 08:00: перенос на ближайший рабочий день»).
+  - Колонка comment может отсутствовать в старой БД — проверяем
+    через _has_column и добавляем в INSERT только если есть.
 """
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID, uuid4
 
@@ -55,12 +66,10 @@ class ScheduleSaver:
         self.org_id = org_id
 
         if session is not None:
-            # Итерация 12: используем переданную сессию.
             self.async_session = session
             self.engine = None
             self._owns_session = False
         else:
-            # Обратная совместимость: создаём свою сессию.
             self.engine = create_async_engine(
                 settings.DATABASE_URL, echo=False
             )
@@ -108,10 +117,7 @@ class ScheduleSaver:
     def _find_shift_for_time(
             self, shifts: List[Dict], dt: datetime
     ) -> Optional[str]:
-        """
-        Итерация 9 (B1): обёртка над shifts.find_shift_id_for_time.
-        Единая логика для saver.py и rescheduler.py.
-        """
+        """Обёртка над shifts.find_shift_id_for_time."""
         return find_shift_id_for_time(shifts, dt)
 
     # ==========================================
@@ -123,19 +129,7 @@ class ScheduleSaver:
             session: AsyncSession,
             version_id: UUID,
     ) -> Dict[str, Any]:
-        """
-        Проверяет, используется ли версия в what-if сценариях.
-
-        reschedule_log НЕ проверяется: архивация не удаляет данные,
-        ссылки из журнала перепланирований остаются валидными.
-
-        Returns:
-            {
-                "used_in_whatif": bool,
-                "whatif_ids": [str, ...],
-                "reason": Optional[str],
-            }
-        """
+        """Проверяет, используется ли версия в what-if сценариях."""
         result = await session.execute(
             text("""
                 SELECT
@@ -174,21 +168,7 @@ class ScheduleSaver:
             session: AsyncSession,
             version_id: UUID,
     ) -> Dict[str, Any]:
-        """
-        Архивирует версию (is_archived = TRUE, is_active = FALSE).
-
-        Перед архивацией проверяет whatif_scenario. Если версия
-        используется — возвращает replace_blocked=True и НЕ архивирует.
-
-        Returns:
-            {
-                "archived": bool,
-                "replace_blocked": bool,
-                "replace_blocked_reason": Optional[str],
-                "used_by_whatif": [str, ...],
-            }
-        """
-        # 1. Проверяем, существует ли колонка is_archived
+        """Архивирует версию (is_archived = TRUE, is_active = FALSE)."""
         has_archived = await self._has_column(
             session, "schedule_version", "is_archived"
         )
@@ -206,7 +186,6 @@ class ScheduleSaver:
                 "used_by_whatif": [],
             }
 
-        # 2. Проверяем, существует ли версия
         check = await session.execute(
             text("""
                 SELECT id, name, is_archived
@@ -232,7 +211,6 @@ class ScheduleSaver:
                 "used_by_whatif": [],
             }
 
-        # 3. Проверяем whatif_scenario
         usage = await self._check_version_usage(session, version_id)
         if usage["used_in_whatif"]:
             log_with_context(
@@ -248,7 +226,6 @@ class ScheduleSaver:
                 "used_by_whatif": usage["whatif_ids"],
             }
 
-        # 4. Архивируем
         await session.execute(
             text("""
                 UPDATE schedule_version
@@ -279,31 +256,7 @@ class ScheduleSaver:
     async def save_schedule(
             self, schedule_data: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """
-        Сохраняет построенный план в БД.
-
-        Итерация 12: если session передана в __init__ — используем её.
-        Иначе — создаём свою сессию.
-
-        Итерация 13.21: schedule_data может содержать
-        replace_version_id — ID старой версии, которую нужно
-        архивировать перед созданием новой.
-
-        Args:
-            schedule_data: результат ProductionScheduler.build_schedule().
-                           Опционально: {"replace_version_id": UUID}.
-
-        Returns:
-            Статистика сохранения. Содержит поля:
-              - version_id
-              - name
-              - tasks_saved
-              - deactivated_versions
-              - replace_archived: bool
-              - replace_blocked: bool
-              - replace_blocked_reason: Optional[str]
-              - used_by_whatif: [str, ...]
-        """
+        """Сохраняет построенный план в БД."""
         tasks = schedule_data["tasks"]
         replace_version_id = schedule_data.get("replace_version_id")
 
@@ -327,17 +280,7 @@ class ScheduleSaver:
             tasks: List[Dict[str, Any]],
             replace_version_id: Optional[UUID] = None,
     ) -> Dict[str, Any]:
-        """
-        Основная логика сохранения.
-
-        Итерация 13.6: двухпроходное сохранение.
-          - 1-й проход: INSERT всех задач, сбор {key: task_uuid}.
-          - 2-й проход: UPDATE depends_on_task_ids.
-
-        Итерация 13.15: снапшоты вынесены в snapshot.snapshot_all_catalogs.
-
-        Итерация 13.21: архивация старой версии через replace_version_id.
-        """
+        """Основная логика сохранения."""
         version_id = uuid4()
         plan_name = f"План от {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
@@ -357,7 +300,7 @@ class ScheduleSaver:
             )
 
         # ==========================================
-        # 1. Деактивация старых версий (hotfix Итерации 5)
+        # 1. Деактивация старых версий
         # ==========================================
         deactivate_result = await session.execute(
             text("""
@@ -378,8 +321,6 @@ class ScheduleSaver:
         # ==========================================
         # 2. Создание новой версии плана
         # ==========================================
-        # Итерация 13.21: если колонка is_archived существует —
-        # явно указываем is_archived = FALSE для новой версии.
         has_archived_col = await self._has_column(
             session, "schedule_version", "is_archived"
         )
@@ -409,10 +350,8 @@ class ScheduleSaver:
             )
 
         # ==========================================
-        # 3. Снапшоты справочников (Итерация 13.15)
+        # 3. Снапшоты справочников
         # ==========================================
-        # Вызов единой функции из snapshot.py.
-        # Раньше здесь было 4 отдельных INSERT'а — теперь один вызов.
         snapshot_stats = await snapshot_all_catalogs(
             session=session,
             org_id=self.org_id,
@@ -429,7 +368,7 @@ class ScheduleSaver:
         )
 
         # ==========================================
-        # 4. Проверка доступных колонок в scheduled_task
+        # 4. Проверка доступных колонок
         # ==========================================
         has_linked = await self._has_column(
             session, "scheduled_task", "linked_equipment_id"
@@ -455,6 +394,10 @@ class ScheduleSaver:
         has_depends_on = await self._has_column(
             session, "scheduled_task", "depends_on_task_ids"
         )
+        # Итерация 20 (fix #comment): колонка comment — опциональная.
+        has_comment = await self._has_column(
+            session, "scheduled_task", "comment"
+        )
 
         shifts = await self._load_shifts(session) if has_shift else []
         log_with_context(
@@ -472,18 +415,13 @@ class ScheduleSaver:
         cooling_slow_count = 0
         line_fill_fixed = 0
 
-        # {key: uuid} где key = (batch_id, op_id)
         task_uuid_map: Dict[Tuple[str, str], str] = {}
-        # Сохраняем «сырые» задачи для второго прохода
         saved_tasks: List[Dict[str, Any]] = []
 
         for task in tasks:
             op_id = task["op_id"]
             is_real_op = not str(op_id).startswith("fill_")
 
-            # ==========================================
-            # 5.1. Fallback operation_template_id для fill_*
-            # ==========================================
             if not is_real_op:
                 fallback_op_id = None
                 for t in tasks:
@@ -506,9 +444,6 @@ class ScheduleSaver:
             else:
                 op_id_for_db = op_id
 
-            # ==========================================
-            # 5.2. Привязка к смене
-            # ==========================================
             shift_id = None
             if has_shift:
                 shift_id = self._find_shift_for_time(shifts, task["start"])
@@ -517,18 +452,12 @@ class ScheduleSaver:
                 else:
                     shift_none += 1
 
-            # ==========================================
-            # 5.3. Cooling mode (Итерация 7)
-            # ==========================================
             cooling_mode = task.get("cooling_mode")
             if cooling_mode == "fast":
                 cooling_fast_count += 1
             elif cooling_mode == "slow":
                 cooling_slow_count += 1
 
-            # ==========================================
-            # 5.4. LINE_FILL — правильная привязка (Итерация 9)
-            # ==========================================
             task_role = task.get("role")
             is_line_fill = (
                     task_role == "LINE_FILL"
@@ -547,8 +476,13 @@ class ScheduleSaver:
                 linked_eq_id_for_db = secondary_eq
 
             # ==========================================
-            # 5.5. Формируем INSERT
+            # Итерация 19 (fix #tz-saver):
+            # Помечаем naive-UTC как aware UTC, чтобы asyncpg
+            # не сдвинул время в локальную TZ клиента.
             # ==========================================
+            task_start_utc = task["start"].replace(tzinfo=timezone.utc)
+            task_end_utc = task["end"].replace(tzinfo=timezone.utc)
+
             insert_data = {
                 "org_id": self.org_id,
                 "version_id": version_id,
@@ -556,13 +490,15 @@ class ScheduleSaver:
                 "op_id": op_id_for_db,
                 "eq_id": eq_id_for_db,
                 "linked_eq_id": linked_eq_id_for_db,
-                "start": task["start"],
-                "end": task["end"],
+                "start": task_start_utc,
+                "end": task_end_utc,
                 "role": task_role,
                 "shift_id": shift_id,
                 "operator_pool": task.get("operator_pool"),
                 "cooling_mode": cooling_mode,
                 "operation_name": task.get("operation_name", "Операция"),
+                # Итерация 20 (fix #comment):
+                "comment": task.get("comment"),
             }
 
             columns = [
@@ -597,6 +533,10 @@ class ScheduleSaver:
             if has_operation_name:
                 columns.append("operation_name")
                 values.append(":operation_name")
+            # Итерация 20: сохраняем comment, если колонка есть.
+            if has_comment:
+                columns.append("comment")
+                values.append(":comment")
 
             columns.append("is_pinned")
             values.append("FALSE")
@@ -611,18 +551,11 @@ class ScheduleSaver:
             row = result.fetchone()
             if row:
                 task_uuid = str(row.id)
-                # Ключ — (batch_id, op_id_оригинальный) для связей.
-                # Используем ОРИГИНАЛЬНЫЙ op_id (не op_id_for_db),
-                # потому что depends_on_op_ids ссылается на реальные op_id.
                 task_uuid_map[(str(task["batch_id"]), str(op_id))] = task_uuid
                 saved_tasks.append(task)
 
         # ==========================================
         # 5.6. UPDATE depends_on_task_ids (2-й проход)
-        # ==========================================
-        # Итерация 13.6: заполняем связи между задачами.
-        # Для каждой сохранённой задачи смотрим её depends_on_op_ids
-        # (в терминах op_id) и находим UUID предшественников.
         # ==========================================
         deps_updated = 0
         if has_depends_on:
@@ -673,10 +606,8 @@ class ScheduleSaver:
             )
 
         # ==========================================
-        # 6. Commit — ТОЛЬКО если saver владеет сессией
+        # 6. Commit
         # ==========================================
-        # Итерация 12: если сессия передана извне (what-if),
-        # НЕ коммитим — коммит/откат делает вызывающий.
         if self._owns_session:
             await session.commit()
 
@@ -703,7 +634,6 @@ class ScheduleSaver:
             "line_fill_fixed": line_fill_fixed,
             "deps_updated": deps_updated,
             "snapshot_stats": snapshot_stats,
-            # Итерация 13.21: результаты архивации
             "replace_archived": archive_result["archived"],
             "replace_blocked": archive_result["replace_blocked"],
             "replace_blocked_reason": archive_result["replace_blocked_reason"],

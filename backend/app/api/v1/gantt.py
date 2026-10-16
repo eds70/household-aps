@@ -151,7 +151,8 @@ async def get_gantt_data(
                   AND column_name IN (
                       'linked_equipment_id', 'task_role',
                       'cooling_mode', 'operation_name',
-                      'depends_on_task_ids', 'is_pinned', 'status'
+                      'depends_on_task_ids', 'is_pinned', 'status',
+                      'comment'
                   )
             """)
         )
@@ -163,6 +164,8 @@ async def get_gantt_data(
         has_deps = "depends_on_task_ids" in available_cols
         has_pinned = "is_pinned" in available_cols
         has_status = "status" in available_cols
+        # Итерация 20 (fix #comment): комментарий планировщика
+        has_comment = "comment" in available_cols
 
         # Динамический SELECT
         linked_select = (
@@ -198,6 +201,12 @@ async def get_gantt_data(
             if has_status else
             "'PLANNED'::text AS status,"
         )
+        # Итерация 20 (fix #comment): комментарий планировщика
+        comment_select = (
+            "st.comment,"
+            if has_comment else
+            "NULL::text AS comment,"
+        )
         linked_join = (
             "LEFT JOIN equipment leq ON st.linked_equipment_id = leq.id"
             if has_linked else
@@ -220,6 +229,7 @@ async def get_gantt_data(
                 {deps_select}
                 {pinned_select}
                 {status_select}
+                {comment_select}
                 st.id AS _dummy
             FROM scheduled_task st
             LEFT JOIN equipment eq ON st.equipment_id = eq.id
@@ -279,6 +289,9 @@ async def get_gantt_data(
             is_pinned_val = _row_get(row, "is_pinned", False)
             status_val = _row_get(row, "status", "PLANNED")
 
+            # Итерация 20 (fix #comment): читаем comment через _row_get
+            comment_val = _row_get(row, "comment", None)
+
             gantt_tasks.append(GanttTask(
                 id=str(row.id),
                 batch_id=batch_name,
@@ -307,6 +320,8 @@ async def get_gantt_data(
                 depends_on_task_ids=deps_list,
                 is_pinned=bool(is_pinned_val) if is_pinned_val is not None else False,
                 status=status_val if status_val is not None else "PLANNED",
+                # Итерация 20 (fix #comment)
+                comment=str(comment_val) if comment_val else None,
             ))
 
         makespan_hours = 0.0
@@ -388,6 +403,8 @@ async def get_gantt_data(
             depends_on_task_ids=task.get("depends_on_task_ids", []),
             is_pinned=bool(task.get("is_pinned", False)),
             status=task.get("status", "PLANNED"),
+            # Итерация 20 (fix #comment)
+            comment=task.get("comment"),
         ))
 
     return GanttResponse(

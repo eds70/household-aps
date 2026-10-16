@@ -13,6 +13,18 @@
 Итерация 11 (Шаг 6): тесты учитывают разбиение длинных LINE_FILL
 на подзадачи по shift_mode. Ожидания гибкие — проверяем наличие
 fill_*_part* и отсутствие неожиданных ролей, а не точное число шагов.
+
+Итерация 18 (fix #gap):
+  - Проверка, что у всех шагов max_gap_after_minutes = 0.
+
+Итерация 19 (fix #parallel-last):
+  - Проверка, что после параллельной группы зависит только
+    операция с МАКСИМАЛЬНОЙ длительностью (устраняет 38-часовые
+    разрывы между группой и следующим шагом).
+
+Итерация 19 (fix #parallel-tests):
+  - Проверка, что параллельные операции имеют is_parallel_with,
+    указывающий на «якорь» группы.
 """
 
 import pytest
@@ -154,16 +166,9 @@ def test_find_line_via_tank():
 # ==========================================
 # ТЕСТЫ: ПОСТРОЕНИЕ ЦЕПОЧКИ
 # ==========================================
-# ВАЖНО (Итерация 11): LINE_FILL разбивается на подзадачи
-# в зависимости от shift_mode. Тесты проверяют НАЛИЧИЕ ролей
-# и порядок, а не точное число шагов.
-# ==========================================
 
 def test_build_routing_direct_dish():
-    """
-    Средство: DIRECT-маршрут, WASH в конце, LINE_FILL перед WASH.
-    LINE_FILL разбит на N частей.
-    """
+    """Средство: DIRECT-маршрут, WASH в конце, LINE_FILL перед WASH."""
     batch = {"id": "b1", "product_id": "PF_DISH", "volume_kg": 7000,
              "assigned_equipment_id": "REACTOR_2"}
     steps = build_routing(
@@ -178,20 +183,13 @@ def test_build_routing_direct_dish():
         gp_product=_make_gp_product("GP_DISH_1L"),
     )
 
-    # Последний шаг — WASH
     assert steps[-1].role == TaskRole.WASH
-
-    # Предпоследний — LINE_FILL (последняя часть слива)
     assert steps[-2].role == TaskRole.LINE_FILL
-
-    # У DIRECT-маршрута нет TANK_TRANSFER
     assert all(s.role != TaskRole.TANK_TRANSFER for s in steps)
 
-    # Есть хотя бы одна часть LINE_FILL
     fill_parts = _count_fill_parts(steps)
     assert fill_parts >= 1
 
-    # REACTOR_OP-шагов ровно 7 (без WASH и LINE_FILL)
     reactor_ops = [s for s in steps if s.role == TaskRole.REACTOR_OP]
     assert len(reactor_ops) == 7
 
@@ -212,7 +210,6 @@ def test_build_routing_via_tank_cream():
         gp_product=_make_gp_product("GP_CREAM_1L"),
     )
 
-    # TANK_TRANSFER → LINE_FILL → WASH
     transfer_idx = next(i for i, s in enumerate(steps) if s.role == TaskRole.TANK_TRANSFER)
     fill_indices = [i for i, s in enumerate(steps) if s.role == TaskRole.LINE_FILL]
     wash_idx = next(i for i, s in enumerate(steps) if s.role == TaskRole.WASH)
@@ -220,12 +217,10 @@ def test_build_routing_via_tank_cream():
     assert transfer_idx < min(fill_indices), "TANK_TRANSFER должен быть до LINE_FILL"
     assert max(fill_indices) < wash_idx, "LINE_FILL должен быть до WASH"
 
-    # TANK_TRANSFER занимает REACTOR_1 + TANK_1
     transfer = steps[transfer_idx]
     assert transfer.primary_equipment_id == "REACTOR_1"
     assert transfer.secondary_equipment_id == "TANK_1"
 
-    # LINE_FILL занимает TANK_1 + LINE_1
     first_fill = steps[fill_indices[0]]
     assert first_fill.primary_equipment_id == "TANK_1"
     assert first_fill.secondary_equipment_id == "LINE_1"
@@ -247,7 +242,6 @@ def test_build_routing_wash_last():
         gp_product=_make_gp_product("GP_ANTISEPTIC_10L"),
     )
     assert steps[-1].role == TaskRole.WASH
-    # WASH занимает только реактор
     wash = steps[-1]
     assert wash.primary_equipment_id == "REACTOR_3"
     assert wash.secondary_equipment_id is None
@@ -285,8 +279,6 @@ def test_routing_parallel_group_cream():
         gp_product=_make_gp_product("GP_CREAM_1L"),
     )
     parallel_steps = [s for s in steps if s.op.get("parallel_group_id")]
-    # 4 шага (2 в GROUP1, 2 в GROUP2). Но с разбиением LINE_FILL
-    # может быть больше — проверяем хотя бы группы GROUP1 и GROUP2.
     group1 = [s for s in parallel_steps if s.op["parallel_group_id"] == "GROUP1"]
     group2 = [s for s in parallel_steps if s.op["parallel_group_id"] == "GROUP2"]
     assert len(group1) >= 2
@@ -310,7 +302,6 @@ def test_routing_summary():
     )
     summary = get_routing_summary(steps)
 
-    # Гибкие проверки: шагов >= 12 (11 операций + минимум 1 LINE_FILL)
     assert summary["total_steps"] >= 12
     assert summary["total_duration"] > 0
     assert "REACTOR_OP" in summary["roles"]
@@ -320,12 +311,7 @@ def test_routing_summary():
 
 
 def test_wash_depends_on_fill_for_direct():
-    """
-    DIRECT-маршрут: WASH зависит от LINE_FILL.
-
-    По ТЗ (Раздел 3, п. 2) реактор освобождается ПОСЛЕ слива на линию.
-    Значит, замыв идёт после слива.
-    """
+    """DIRECT-маршрут: WASH зависит от LINE_FILL."""
     batch = {"id": "b1", "product_id": "PF_DISH", "volume_kg": 7000,
              "assigned_equipment_id": "REACTOR_2"}
     steps = build_routing(
@@ -344,19 +330,11 @@ def test_wash_depends_on_fill_for_direct():
     last_fill = fill_steps[-1]
 
     assert wash.role == TaskRole.WASH
-    assert last_fill.op_id in wash.depends_on_op_ids, (
-        "DIRECT: WASH должен зависеть от LINE_FILL (реактор освобождается после слива)"
-    )
+    assert last_fill.op_id in wash.depends_on_op_ids
 
 
 def test_wash_depends_on_tank_transfer_for_via_tank():
-    """
-    VIA_TANK-маршрут: WASH зависит от TANK_TRANSFER, а НЕ от LINE_FILL.
-
-    Итерация 13.4 (fix C1): по ТЗ реактор освобождается после перекачки
-    в накопительную ёмкость. Значит, замыв может идти параллельно сливу
-    на линию — это ускоряет makespan.
-    """
+    """VIA_TANK-маршрут: WASH зависит от TANK_TRANSFER, а НЕ от LINE_FILL."""
     batch = {"id": "b1", "product_id": "PF_CREAM", "volume_kg": 3500,
              "assigned_equipment_id": "REACTOR_1"}
     steps = build_routing(
@@ -376,29 +354,22 @@ def test_wash_depends_on_tank_transfer_for_via_tank():
     fill_steps = [s for s in steps if s.role == TaskRole.LINE_FILL]
 
     assert wash.role == TaskRole.WASH
-    assert len(transfer_steps) == 1, "Ожидается ровно один TANK_TRANSFER"
-    assert len(fill_steps) >= 1, "Ожидается хотя бы один LINE_FILL"
+    assert len(transfer_steps) == 1
+    assert len(fill_steps) >= 1
 
     transfer = transfer_steps[0]
     last_fill = fill_steps[-1]
 
-    assert transfer.op_id in wash.depends_on_op_ids, (
-        "VIA_TANK: WASH должен зависеть от TANK_TRANSFER"
-    )
-    assert last_fill.op_id not in wash.depends_on_op_ids, (
-        "VIA_TANK: WASH НЕ должен зависеть от LINE_FILL "
-        "(замыв может идти параллельно сливу)"
-    )
-    
+    assert transfer.op_id in wash.depends_on_op_ids
+    assert last_fill.op_id not in wash.depends_on_op_ids
+
+
 # ==========================================
 # ТЕСТЫ: ОБРЕЗКА ПОСЛЕ ЛАБОРАТОРИИ (Итерация 5)
 # ==========================================
 
 def test_truncate_after_lab_cream():
-    """
-    Крем-мыло: обрезка после первой lab-операции.
-    Lab на этапе 5, значит остаётся 5 шагов.
-    """
+    """Крем-мыло: обрезка после первой lab-операции."""
     batch = {"id": "b1", "product_id": "PF_CREAM", "volume_kg": 3500,
              "assigned_equipment_id": "REACTOR_1"}
     steps = build_routing(
@@ -420,9 +391,7 @@ def test_truncate_after_lab_cream():
 
 
 def test_truncate_after_lab_antiseptic():
-    """
-    Антисептик: lab на этапе 3, значит остаётся 3 шага.
-    """
+    """Антисептик: lab на этапе 3, значит остаётся 3 шага."""
     batch = {"id": "b1", "product_id": "PF_ANTISEPTIC", "volume_kg": 5600,
              "assigned_equipment_id": "REACTOR_3"}
     steps = build_routing(
@@ -442,9 +411,7 @@ def test_truncate_after_lab_antiseptic():
 
 
 def test_truncate_after_lab_dish():
-    """
-    Средство: lab на этапе 4, значит остаётся 4 шага.
-    """
+    """Средство: lab на этапе 4, значит остаётся 4 шага."""
     batch = {"id": "b1", "product_id": "PF_DISH", "volume_kg": 7000,
              "assigned_equipment_id": "REACTOR_2"}
     steps = build_routing(
@@ -462,17 +429,9 @@ def test_truncate_after_lab_dish():
     assert len(steps) == 4
     assert steps[-1].op.get("needs_lab") is True
 
+
 def test_truncate_after_lab_false_full_chain():
-    """
-    truncate_after_lab=False — полная цепочка с разбиением LINE_FILL.
-
-    Итерация 13.6 (fix #roles): для PF_ANTISEPTIC (route_type=DIRECT)
-    операция PUMPING («Перекачка в накопительную ёмкость») ПРОПУСКАЕТСЯ,
-    потому что у антисептика нет танка — слив идёт напрямую на линию.
-
-    Было: 8 операций → 7 REACTOR_OP + 1 WASH
-    Стало: 7 операций (8 − 1 PUMPING) → 6 REACTOR_OP + 1 WASH
-    """
+    """truncate_after_lab=False — полная цепочка с разбиением LINE_FILL."""
     batch = {"id": "b1", "product_id": "PF_ANTISEPTIC", "volume_kg": 5600,
              "assigned_equipment_id": "REACTOR_3"}
     steps = build_routing(
@@ -488,38 +447,25 @@ def test_truncate_after_lab_false_full_chain():
         gp_product=_make_gp_product("GP_ANTISEPTIC_10L"),
     )
 
-    # Последний — WASH
     assert steps[-1].role == TaskRole.WASH
 
     reactor_ops = [s for s in steps if s.role == TaskRole.REACTOR_OP]
     fill_steps = [s for s in steps if s.role == TaskRole.LINE_FILL]
     wash_steps = [s for s in steps if s.role == TaskRole.WASH]
 
-    # Итерация 13.6: PUMPING пропускается для DIRECT-маршрута.
-    # У PF_ANTISEPTIC 8 операций, из них 1 PUMPING → 7 реальных.
-    # Из 7: 6 REACTOR_OP + 1 WASH (WASH выносится отдельно).
-    assert len(reactor_ops) == 6, (
-        f"Ожидалось 6 REACTOR_OP (8 операций − 1 PUMPING − 1 WASH), "
-        f"получено {len(reactor_ops)}"
-    )
+    assert len(reactor_ops) == 6
     assert len(fill_steps) >= 1
     assert len(wash_steps) == 1
 
-    # PUMPING не должен попасть в цепочку ни в какой роли для DIRECT
     pumping_steps = [
         s for s in steps
         if s.op.get("duration_formula") == "pumping"
     ]
-    assert len(pumping_steps) == 0, (
-        "PUMPING-операция не должна попадать в цепочку "
-        "для DIRECT-маршрута (нет танка)"
-    )
+    assert len(pumping_steps) == 0
+
 
 def test_pumping_skipped_for_direct_route():
-    """
-    Итерация 13.6 (fix #roles): для DIRECT-маршрута PUMPING-операции
-    пропускаются (нет танка — нечего перекачивать).
-    """
+    """Итерация 13.6: для DIRECT-маршрута PUMPING-операции пропускаются."""
     batch = {"id": "b1", "product_id": "PF_ANTISEPTIC", "volume_kg": 5600,
              "assigned_equipment_id": "REACTOR_3"}
     steps = build_routing(
@@ -534,10 +480,8 @@ def test_pumping_skipped_for_direct_route():
         gp_product=_make_gp_product("GP_ANTISEPTIC_10L"),
     )
 
-    # Ни одного TANK_TRANSFER (DIRECT — без танка)
     assert not any(s.role == TaskRole.TANK_TRANSFER for s in steps)
 
-    # Ни одной PUMPING-операции
     pumping_steps = [
         s for s in steps
         if s.op.get("duration_formula") == DurationFormula.PUMPING
@@ -546,9 +490,154 @@ def test_pumping_skipped_for_direct_route():
 
 
 def test_pumping_preserved_for_via_tank_route():
+    """Итерация 13.6: для VIA_TANK-маршрута PUMPING → TANK_TRANSFER."""
+    batch = {"id": "b1", "product_id": "PF_CREAM", "volume_kg": 3500,
+             "assigned_equipment_id": "REACTOR_1"}
+    steps = build_routing(
+        batch=batch,
+        product=_make_products_map()["PF_CREAM"],
+        reactor=_make_equipment_map()["REACTOR_1"],
+        operations=_make_operations_for_pf("PF_CREAM"),
+        equipment_map=_make_equipment_map(),
+        equipment_links=_make_links(),
+        products_map=_make_products_map(),
+        calc_duration=_calc_duration,
+        gp_product=_make_gp_product("GP_CREAM_1L"),
+    )
+
+    transfer_steps = [s for s in steps if s.role == TaskRole.TANK_TRANSFER]
+    assert len(transfer_steps) == 1
+
+    transfer = transfer_steps[0]
+    assert transfer.primary_equipment_id == "REACTOR_1"
+    assert transfer.secondary_equipment_id == "TANK_1"
+
+
+# ==========================================
+# ИТЕРАЦИЯ 18 (fix #gap): ТЕСТЫ ЗАЗОРОВ
+# ==========================================
+
+def test_max_gap_after_minutes_default_zero():
     """
-    Итерация 13.6 (fix #roles): для VIA_TANK-маршрута PUMPING
-    превращается в TANK_TRANSFER.
+    Итерация 18 (fix #gap): у всех шагов цепочки
+    max_gap_after_minutes = 0 (по ТЗ операции идут непрерывно).
+
+    Проверяем для PF_DISH (DIRECT) и PF_CREAM (VIA_TANK).
+    """
+    for pf_code, gp_code, reactor in [
+        ("PF_DISH", "GP_DISH_1L", "REACTOR_2"),
+        ("PF_CREAM", "GP_CREAM_1L", "REACTOR_1"),
+    ]:
+        batch = {
+            "id": f"b_{pf_code}",
+            "product_id": pf_code,
+            "volume_kg": 5000,
+            "assigned_equipment_id": reactor,
+        }
+        steps = build_routing(
+            batch=batch,
+            product=_make_products_map()[pf_code],
+            reactor=_make_equipment_map()[reactor],
+            operations=_make_operations_for_pf(pf_code),
+            equipment_map=_make_equipment_map(),
+            equipment_links=_make_links(),
+            products_map=_make_products_map(),
+            calc_duration=_calc_duration,
+            gp_product=_make_gp_product(gp_code),
+        )
+
+        assert len(steps) > 0, f"Цепочка для {pf_code} пуста"
+
+        for step in steps:
+            assert step.max_gap_after_minutes == 0, (
+                f"{pf_code}: шаг {step.op_id} ({step.op.get('name')}) "
+                f"имеет max_gap_after_minutes="
+                f"{step.max_gap_after_minutes}, ожидалось 0"
+            )
+
+
+# ==========================================
+# ИТЕРАЦИЯ 19 (fix #parallel-last): ТЕСТЫ ЗАВИСИМОСТЕЙ ПОСЛЕ ГРУППЫ
+# ==========================================
+
+def test_parallel_deps_use_max_duration():
+    """
+    Итерация 19 (fix #parallel-last): для PF_DISH после группы
+    GROUP1 (Перемешивание 120 мин ∥ Охлаждение 90 мин) операция
+    «Лабораторный анализ» зависит ОТ ОДНОЙ операции —
+    Перемешивания (длительность 120 > 90).
+
+    Это устраняет разрывы: раньше «Лаб.анализ» зависел от обеих
+    операций группы и получал только нижние границы (gap не применялся).
+    """
+    batch = {"id": "b1", "product_id": "PF_DISH", "volume_kg": 7000,
+             "assigned_equipment_id": "REACTOR_2"}
+    steps = build_routing(
+        batch=batch,
+        product=_make_products_map()["PF_DISH"],
+        reactor=_make_equipment_map()["REACTOR_2"],
+        operations=_make_operations_for_pf("PF_DISH"),
+        equipment_map=_make_equipment_map(),
+        equipment_links=_make_links(),
+        products_map=_make_products_map(),
+        calc_duration=_calc_duration,
+        gp_product=_make_gp_product("GP_DISH_1L"),
+    )
+
+    # Находим операции группы GROUP1 (Перемешивание, Охлаждение)
+    group1_steps = [
+        s for s in steps
+        if s.op.get("parallel_group_id") == "GROUP1"
+    ]
+    assert len(group1_steps) == 2, (
+        f"Ожидалось 2 операции в GROUP1, получено {len(group1_steps)}"
+    )
+
+    # Определяем, какая из них длиннее
+    mixing = next(
+        (s for s in group1_steps if s.duration == 120), None
+    )
+    cooling = next(
+        (s for s in group1_steps if s.duration == 90), None
+    )
+    assert mixing is not None, "Перемешивание (120 мин) не найдено"
+    assert cooling is not None, "Охлаждение (90 мин) не найдено"
+
+    # Операция сразу после GROUP1 — «Лабораторный анализ»
+    # (следуем по depends_on_op_ids: ищем шаг, который зависит от группы)
+    lab_step = None
+    for s in steps:
+        for dep_id in s.depends_on_op_ids:
+            if dep_id in (mixing.op_id, cooling.op_id):
+                lab_step = s
+                break
+        if lab_step:
+            break
+
+    assert lab_step is not None, (
+        "Не найдена операция, зависящая от GROUP1"
+    )
+
+    # Итерация 19: depends_on ДОЛЖЕН содержать ТОЛЬКО Перемешивание (120 мин),
+    # а НЕ обе операции группы.
+    assert mixing.op_id in lab_step.depends_on_op_ids, (
+        f"«{lab_step.op.get('name')}» должна зависеть от Перемешивания "
+        f"(max duration=120). depends_on={lab_step.depends_on_op_ids}"
+    )
+    assert cooling.op_id not in lab_step.depends_on_op_ids, (
+        f"«{lab_step.op.get('name')}» НЕ должна зависеть от Охлаждения "
+        f"(duration=90 < 120). depends_on={lab_step.depends_on_op_ids}"
+    )
+    assert len(lab_step.depends_on_op_ids) == 1, (
+        f"Ожидался ровно 1 предок, получено "
+        f"{len(lab_step.depends_on_op_ids)}: {lab_step.depends_on_op_ids}"
+    )
+
+
+def test_parallel_deps_use_max_duration_cream():
+    """
+    Для PF_CREAM после GROUP1 (Перемешивание 90 мин ∥ Охлаждение 120 мин)
+    «Лабораторный анализ» зависит от ОХЛАЖДЕНИЯ (120 > 90).
     """
     batch = {"id": "b1", "product_id": "PF_CREAM", "volume_kg": 3500,
              "assigned_equipment_id": "REACTOR_1"}
@@ -564,14 +653,95 @@ def test_pumping_preserved_for_via_tank_route():
         gp_product=_make_gp_product("GP_CREAM_1L"),
     )
 
-    # Должна быть ровно одна TANK_TRANSFER
-    transfer_steps = [s for s in steps if s.role == TaskRole.TANK_TRANSFER]
-    assert len(transfer_steps) == 1
+    group1_steps = [
+        s for s in steps
+        if s.op.get("parallel_group_id") == "GROUP1"
+    ]
+    assert len(group1_steps) == 2
 
-    # TANK_TRANSFER занимает реактор + танк
-    transfer = transfer_steps[0]
-    assert transfer.primary_equipment_id == "REACTOR_1"
-    assert transfer.secondary_equipment_id == "TANK_1"
+    mixing = next((s for s in group1_steps if s.duration == 90), None)
+    cooling = next((s for s in group1_steps if s.duration == 120), None)
+    assert mixing is not None, "Перемешивание (90 мин) не найдено"
+    assert cooling is not None, "Охлаждение (120 мин) не найдено"
+
+    lab_step = None
+    for s in steps:
+        for dep_id in s.depends_on_op_ids:
+            if dep_id in (mixing.op_id, cooling.op_id):
+                lab_step = s
+                break
+        if lab_step:
+            break
+
+    assert lab_step is not None
+    assert cooling.op_id in lab_step.depends_on_op_ids, (
+        f"«{lab_step.op.get('name')}» должна зависеть от Охлаждения "
+        f"(max duration=120)"
+    )
+    assert mixing.op_id not in lab_step.depends_on_op_ids
+    assert len(lab_step.depends_on_op_ids) == 1
+
+
+# ==========================================
+# ИТЕРАЦИЯ 18 (fix #parallel): is_parallel_with
+# ==========================================
+
+def test_parallel_ops_share_start():
+    """
+    Итерация 18 (fix #parallel): у «Охлаждения» (второй операции
+    группы) должен быть заполнен is_parallel_with, указывающий
+    на первую операцию группы («Перемешивание»).
+
+    Это гарантирует, что в core.py они получат одинаковый start.
+    """
+    batch = {"id": "b1", "product_id": "PF_DISH", "volume_kg": 7000,
+             "assigned_equipment_id": "REACTOR_2"}
+    steps = build_routing(
+        batch=batch,
+        product=_make_products_map()["PF_DISH"],
+        reactor=_make_equipment_map()["REACTOR_2"],
+        operations=_make_operations_for_pf("PF_DISH"),
+        equipment_map=_make_equipment_map(),
+        equipment_links=_make_links(),
+        products_map=_make_products_map(),
+        calc_duration=_calc_duration,
+        gp_product=_make_gp_product("GP_DISH_1L"),
+    )
+
+    # Операции с parallel_group_id
+    parallel_steps = [
+        s for s in steps if s.op.get("parallel_group_id")
+    ]
+    # Первая в каждой группе — is_parallel_with пустой.
+    # Вторая — is_parallel_with = [op_id первой].
+    anchors = [
+        s for s in parallel_steps if not s.is_parallel_with
+    ]
+    followers = [
+        s for s in parallel_steps if s.is_parallel_with
+    ]
+
+    # Ожидаем 2 анкера (GROUP1 + GROUP2) и 2 followers
+    assert len(anchors) == 2, (
+        f"Ожидалось 2 анкера групп, получено {len(anchors)}"
+    )
+    assert len(followers) == 2, (
+        f"Ожидалось 2 followers (вторые операции групп), "
+        f"получено {len(followers)}"
+    )
+
+    # Каждый follower должен ссылаться на анкер своей группы
+    for f in followers:
+        group = f.op.get("parallel_group_id")
+        anchor = next(
+            a for a in anchors
+            if a.op.get("parallel_group_id") == group
+        )
+        assert f.is_parallel_with == [anchor.op_id], (
+            f"Follower группы {group} должен ссылаться на "
+            f"{anchor.op_id}, а ссылается на {f.is_parallel_with}"
+        )
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

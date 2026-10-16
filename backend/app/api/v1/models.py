@@ -28,6 +28,10 @@ Pydantic-модели для API планирования и Ганта.
 - Добавлено поле is_pinned в GanttTask — для визуальной индикации
   закреплённых задач на диаграмме Ганта.
 - Добавлено поле status (PLANNED | IN_PROGRESS | DONE | CANCELLED).
+
+Итерация 20 (fix #comment):
+- Добавлено поле comment в GanttTask — причина переноса задачи
+  постобработкой календаря (выходные, простой).
 """
 
 from datetime import datetime
@@ -101,7 +105,17 @@ class GanttTask(BaseModel):
         default="PLANNED",
         description="PLANNED | IN_PROGRESS | DONE | CANCELLED",
     )
-
+    # Итерация 20 (fix #comment):
+    # Комментарий планировщика — причина переноса цепочки
+    # постобработкой календаря (например, «Перенос с 16.10 15:56
+    # на 19.10 08:00: перенос на ближайший рабочий день»).
+    # Заполняется postprocess в calendar_postprocess.py и
+    # сохраняется в scheduled_task.comment в saver.py.
+    # Отображается в GanttTaskDialog и tooltip при наведении.
+    comment: Optional[str] = Field(
+        default=None,
+        description="Комментарий планировщика (причина переноса задачи)",
+    )
 
 class GanttResponse(BaseModel):
     tasks: List[GanttTask]
