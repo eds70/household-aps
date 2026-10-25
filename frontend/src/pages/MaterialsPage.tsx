@@ -1,5 +1,6 @@
 // frontend/src/pages/MaterialsPage.tsx
-// Итерация 13.19: markPlanDirty() при изменениях, влияющих на расчёт.
+// Справочник материалов — ГЛОБАЛЬНЫЙ. Не привязан к плану.
+// Изменения остатков и материалов учитываются при следующем расчёте плана.
 
 import React, {useCallback, useEffect, useMemo, useState} from 'react';
 import {
@@ -33,6 +34,7 @@ import {
     Delete as DeleteIcon,
     Download as DownloadIcon,
     History as HistoryIcon,
+    InfoOutlined as InfoIcon,
     Inventory as InventoryIcon,
     Refresh as RefreshIcon,
     Upload as UploadIcon,
@@ -81,8 +83,9 @@ function downloadBlob(blob: Blob, filename: string) {
 }
 
 const MaterialsPage: React.FC = () => {
-    // Итерация 13.19
-    const {markPlanDirty} = usePlan();
+    // Глобальный справочник: редактируется всегда, независимо от плана.
+    // currentVersionId / currentPlanName — только для баннера-предупреждения.
+    const {markPlanDirty, currentVersionId, currentPlanName} = usePlan();
 
     const [activeTab, setActiveTab] = useState(0);
 
@@ -256,7 +259,6 @@ const MaterialsPage: React.FC = () => {
 
                 await materialsApi.updateStock(data.id, stockUpdate);
                 setMaterials((prev) => prev.map((m) => (m.id === data.id ? { ...m, [field]: parsed } : m)));
-                // Итерация 13.19
                 markPlanDirty();
                 showSuccess(`Остаток обновлён: ${data.name} → ${parsed.toFixed(2)}`);
             } catch (err: any) {
@@ -269,7 +271,6 @@ const MaterialsPage: React.FC = () => {
         try {
             await materialsApi.update(data.id, { [field]: newValue });
             setMaterials((prev) => prev.map((m) => (m.id === data.id ? { ...m, [field]: newValue } : m)));
-            // Итерация 13.19
             markPlanDirty();
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Ошибка сохранения');
@@ -282,7 +283,6 @@ const MaterialsPage: React.FC = () => {
         try {
             await materialsApi.delete(id);
             setMaterials((prev) => prev.filter((m) => m.id !== id));
-            // Итерация 13.19
             markPlanDirty();
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Ошибка удаления');
@@ -309,7 +309,6 @@ const MaterialsPage: React.FC = () => {
             });
             setMaterials((prev) => [...prev, response]);
             setDialogOpen(false);
-            // Итерация 13.19
             markPlanDirty();
             showSuccess(`Материал создан: ${response.name}`);
         } catch (err: any) {
@@ -351,7 +350,6 @@ const MaterialsPage: React.FC = () => {
             setImportResult(result);
             await loadMaterials();
             if (activeTab === 1) await loadLog();
-            // Итерация 13.19
             markPlanDirty();
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Ошибка импорта');
@@ -370,7 +368,6 @@ const MaterialsPage: React.FC = () => {
             const result = await materialsApi.revertStockLog(logId);
             showSuccess(result.message);
             await Promise.all([loadMaterials(), loadLog()]);
-            // Итерация 13.19
             markPlanDirty();
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Ошибка отката');
@@ -415,6 +412,13 @@ const MaterialsPage: React.FC = () => {
                     <Button variant="contained" startIcon={<AddIcon />} onClick={handleAdd} sx={{ textTransform: 'none', fontWeight: 600 }}>Добавить материал</Button>
                 </Box>
             </Box>
+
+            {currentVersionId && (
+                <Alert severity="info" sx={{ mb: 2 }} icon={<InfoIcon />}>
+                    Вы редактируете <b>глобальный справочник</b> «{currentPlanName}».
+                    Изменения остатков и материалов учитываются при следующем расчёте плана.
+                </Alert>
+            )}
 
             {error && <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>{error}</Alert>}
             {success && <Alert severity="success" sx={{ mb: 2 }} onClose={() => setSuccess(null)}>{success}</Alert>}

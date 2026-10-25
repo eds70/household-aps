@@ -27,6 +27,7 @@ import {
     AccountTree as AccountTreeIcon,
     Assignment as AssignmentIcon,
     ChevronLeft as ChevronLeftIcon,
+    Close as CloseIcon,
     Edit as EditIcon,
     ErrorOutlined as ErrorOutlineIcon,
     Factory as FactoryIcon,
@@ -39,6 +40,7 @@ import {
     MenuOpen as MenuOpenIcon,
     Person as PersonIcon,
     QrCodeScanner as QrCodeScannerIcon,
+    Save as SaveIcon,
     Schedule as ScheduleIcon,
     School as SchoolIcon,
     Science as ScienceIcon,
@@ -51,8 +53,11 @@ import {
 import {useAuth} from '../../context/AuthContext';
 import {usePlan} from '../../context/PlainContext';
 import {useTutorial} from '../../context/TutorialContext';
-import {licenseApi} from '../../services/api';
+import api, {licenseApi, scheduleApi} from '../../services/api';
 import type {LicenseInfo} from '../../types';
+import RecalcProgressDialog from '../gantt/RecalcProgressDialog';
+import PlanSettingsWizard, {type WizardMode} from '../../pages/PlanSettingsWizard';
+import {ConfirmDialog} from '../common/ConfirmDialog';
 
 const DRAWER_WIDTH_EXPANDED = 240;
 const DRAWER_WIDTH_COLLAPSED = 56;
@@ -71,332 +76,229 @@ const MENU_ITEMS = [
     { path: '/personnel', label: 'Персонал', icon: <PersonIcon /> },
     { path: '/cz', label: 'Честный Знак', icon: <QrCodeScannerIcon /> },
     { path: '/whatif', label: 'What-if', icon: <ScienceIcon /> },
-    // Итерация 16.0: пункт «Аудит» возвращён в меню
     { path: '/audit', label: 'Аудит', icon: <HistoryIcon /> },
     { path: '/settings', label: 'Настройки', icon: <SettingsIcon /> },
     { path: '/help', label: 'Помощь', icon: <HelpOutlineIcon /> },
 ];
 
 const ROLE_LABELS: Record<string, string> = {
-    ADMIN: 'Администратор',
-    PLANNER: 'Планировщик',
-    MASTER: 'Мастер',
-    LAB: 'Лаборант',
-    VIEWER: 'Наблюдатель',
+    ADMIN: 'Администратор', PLANNER: 'Планировщик', MASTER: 'Мастер',
+    LAB: 'Лаборант', VIEWER: 'Наблюдатель',
 };
 
-// ==========================================
-// КОМПОНЕНТ: LicenseChip
-// ==========================================
-// Итерация 17.1: показывает статус лицензии в шапке.
-// Кликабельный — ведёт на /license.
-//
-// 4 состояния:
-//   - loading: серый, «Лицензия» + спиннер.
-//   - invalid/expired: красный, «Лицензия недействительна».
-//   - warning (≤ 14 дней): оранжевый, «Лицензия: N дн.».
-//   - valid: зелёный, «Лицензия до DD.MM.YYYY».
-
-const LicenseChip: React.FC<{
-    info: LicenseInfo | null;
-    onClick: () => void;
-}> = ({info, onClick}) => {
-    // Загрузка
-    if (!info) {
-        return (
-            <Tooltip title="Загрузка статуса лицензии...">
-                <Chip
-                    icon={<CircularProgress size={14} sx={{ml: 1}} />}
-                    label="Лицензия"
-                    size="small"
-                    onClick={onClick}
-                    sx={{
-                        bgcolor: 'rgba(255,255,255,0.15)',
-                        color: '#ffffff',
-                        fontWeight: 500,
-                        fontSize: '0.8rem',
-                        cursor: 'pointer',
-                        border: '1px dashed rgba(255,255,255,0.4)',
-                    }}
-                />
-            </Tooltip>
-        );
-    }
-
-    // Невалидная или истёкшая
-    if (!info.valid || info.is_expired) {
-        return (
-            <Tooltip
-                title={
-                    info.error
-                        ? `Лицензия недействительна: ${info.error}`
-                        : 'Лицензия недействительна. Нажмите для деталей.'
-                }
-                arrow
-            >
-                <Chip
-                    icon={<ErrorOutlineIcon sx={{color: '#ffffff !important'}} />}
-                    label="Лицензия недействительна"
-                    size="small"
-                    onClick={onClick}
-                    sx={{
-                        bgcolor: '#e74c3c',
-                        color: '#ffffff',
-                        fontWeight: 600,
-                        fontSize: '0.8rem',
-                        cursor: 'pointer',
-                        border: '1px solid #c0392b',
-                    }}
-                />
-            </Tooltip>
-        );
-    }
-
-    // Валидная, но скоро истекает (≤ 14 дней)
-    if (info.days_left !== null && info.days_left <= 14) {
-        return (
-            <Tooltip
-                title={`Лицензия истекает через ${info.days_left} дн. Продлите её.`}
-                arrow
-            >
-                <Chip
-                    icon={<WarningAmberIcon sx={{color: '#ffffff !important'}} />}
-                    label={`Лицензия: ${info.days_left} дн.`}
-                    size="small"
-                    onClick={onClick}
-                    sx={{
-                        bgcolor: '#e67e22',
-                        color: '#ffffff',
-                        fontWeight: 600,
-                        fontSize: '0.8rem',
-                        cursor: 'pointer',
-                        border: '1px solid #d35400',
-                    }}
-                />
-            </Tooltip>
-        );
-    }
-
-    // Валидная, всё хорошо
-    const expiresText = info.expires_at
-        ? new Date(info.expires_at).toLocaleDateString('ru-RU')
-        : '—';
-    return (
-        <Tooltip
-            title={`Лицензия: ${info.holder || '—'} (${info.tier}). Действует до ${expiresText}.`}
-            arrow
-        >
-            <Chip
-                icon={<WorkspacePremiumIcon sx={{color: '#ffffff !important'}} />}
-                label={`Лицензия до ${expiresText}`}
-                size="small"
-                onClick={onClick}
-                sx={{
-                    bgcolor: '#27ae60',
-                    color: '#ffffff',
-                    fontWeight: 600,
-                    fontSize: '0.8rem',
-                    cursor: 'pointer',
-                    border: '1px solid #1e8449',
-                }}
-            />
-        </Tooltip>
-    );
+const LicenseChip: React.FC<{ info: LicenseInfo | null; onClick: () => void; }> = ({info, onClick}) => {
+    if (!info) return <Chip icon={<CircularProgress size={14} sx={{ml: 1}} />} label="Лицензия" size="small" onClick={onClick} sx={{bgcolor: 'rgba(255,255,255,0.15)', color: '#fff', border: '1px dashed rgba(255,255,255,0.4)'}} />;
+    if (!info.valid || info.is_expired) return <Chip icon={<ErrorOutlineIcon />} label="Лицензия недействительна" size="small" onClick={onClick} sx={{bgcolor: '#e74c3c', color: '#fff'}} />;
+    if (info.days_left !== null && info.days_left <= 14) return <Chip icon={<WarningAmberIcon />} label={`Лицензия: ${info.days_left} дн.`} size="small" onClick={onClick} sx={{bgcolor: '#e67e22', color: '#fff'}} />;
+    return <Chip icon={<WorkspacePremiumIcon />} label={`Лицензия до ${info.expires_at ? new Date(info.expires_at).toLocaleDateString('ru-RU') : '—'}`} size="small" onClick={onClick} sx={{bgcolor: '#27ae60', color: '#fff'}} />;
 };
+
+interface ConfirmState {
+    open: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    severity?: 'warning' | 'error' | 'info';
+    confirmText?: string;
+    cancelText?: string;
+}
 
 const MainLayout: React.FC = () => {
     const { user, logout } = useAuth();
     const {
         currentVersionId,
         currentPlanName,
-        // ==========================================
-        // Итерация 14.2: режим редактирования для иконки в шапке
-        // ==========================================
-        localEditMode,
+        isCurrentPlanDraft,
+        isCalculating,
+        setPlan,
+        clearPlan,
+        loadVersions,
+        versions,
     } = usePlan();
     const {startTour} = useTutorial();
     const navigate = useNavigate();
     const location = useLocation();
     const [mobileOpen, setMobileOpen] = useState(false);
     const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
-    const [helpMenuAnchorEl, setHelpMenuAnchorEl] =
-        useState<null | HTMLElement>(null);
+    const [helpMenuAnchorEl, setHelpMenuAnchorEl] = useState<null | HTMLElement>(null);
+    const [collapsed, setCollapsed] = useState<boolean>(() => localStorage.getItem(STORAGE_KEY) === 'true');
+    const [licenseInfo, setLicenseInfo] = useState<LicenseInfo | null>(null);
 
-    const [collapsed, setCollapsed] = useState<boolean>(() => {
-        return localStorage.getItem(STORAGE_KEY) === 'true';
+    const [wizardOpen, setWizardOpen] = useState(false);
+    const [wizardMode, setWizardMode] = useState<WizardMode>('create');
+    const [wizardBaseVersionId, setWizardBaseVersionId] = useState<string | null>(null);
+    const [wizardInitialName, setWizardInitialName] = useState('');
+
+    const [draftLoading, setDraftLoading] = useState(false);
+
+    const [confirmState, setConfirmState] = useState<ConfirmState>({
+        open: false,
+        title: '',
+        message: '',
+        onConfirm: () => {},
     });
 
-    useEffect(() => {
-        localStorage.setItem(STORAGE_KEY, String(collapsed));
-    }, [collapsed]);
+    const showConfirm = (opts: Omit<ConfirmState, 'open'>) => {
+        setConfirmState({ ...opts, open: true });
+    };
+    const hideConfirm = () => {
+        setConfirmState(prev => ({ ...prev, open: false }));
+    };
 
-    // ==========================================
-    // Итерация 17.1: статус лицензии
-    // ==========================================
-    const [licenseInfo, setLicenseInfo] = useState<LicenseInfo | null>(null);
+    useEffect(() => { localStorage.setItem(STORAGE_KEY, String(collapsed)); }, [collapsed]);
 
     useEffect(() => {
         (async () => {
-            try {
-                const info = await licenseApi.getInfo();
-                setLicenseInfo(info);
-            } catch {
-                // Тихо игнорируем — чип покажет «Лицензия недействительна»
-                setLicenseInfo(null);
-            }
+            try { setLicenseInfo(await licenseApi.getInfo()); } catch { setLicenseInfo(null); }
         })();
     }, []);
 
-    const handleLicenseClick = () => {
-        navigate('/license');
-    };
-
+    const handleLicenseClick = () => navigate('/license');
     const handleToggleCollapse = () => setCollapsed((prev) => !prev);
     const handleDrawerToggle = () => setMobileOpen(!mobileOpen);
+    const handleProfileClick = (event: React.MouseEvent<HTMLElement>) => setAnchorEl(event.currentTarget);
+    const handleProfileClose = () => setAnchorEl(null);
+    const handleLogout = () => { handleProfileClose(); logout(); navigate('/login'); };
+    const handleHelpMenuOpen = (event: React.MouseEvent<HTMLElement>) => setHelpMenuAnchorEl(event.currentTarget);
+    const handleHelpMenuClose = () => setHelpMenuAnchorEl(null);
+    const handleStartTour = (tourId: string) => { handleHelpMenuClose(); startTour(tourId); };
+    const handleOpenHelp = () => { handleHelpMenuClose(); navigate('/help'); };
 
-    const handleProfileClick = (event: React.MouseEvent<HTMLElement>) => {
-        setAnchorEl(event.currentTarget);
+    const handlePlanChipClick = () => {
+        navigate('/schedule');
     };
 
-    const handleProfileClose = () => {
-        setAnchorEl(null);
+    // При клике на ✏️ создаем копию текущего плана.
+    // Префикс "Черновик" и is_draft=true добавит бэкенд.
+    const handleEditClick = () => {
+        if (!currentVersionId) return;
+        setWizardMode('create');
+        setWizardBaseVersionId(currentVersionId);
+        // Убираем старые префиксы, чтобы не было "Черновик: План (копия)"
+        const cleanName = currentPlanName.replace(/^📝 Черновик: /, '').replace(/ \(копия\)$/, '');
+        setWizardInitialName(cleanName);
+        setWizardOpen(true);
     };
 
-    const handleLogout = () => {
-        handleProfileClose();
-        logout();
-        navigate('/login');
+    const handleWizardSaved = async (versionId: string) => {
+        setWizardOpen(false);
+        await loadVersions();
+
+        // Берем свежие данные напрямую из API, так как loadVersions() обновляет стейт асинхронно
+        try {
+            const allVersions = await scheduleApi.getVersions() as any[];
+            const created = allVersions.find(v => v.id === versionId);
+            if (created) {
+                setPlan(
+                    created.id,
+                    created.name,
+                    created.has_snapshot !== false,
+                    created.has_advisor_notes === true,
+                    created.is_draft,
+                    created.parent_version_id
+                );
+            } else {
+                setPlan(versionId, currentPlanName + ' (черновик)', true, false, true, currentVersionId);
+            }
+        } catch (e) {
+            setPlan(versionId, currentPlanName + ' (черновик)', true, false, true, currentVersionId);
+        }
     };
 
-    // ==========================================
-    // Итерация 15.3: меню «Помощь» с турами
-    // ==========================================
-    const handleHelpMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
-        setHelpMenuAnchorEl(event.currentTarget);
+    const handleCommitDraft = () => {
+        if (!currentVersionId || !isCurrentPlanDraft) return;
+        showConfirm({
+            title: 'Утвердить черновик',
+            message: 'Черновик станет активным планом, а исходный план будет архивирован. Продолжить?',
+            severity: 'info',
+            confirmText: 'Утвердить',
+            cancelText: 'Не утверждать',
+            onConfirm: async () => {
+                hideConfirm();
+                setDraftLoading(true);
+                try {
+                    await api.post(`/api/v1/schedule/versions/${currentVersionId}/commit`);
+                    await loadVersions();
+
+                    // После commit черновик становится обычным планом
+                    const cleanName = currentPlanName.replace(/^📝 Черновик: /, '');
+                    setPlan(currentVersionId, cleanName, true, false, false, null);
+                } catch (err: any) {
+                    alert(err?.response?.data?.detail || 'Ошибка утверждения');
+                } finally {
+                    setDraftLoading(false);
+                }
+            }
+        });
     };
 
-    const handleHelpMenuClose = () => {
-        setHelpMenuAnchorEl(null);
-    };
+    const handleDiscardDraft = () => {
+        if (!currentVersionId || !isCurrentPlanDraft) return;
+        showConfirm({
+            title: 'Отменить черновик',
+            message: 'Черновик будет удалён, а изменения — потеряны. Продолжить?',
+            severity: 'error',
+            confirmText: 'Удалить черновик',
+            cancelText: 'Не удалять',
+            onConfirm: async () => {
+                hideConfirm();
+                setDraftLoading(true);
+                try {
+                    // Запоминаем родителя до удаления
+                    const parentId = versions.find(v => v.id === currentVersionId)?.parent_version_id;
 
-    const handleStartTour = (tourId: string) => {
-        handleHelpMenuClose();
-        startTour(tourId);
-    };
+                    await api.delete(`/api/v1/schedule/versions/${currentVersionId}`);
+                    await loadVersions();
 
-    const handleOpenHelp = () => {
-        handleHelpMenuClose();
-        navigate('/help');
+                    if (parentId) {
+                        const allVersions = await scheduleApi.getVersions() as any[];
+                        const parent = allVersions.find(v => v.id === parentId);
+                        if (parent) {
+                            setPlan(parent.id, parent.name, parent.has_snapshot !== false, parent.has_advisor_notes === true, parent.is_draft, parent.parent_version_id);
+                        } else {
+                            clearPlan();
+                        }
+                    } else {
+                        clearPlan();
+                    }
+                } catch (err: any) {
+                    alert(err?.response?.data?.detail || 'Ошибка отмены');
+                } finally {
+                    setDraftLoading(false);
+                }
+            }
+        });
     };
 
     const currentDrawerWidth = collapsed ? DRAWER_WIDTH_COLLAPSED : DRAWER_WIDTH_EXPANDED;
-
     const isPlanOpen = currentVersionId !== null;
 
     const drawerContent = (
         <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-            <Toolbar
-                sx={{
-                    bgcolor: '#2c3e50',
-                    color: 'white',
-                    minHeight: '64px !important',
-                    justifyContent: collapsed ? 'center' : 'flex-start',
-                    px: collapsed ? 0 : 2,
-                }}
-            >
+            <Toolbar sx={{ bgcolor: '#2c3e50', color: 'white', minHeight: '64px !important', justifyContent: collapsed ? 'center' : 'flex-start', px: collapsed ? 0 : 2 }}>
                 <FactoryIcon sx={{ mr: collapsed ? 0 : 1, fontSize: 24 }} />
-                {!collapsed && (
-                    <Typography variant="h6" noWrap sx={{ fontWeight: 700, fontSize: '1.1rem' }}>
-                        APS Scheduler
-                    </Typography>
-                )}
+                {!collapsed && <Typography variant="h6" noWrap sx={{ fontWeight: 700, fontSize: '1.1rem' }}>APS Scheduler</Typography>}
             </Toolbar>
             <Divider />
-
-            {/* Итерация 15.3: data-tour-id для тура */}
-            <List
-                data-tour-id="sidebar"
-                sx={{ flexGrow: 1, pt: 1, px: collapsed ? 0.5 : 1 }}
-            >
+            <List data-tour-id="sidebar" sx={{ flexGrow: 1, pt: 1, px: collapsed ? 0.5 : 1 }}>
                 {MENU_ITEMS.map((item) => {
                     const isActive = location.pathname === item.path;
                     const button = (
-                        <ListItemButton
-                            data-tour-id={`menu-${item.path.replace('/', '')}`}
-                            selected={isActive}
-                            onClick={() => {
-                                navigate(item.path);
-                                setMobileOpen(false);
-                            }}
-                            sx={{
-                                minHeight: 44,
-                                justifyContent: collapsed ? 'center' : 'flex-start',
-                                px: collapsed ? 1 : 2,
-                                borderRadius: 1,
-                                mb: 0.5,
-                                '&.Mui-selected': {
-                                    backgroundColor: '#3498db',
-                                    color: 'white',
-                                    '& .MuiListItemIcon-root': { color: 'white' },
-                                    '&:hover': { backgroundColor: '#2980b9' },
-                                },
-                            }}
-                        >
-                            <ListItemIcon
-                                sx={{
-                                    minWidth: collapsed ? 0 : 40,
-                                    justifyContent: 'center',
-                                    color: isActive ? 'inherit' : '#2c3e50',
-                                }}
-                            >
-                                {item.icon}
-                            </ListItemIcon>
-                            {!collapsed && (
-                                <ListItemText
-                                    primary={item.label}
-                                    slotProps={{
-                                        primary: { sx: { fontSize: '0.9rem' } },
-                                    }}
-                                />
-                            )}
+                        <ListItemButton data-tour-id={`menu-${item.path.replace('/', '')}`} selected={isActive} onClick={() => { navigate(item.path); setMobileOpen(false); }}
+                                        sx={{ minHeight: 44, justifyContent: collapsed ? 'center' : 'flex-start', px: collapsed ? 1 : 2, borderRadius: 1, mb: 0.5, '&.Mui-selected': { backgroundColor: '#3498db', color: 'white', '& .MuiListItemIcon-root': { color: 'white' }, '&:hover': { backgroundColor: '#2980b9' } } }}>
+                            <ListItemIcon sx={{ minWidth: collapsed ? 0 : 40, justifyContent: 'center', color: isActive ? 'inherit' : '#2c3e50' }}>{item.icon}</ListItemIcon>
+                            {!collapsed && <ListItemText primary={item.label} slotProps={{ primary: { sx: { fontSize: '0.9rem' } } }} />}
                         </ListItemButton>
                     );
-
-                    return (
-                        <ListItem key={item.path} disablePadding sx={{ display: 'block' }}>
-                            {collapsed ? (
-                                <Tooltip title={item.label} placement="right" arrow>
-                                    {button}
-                                </Tooltip>
-                            ) : (
-                                button
-                            )}
-                        </ListItem>
-                    );
+                    return <ListItem key={item.path} disablePadding sx={{ display: 'block' }}>{collapsed ? <Tooltip title={item.label} placement="right" arrow>{button}</Tooltip> : button}</ListItem>;
                 })}
             </List>
-
             <Divider />
             <Box sx={{ p: collapsed ? 0.5 : 1 }}>
                 <Tooltip title={collapsed ? 'Развернуть меню' : 'Свернуть меню'} placement="right" arrow>
-                    <IconButton
-                        onClick={handleToggleCollapse}
-                        sx={{
-                            width: '100%',
-                            borderRadius: 1,
-                            justifyContent: collapsed ? 'center' : 'flex-start',
-                            px: collapsed ? 1 : 2,
-                            py: 1,
-                            color: '#2c3e50',
-                            '&:hover': { backgroundColor: '#ecf0f1' },
-                        }}
-                    >
+                    <IconButton onClick={handleToggleCollapse} sx={{ width: '100%', borderRadius: 1, justifyContent: collapsed ? 'center' : 'flex-start', px: collapsed ? 1 : 2, py: 1, color: '#2c3e50', '&:hover': { backgroundColor: '#ecf0f1' } }}>
                         {collapsed ? <MenuIcon /> : <ChevronLeftIcon />}
-                        {!collapsed && (
-                            <Typography variant="body2" sx={{ ml: 1, fontSize: '0.85rem' }}>
-                                Свернуть
-                            </Typography>
-                        )}
+                        {!collapsed && <Typography variant="body2" sx={{ ml: 1, fontSize: '0.85rem' }}>Свернуть</Typography>}
                     </IconButton>
                 </Tooltip>
             </Box>
@@ -406,312 +308,120 @@ const MainLayout: React.FC = () => {
     return (
         <Box sx={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
             <CssBaseline />
-
-            <AppBar
-                position="fixed"
-                sx={{
-                    width: { md: `calc(100% - ${currentDrawerWidth}px)` },
-                    ml: { md: `${currentDrawerWidth}px` },
-                    bgcolor: '#2c3e50',
-                    transition: 'width 0.2s, margin-left 0.2s',
-                    zIndex: (theme) => theme.zIndex.drawer + 1,
-                }}
-            >
+            <AppBar position="fixed" sx={{ width: { md: `calc(100% - ${currentDrawerWidth}px)` }, ml: { md: `${currentDrawerWidth}px` }, bgcolor: '#2c3e50', transition: 'width 0.2s, margin-left 0.2s', zIndex: (theme) => theme.zIndex.drawer + 1 }}>
                 <Toolbar sx={{ minHeight: '64px !important' }}>
-                    <IconButton
-                        color="inherit"
-                        edge="start"
-                        onClick={handleDrawerToggle}
-                        sx={{ mr: 2, display: { md: 'none' } }}
-                    >
-                        <MenuIcon />
-                    </IconButton>
-
+                    <IconButton color="inherit" edge="start" onClick={handleDrawerToggle} sx={{ mr: 2, display: { md: 'none' } }}><MenuIcon /></IconButton>
                     <Tooltip title={collapsed ? 'Развернуть меню' : 'Свернуть меню'}>
-                        <IconButton
-                            color="inherit"
-                            edge="start"
-                            onClick={handleToggleCollapse}
-                            sx={{ mr: 2, display: { xs: 'none', md: 'inline-flex' } }}
-                        >
-                            {collapsed ? <MenuOpenIcon /> : <MenuIcon />}
-                        </IconButton>
+                        <IconButton color="inherit" edge="start" onClick={handleToggleCollapse} sx={{ mr: 2, display: { xs: 'none', md: 'inline-flex' } }}>{collapsed ? <MenuOpenIcon /> : <MenuIcon />}</IconButton>
                     </Tooltip>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexGrow: 1, minWidth: 0 }}>
+                        <Typography variant="h6" noWrap sx={{ flexShrink: 0 }}>{MENU_ITEMS.find((item) => item.path === location.pathname)?.label || 'APS Scheduler'}</Typography>
+                        <Divider orientation="vertical" flexItem sx={{ bgcolor: 'rgba(255,255,255,0.3)', flexShrink: 0 }} />
 
-                    <Box
-                        sx={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 1.5,
-                            flexGrow: 1,
-                            minWidth: 0,
-                        }}
-                    >
-                        <Typography variant="h6" noWrap sx={{ flexShrink: 0 }}>
-                            {MENU_ITEMS.find((item) => item.path === location.pathname)?.label || 'APS Scheduler'}
-                        </Typography>
-
-                        <Divider
-                            orientation="vertical"
-                            flexItem
-                            sx={{ bgcolor: 'rgba(255,255,255,0.3)', flexShrink: 0 }}
-                        />
-
+                        {/* ЧИП ПЛАНА */}
                         {isPlanOpen ? (
-                            localEditMode ? (
-                                // ==========================================
-                                // Итерация 14.2: план открыт, но редактируется
-                                // ==========================================
-                                <Tooltip
-                                    title={`Открыт план: ${currentPlanName}. Режим редактирования.`}
-                                    arrow
-                                >
-                                    <Chip
-                                        icon={<EditIcon sx={{ color: '#ffffff !important' }} />}
-                                        label={currentPlanName}
-                                        size="small"
-                                        sx={{
-                                            bgcolor: '#27ae60',
-                                            color: '#ffffff',
-                                            fontWeight: 600,
-                                            fontSize: '0.8rem',
-                                            maxWidth: 420,
-                                            border: '1px solid #1e8449',
-                                            '& .MuiChip-label': {
-                                                overflow: 'hidden',
-                                                textOverflow: 'ellipsis',
-                                                whiteSpace: 'nowrap',
-                                            },
-                                        }}
-                                    />
-                                </Tooltip>
+                            isCurrentPlanDraft ? (
+                                <>
+                                    <Tooltip title={`Черновик: ${currentPlanName}. Нажмите, чтобы перейти на страницу «Планирование» для утверждения/отмены.`} arrow>
+                                        <Chip icon={<EditIcon sx={{ color: '#fff !important' }} />} label={currentPlanName} size="small" onClick={handlePlanChipClick}
+                                              sx={{ bgcolor: '#e67e22', color: '#fff', fontWeight: 600, fontSize: '0.8rem', maxWidth: 420, border: '1px solid #d35400', cursor: 'pointer', '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }} />
+                                    </Tooltip>
+                                    <Tooltip title="Утвердить черновик">
+                                        <span>
+                                            <IconButton size="small" color="inherit" onClick={handleCommitDraft} disabled={draftLoading} sx={{color: '#fff'}}>
+                                                {draftLoading ? <CircularProgress size={18} color="inherit" /> : <SaveIcon fontSize="small" />}
+                                            </IconButton>
+                                        </span>
+                                    </Tooltip>
+                                    <Tooltip title="Отменить черновик">
+                                        <span>
+                                            <IconButton size="small" color="inherit" onClick={handleDiscardDraft} disabled={draftLoading} sx={{color: '#fff'}}>
+                                                <CloseIcon fontSize="small" />
+                                            </IconButton>
+                                        </span>
+                                    </Tooltip>
+                                </>
                             ) : (
-                                // ==========================================
-                                // Итерация 14.2: план открыт, readonly
-                                // ==========================================
-                                <Tooltip
-                                    title={`Открыт план: ${currentPlanName}. Режим просмотра (readonly).`}
-                                    arrow
-                                >
-                                    <Chip
-                                        icon={<LockIcon sx={{ color: '#ffffff !important' }} />}
-                                        label={currentPlanName}
-                                        size="small"
-                                        sx={{
-                                            bgcolor: '#3498db',
-                                            color: '#ffffff',
-                                            fontWeight: 600,
-                                            fontSize: '0.8rem',
-                                            maxWidth: 420,
-                                            border: '1px solid #2980b9',
-                                            '& .MuiChip-label': {
-                                                overflow: 'hidden',
-                                                textOverflow: 'ellipsis',
-                                                whiteSpace: 'nowrap',
-                                            },
-                                        }}
-                                    />
-                                </Tooltip>
+                                <>
+                                    <Tooltip title={`Открыт план: ${currentPlanName}. Нажмите, чтобы перейти на страницу «Планирование».`} arrow>
+                                        <Chip
+                                            icon={<LockIcon sx={{ color: '#fff !important' }} />}
+                                            label={currentPlanName}
+                                            size="small"
+                                            onClick={handlePlanChipClick}
+                                            sx={{ bgcolor: '#3498db', color: '#fff', fontWeight: 600, fontSize: '0.8rem', maxWidth: 420, border: '1px solid #2980b9', cursor: 'pointer', '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }}
+                                        />
+                                    </Tooltip>
+                                    <Tooltip title="Создать черновик (редактировать копию)">
+                                        <IconButton size="small" color="inherit" onClick={handleEditClick} disabled={draftLoading} sx={{color: '#fff'}}>
+                                            <EditIcon fontSize="small" />
+                                        </IconButton>
+                                    </Tooltip>
+                                </>
                             )
                         ) : (
-                            <Tooltip
-                                title="План не выбран. Справочники доступны для редактирования."
-                                arrow
-                            >
-                                <Chip
-                                    icon={<EditIcon sx={{ color: '#ffffff !important' }} />}
-                                    label="Режим редактирования"
-                                    size="small"
-                                    sx={{
-                                        bgcolor: 'rgba(255,255,255,0.15)',
-                                        color: '#ffffff',
-                                        fontWeight: 500,
-                                        fontSize: '0.8rem',
-                                        border: '1px dashed rgba(255,255,255,0.4)',
-                                    }}
-                                />
+                            <Tooltip title="План не выбран. Нажмите, чтобы перейти к выбору плана." arrow>
+                                <Chip icon={<EditIcon sx={{ color: '#fff !important' }} />} label="Режим редактирования" size="small" onClick={handlePlanChipClick}
+                                      sx={{ bgcolor: 'rgba(255,255,255,0.15)', color: '#fff', fontWeight: 500, fontSize: '0.8rem', border: '1px dashed rgba(255,255,255,0.4)', cursor: 'pointer' }} />
                             </Tooltip>
                         )}
                     </Box>
-
-                    {/* ==========================================
-                        Итерация 17.1: чип статуса лицензии
-                    ========================================== */}
-                    <Box sx={{mr: 1, display: {xs: 'none', sm: 'block'}}}>
-                        <LicenseChip
-                            info={licenseInfo}
-                            onClick={handleLicenseClick}
-                        />
-                    </Box>
-
-                    {/* ==========================================
-                        Итерация 15.3: меню «Помощь» с турами
-                    ========================================== */}
-                    <Tooltip title="Помощь">
-                        <IconButton
-                            color="inherit"
-                            onClick={handleHelpMenuOpen}
-                            sx={{ mr: 1 }}
-                        >
-                            <HelpOutlineIcon />
-                        </IconButton>
-                    </Tooltip>
-                    <Menu
-                        anchorEl={helpMenuAnchorEl}
-                        open={Boolean(helpMenuAnchorEl)}
-                        onClose={handleHelpMenuClose}
-                        transformOrigin={{ horizontal: 'right', vertical: 'top' }}
-                        anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
-                    >
-                        <MenuItem onClick={handleOpenHelp}>
-                            <ListItemIcon>
-                                <HelpOutlineIcon fontSize="small" />
-                            </ListItemIcon>
-                            <ListItemText>Открыть справку</ListItemText>
-                        </MenuItem>
-                        <Divider />
-                        <MenuItem disabled>
-                            <Typography
-                                variant="caption"
-                                color="text.secondary"
-                                sx={{
-                                    textTransform: 'uppercase',
-                                    letterSpacing: 0.5,
-                                    fontWeight: 600,
-                                    fontSize: '0.7rem',
-                                }}
-                            >
-                                Интерактивные туры
-                            </Typography>
-                        </MenuItem>
-                        <MenuItem onClick={() => handleStartTour('getting-started')}>
-                            <ListItemIcon>
-                                <SchoolIcon fontSize="small" />
-                            </ListItemIcon>
-                            <ListItemText>Первый план за 5 минут</ListItemText>
-                        </MenuItem>
-                        <MenuItem onClick={() => handleStartTour('gantt-basics')}>
-                            <ListItemIcon>
-                                <SchoolIcon fontSize="small" />
-                            </ListItemIcon>
-                            <ListItemText>Основы диаграммы Ганта</ListItemText>
-                        </MenuItem>
-                        <MenuItem onClick={() => handleStartTour('shift-management')}>
-                            <ListItemIcon>
-                                <SchoolIcon fontSize="small" />
-                            </ListItemIcon>
-                            <ListItemText>Работа мастера смены</ListItemText>
-                        </MenuItem>
+                    <Box sx={{mr: 1, display: {xs: 'none', sm: 'block'}}}><LicenseChip info={licenseInfo} onClick={handleLicenseClick} /></Box>
+                    <Tooltip title="Помощь"><IconButton color="inherit" onClick={handleHelpMenuOpen} sx={{ mr: 1 }}><HelpOutlineIcon /></IconButton></Tooltip>
+                    <Menu anchorEl={helpMenuAnchorEl} open={Boolean(helpMenuAnchorEl)} onClose={handleHelpMenuClose} transformOrigin={{ horizontal: 'right', vertical: 'top' }} anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}>
+                        <MenuItem onClick={handleOpenHelp}><ListItemIcon><HelpOutlineIcon fontSize="small" /></ListItemIcon><ListItemText>Открыть справку</ListItemText></MenuItem>
+                        <Divider /><MenuItem disabled><Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600, fontSize: '0.7rem' }}>Интерактивные туры</Typography></MenuItem>
+                        <MenuItem onClick={() => handleStartTour('getting-started')}><ListItemIcon><SchoolIcon fontSize="small" /></ListItemIcon><ListItemText>Первый план за 5 минут</ListItemText></MenuItem>
+                        <MenuItem onClick={() => handleStartTour('gantt-basics')}><ListItemIcon><SchoolIcon fontSize="small" /></ListItemIcon><ListItemText>Основы диаграммы Ганта</ListItemText></MenuItem>
+                        <MenuItem onClick={() => handleStartTour('shift-management')}><ListItemIcon><SchoolIcon fontSize="small" /></ListItemIcon><ListItemText>Работа мастера смены</ListItemText></MenuItem>
                     </Menu>
-
                     {user && (
                         <>
-                            <Tooltip title="Профиль">
-                                <Button
-                                    color="inherit"
-                                    onClick={handleProfileClick}
-                                    startIcon={
-                                        <Avatar sx={{ width: 32, height: 32, bgcolor: '#3498db', fontSize: '0.9rem' }}>
-                                            {user.email.charAt(0).toUpperCase()}
-                                        </Avatar>
-                                    }
-                                    sx={{ textTransform: 'none' }}
-                                >
-                                    <Box sx={{ textAlign: 'left', display: { xs: 'none', sm: 'block' } }}>
-                                        <Typography variant="body2" sx={{ lineHeight: 1.2, fontWeight: 600 }}>
-                                            {user.full_name || user.email}
-                                        </Typography>
-                                        <Typography variant="caption" sx={{ lineHeight: 1, opacity: 0.8 }}>
-                                            {ROLE_LABELS[user.role] || user.role}
-                                        </Typography>
-                                    </Box>
-                                </Button>
-                            </Tooltip>
-
-                            <Menu
-                                anchorEl={anchorEl}
-                                open={Boolean(anchorEl)}
-                                onClose={handleProfileClose}
-                                transformOrigin={{ horizontal: 'right', vertical: 'top' }}
-                                anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
-                            >
-                                <MenuItem disabled>
-                                    <PersonIcon sx={{ mr: 1 }} />
-                                    {user.email}
-                                </MenuItem>
-                                <Divider />
-                                <MenuItem onClick={handleLogout}>
-                                    <LogoutIcon sx={{ mr: 1 }} />
-                                    Выйти
-                                </MenuItem>
+                            <Tooltip title="Профиль"><Button color="inherit" onClick={handleProfileClick} startIcon={<Avatar sx={{ width: 32, height: 32, bgcolor: '#3498db', fontSize: '0.9rem' }}>{user.email.charAt(0).toUpperCase()}</Avatar>} sx={{ textTransform: 'none' }}><Box sx={{ textAlign: 'left', display: { xs: 'none', sm: 'block' } }}><Typography variant="body2" sx={{ lineHeight: 1.2, fontWeight: 600 }}>{user.full_name || user.email}</Typography><Typography variant="caption" sx={{ lineHeight: 1, opacity: 0.8 }}>{ROLE_LABELS[user.role] || user.role}</Typography></Box></Button></Tooltip>
+                            <Menu anchorEl={anchorEl} open={Boolean(anchorEl)} onClose={handleProfileClose} transformOrigin={{ horizontal: 'right', vertical: 'top' }} anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}>
+                                <MenuItem disabled><PersonIcon sx={{ mr: 1 }} />{user.email}</MenuItem><Divider /><MenuItem onClick={handleLogout}><LogoutIcon sx={{ mr: 1 }} />Выйти</MenuItem>
                             </Menu>
                         </>
                     )}
                 </Toolbar>
             </AppBar>
-
             <Box component="nav" sx={{ width: { md: currentDrawerWidth }, flexShrink: { md: 0 } }}>
-                <Drawer
-                    variant="temporary"
-                    open={mobileOpen}
-                    onClose={handleDrawerToggle}
-                    ModalProps={{ keepMounted: true }}
-                    sx={{
-                        display: { xs: 'block', md: 'none' },
-                        '& .MuiDrawer-paper': {
-                            boxSizing: 'border-box',
-                            width: DRAWER_WIDTH_EXPANDED,
-                        },
-                    }}
-                >
-                    {drawerContent}
-                </Drawer>
-
-                <Drawer
-                    variant="permanent"
-                    sx={{
-                        display: { xs: 'none', md: 'block' },
-                        '& .MuiDrawer-paper': {
-                            boxSizing: 'border-box',
-                            width: currentDrawerWidth,
-                            overflowX: 'hidden',
-                            transition: 'width 0.2s',
-                            borderRight: '1px solid #e0e0e0',
-                        },
-                    }}
-                    open
-                >
-                    {drawerContent}
-                </Drawer>
+                <Drawer variant="temporary" open={mobileOpen} onClose={handleDrawerToggle} ModalProps={{ keepMounted: true }} sx={{ display: { xs: 'block', md: 'none' }, '& .MuiDrawer-paper': { boxSizing: 'border-box', width: DRAWER_WIDTH_EXPANDED } }}>{drawerContent}</Drawer>
+                <Drawer variant="permanent" sx={{ display: { xs: 'none', md: 'block' }, '& .MuiDrawer-paper': { boxSizing: 'border-box', width: currentDrawerWidth, overflowX: 'hidden', transition: 'width 0.2s', borderRight: '1px solid #e0e0e0' } }} open>{drawerContent}</Drawer>
             </Box>
-
-            <Box
-                component="main"
-                sx={{
-                    flexGrow: 1,
-                    width: { md: `calc(100% - ${currentDrawerWidth}px)` },
-                    height: '100vh',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    overflow: 'hidden',
-                    bgcolor: '#f5f6fa',
-                    transition: 'width 0.2s',
-                }}
-            >
+            <Box component="main" sx={{ flexGrow: 1, width: { md: `calc(100% - ${currentDrawerWidth}px)` }, height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', bgcolor: '#f5f6fa', transition: 'width 0.2s' }}>
                 <Toolbar sx={{ minHeight: '64px !important', flexShrink: 0 }} />
-                <Box
-                    sx={{
-                        flexGrow: 1,
-                        minHeight: 0,
-                        overflow: 'hidden',
-                        p: { xs: 0.5, sm: 1, md: 2 },
-                        display: 'flex',
-                        flexDirection: 'column',
-                    }}
-                >
-                    <Outlet />
-                </Box>
+                <Box sx={{ flexGrow: 1, minHeight: 0, overflow: 'hidden', p: { xs: 0.5, sm: 1, md: 2 }, display: 'flex', flexDirection: 'column' }}><Outlet /></Box>
             </Box>
+
+            {/* ГЛОБАЛЬНЫЙ ДИАЛОГ ПРОГРЕССА РАСЧЕТА */}
+            <RecalcProgressDialog
+                open={isCalculating}
+                operationLabel="Построение плана"
+                operationHint="Solver рассчитывает расписание. Это может занять несколько минут."
+                timeoutSeconds={600}
+            />
+
+            <PlanSettingsWizard
+                open={wizardOpen}
+                onClose={() => setWizardOpen(false)}
+                mode={wizardMode}
+                baseVersionId={wizardBaseVersionId}
+                initialName={wizardInitialName}
+                asDraft={true}
+                onSaved={handleWizardSaved}
+            />
+
+            <ConfirmDialog
+                open={confirmState.open}
+                title={confirmState.title}
+                message={confirmState.message}
+                severity={confirmState.severity}
+                confirmText={confirmState.confirmText}
+                cancelText={confirmState.cancelText}
+                onConfirm={confirmState.onConfirm}
+                onCancel={hideConfirm}
+            />
         </Box>
     );
 };

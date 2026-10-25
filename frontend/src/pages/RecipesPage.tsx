@@ -1,8 +1,6 @@
 // frontend/src/pages/RecipesPage.tsx
-// Итерация 13.19: markPlanDirty() при изменениях.
-// Итерация 17.x: inline-edit рецептов и состава, режим просмотра версии.
-// [FIX] В селекте "Продукт (ПФ)" теперь используются продукты (products),
-//       а не материалы. FK recipe.product_id -> product.id.
+// Справочник рецептов — ГЛОБАЛЬНЫЙ. Не привязан к плану.
+// Изменения влияют на все планы через снапшоты (обновляются при пересчёте).
 
 import React, {useEffect, useState} from 'react';
 import {
@@ -26,7 +24,7 @@ import {
     Add as AddIcon,
     Delete as DeleteIcon,
     Edit as EditIcon,
-    Lock as LockIcon,
+    InfoOutlined as InfoIcon,
     Science as ScienceIcon,
 } from '@mui/icons-material';
 import type {ColDef, GridReadyEvent} from 'ag-grid-community';
@@ -59,12 +57,10 @@ interface RecipeItemRow {
 }
 
 const RecipesPage: React.FC = () => {
-    const {currentVersionId, currentPlanName, markPlanDirty} = usePlan();
-    const isReadOnly = currentVersionId !== null;
+    const {currentVersionId, currentPlanName, isCurrentPlanDraft, markPlanDirty} = usePlan();
 
     const [recipes, setRecipes] = useState<Recipe[]>([]);
     const [materials, setMaterials] = useState<Material[]>([]);
-    // [FIX] отдельный стейт под продукты (для селекта "Продукт (ПФ)")
     const [products, setProducts] = useState<Product[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -77,21 +73,16 @@ const RecipesPage: React.FC = () => {
         material_id: '', qty_per_base: 1,
     });
 
-    useEffect(() => { loadData(); }, [currentVersionId]);
+    useEffect(() => { loadData(); }, []);
 
     const loadData = async () => {
         setLoading(true);
         setError(null);
         try {
-            // [FIX] Продукты грузим с учётом версии плана.
-            // [FIX] Рецепты — тоже: если version_id задан, backend
-            // читает из recipe_snapshot / recipe_item_snapshot.
-            const productParams = currentVersionId ? { params: { version_id: currentVersionId } } : {};
-            const recipesParams = currentVersionId ? { params: { version_id: currentVersionId } } : {};
             const [recipesResp, materialsResp, productsResp] = await Promise.all([
-                api.get('/api/v1/recipes/', recipesParams),
+                api.get('/api/v1/recipes/'),
                 api.get('/api/v1/materials/'),
-                api.get('/api/v1/products/', productParams),
+                api.get('/api/v1/products/'),
             ]);
             setRecipes(recipesResp.data);
             setMaterials(materialsResp.data);
@@ -102,7 +93,7 @@ const RecipesPage: React.FC = () => {
             setLoading(false);
         }
     };
-    
+
     const recipeRows: RecipeRow[] = recipes.map((r) => ({
         id: r.id,
         product_code: r.product_code || '',
@@ -117,10 +108,10 @@ const RecipesPage: React.FC = () => {
         { headerName: 'Наименование продукта', field: 'product_name', flex: 2, minWidth: 200, editable: false },
         {
             headerName: 'Базовый объём (кг)', field: 'base_volume_kg', width: 160,
-            editable: !isReadOnly, type: 'numericColumn',
+            editable: true, type: 'numericColumn',
         },
         { headerName: 'Компонентов', field: 'items_count', width: 120, type: 'numericColumn', editable: false },
-        { headerName: 'Комментарий', field: 'comment', flex: 1, editable: !isReadOnly },
+        { headerName: 'Комментарий', field: 'comment', flex: 1, editable: true },
         {
             headerName: 'Действия', width: 140, cellClass: 'ag-cell-actions', editable: false,
             cellRenderer: (params: any) => (
@@ -135,13 +126,11 @@ const RecipesPage: React.FC = () => {
                             <EditIcon fontSize="small" />
                         </IconButton>
                     </Tooltip>
-                    {!isReadOnly && (
-                        <Tooltip title="Удалить" arrow>
-                            <IconButton size="small" color="error" onClick={() => handleDelete(params.data.id)}>
-                                <DeleteIcon fontSize="small" />
-                            </IconButton>
-                        </Tooltip>
-                    )}
+                    <Tooltip title="Удалить" arrow>
+                        <IconButton size="small" color="error" onClick={() => handleDelete(params.data.id)}>
+                            <DeleteIcon fontSize="small" />
+                        </IconButton>
+                    </Tooltip>
                 </Box>
             ),
         },
@@ -149,13 +138,12 @@ const RecipesPage: React.FC = () => {
 
     const defaultColDef: ColDef = {
         sortable: true, filter: true, resizable: true,
-        editable: !isReadOnly, singleClickEdit: true,
+        editable: true, singleClickEdit: true,
     };
 
     const getRowId = (params: any) => params.data.id;
 
     const handleCellValueChanged = async (params: any) => {
-        if (isReadOnly) return;
         const { data, colDef, newValue } = params;
         const field = colDef.field;
         if (!field || field === 'id' || field === 'items_count') return;
@@ -179,7 +167,6 @@ const RecipesPage: React.FC = () => {
     };
 
     const handleDelete = async (id: string) => {
-        if (isReadOnly) return;
         if (!window.confirm('Удалить рецепт?')) return;
         try {
             await api.delete(`/api/v1/recipes/${id}`);
@@ -191,14 +178,11 @@ const RecipesPage: React.FC = () => {
     };
 
     const handleAdd = () => {
-        if (isReadOnly) return;
         setFormData({ product_id: '', base_volume_kg: 100, comment: '' });
         setDialogOpen(true);
     };
 
     const handleSave = async () => {
-        if (isReadOnly) return;
-        // [FIX-CREATE] быстрая валидация: не отправляем пустой product_id
         if (!formData.product_id) {
             setError('Выберите продукт (ПФ)');
             return;
@@ -218,7 +202,7 @@ const RecipesPage: React.FC = () => {
     };
 
     const handleItemValueChanged = async (params: any) => {
-        if (isReadOnly || !selectedRecipe) return;
+        if (!selectedRecipe) return;
         const { data, colDef, newValue } = params;
         const field = colDef.field;
         if (field !== 'qty_per_base') return;
@@ -246,7 +230,7 @@ const RecipesPage: React.FC = () => {
     };
 
     const handleAddItem = async () => {
-        if (isReadOnly || !selectedRecipe) return;
+        if (!selectedRecipe) return;
         if (!newItem.material_id) {
             setError('Выберите материал');
             return;
@@ -279,7 +263,7 @@ const RecipesPage: React.FC = () => {
     };
 
     const handleDeleteItem = async (itemId: string) => {
-        if (isReadOnly || !selectedRecipe) return;
+        if (!selectedRecipe) return;
         if (!window.confirm('Удалить компонент?')) return;
         try {
             await api.delete(`/api/v1/recipes/${selectedRecipe.id}/items/${itemId}`);
@@ -311,12 +295,12 @@ const RecipesPage: React.FC = () => {
         { headerName: 'Наименование', field: 'material_name', flex: 2, minWidth: 180, editable: false },
         {
             headerName: 'Кол-во на базу', field: 'qty_per_base', width: 140,
-            editable: !isReadOnly, type: 'numericColumn',
+            editable: true, type: 'numericColumn',
         },
         { headerName: 'Ед.', field: 'material_unit', width: 80, editable: false },
         {
             headerName: '', width: 60, editable: false, cellClass: 'ag-cell-actions',
-            cellRenderer: (params: any) => isReadOnly ? null : (
+            cellRenderer: (params: any) => (
                 <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
                     <Tooltip title="Удалить компонент" arrow>
                         <IconButton size="small" color="error" onClick={() => handleDeleteItem(params.data.id)}>
@@ -338,16 +322,17 @@ const RecipesPage: React.FC = () => {
                 <Typography variant="h4" component="h1" sx={{ fontWeight: 600, color: '#2c3e50' }}>
                     Рецептуры
                 </Typography>
-                {!isReadOnly && (
-                    <Button variant="contained" startIcon={<AddIcon />} onClick={handleAdd} sx={{ textTransform: 'none', fontWeight: 600 }}>
-                        Добавить рецепт
-                    </Button>
-                )}
+                <Button variant="contained" startIcon={<AddIcon />} onClick={handleAdd} sx={{ textTransform: 'none', fontWeight: 600 }}>
+                    Добавить рецепт
+                </Button>
             </Box>
 
-            {isReadOnly && (
-                <Alert severity="info" sx={{ mb: 2 }} icon={<LockIcon fontSize="inherit" />}>
-                    Режим просмотра: <b>{currentPlanName}</b>. Редактирование недоступно.
+            {currentVersionId && (
+                <Alert severity="info" sx={{ mb: 2 }} icon={<InfoIcon />}>
+                    Вы редактируете <b>глобальный справочник</b> «{currentPlanName}».
+                    {isCurrentPlanDraft
+                        ? ' Чтобы изменения попали в черновик, нажмите «Построить план» в шапке.'
+                        : ' Изменения не попадут в активный план без пересчёта.'}
                 </Alert>
             )}
 
@@ -376,7 +361,6 @@ const RecipesPage: React.FC = () => {
                 </CardContent>
             </Card>
 
-            {/* Диалог создания рецепта */}
             <DraggableDialog
                 open={dialogOpen}
                 onClose={() => setDialogOpen(false)}
@@ -395,7 +379,6 @@ const RecipesPage: React.FC = () => {
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                     <FormControl fullWidth>
                         <InputLabel>Продукт (ПФ)</InputLabel>
-                        {/* [FIX] селект продуктов вместо материалов */}
                         <Select
                             value={formData.product_id}
                             label="Продукт (ПФ)"
@@ -412,7 +395,6 @@ const RecipesPage: React.FC = () => {
                 </Box>
             </DraggableDialog>
 
-            {/* Диалог состава рецепта (редактируемый) */}
             <DraggableDialog
                 open={selectedRecipe !== null}
                 onClose={() => setSelectedRecipe(null)}
@@ -431,41 +413,39 @@ const RecipesPage: React.FC = () => {
                                 columnDefs={itemColumnDefs}
                                 defaultColDef={{
                                     sortable: true, filter: true, resizable: true,
-                                    editable: !isReadOnly, singleClickEdit: true,
+                                    editable: true, singleClickEdit: true,
                                 }}
                                 getRowId={(params: any) => params.data.id}
                                 onCellValueChanged={handleItemValueChanged}
                             />
                         </Box>
 
-                        {!isReadOnly && (
-                            <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-                                <FormControl sx={{ flex: 2 }} size="small">
-                                    <InputLabel>Материал</InputLabel>
-                                    <Select
-                                        value={newItem.material_id}
-                                        label="Материал"
-                                        onChange={(e) => setNewItem({ ...newItem, material_id: e.target.value })}
-                                    >
-                                        <MenuItem value="">— Выберите материал —</MenuItem>
-                                        {materials.map((m) => (
-                                            <MenuItem key={m.id} value={m.id}>
-                                                {m.code} - {m.name} ({m.unit})
-                                            </MenuItem>
-                                        ))}
-                                    </Select>
-                                </FormControl>
-                                <TextField
-                                    label="Кол-во"
-                                    type="number"
-                                    size="small"
-                                    sx={{ flex: 1 }}
-                                    value={newItem.qty_per_base}
-                                    onChange={(e) => setNewItem({ ...newItem, qty_per_base: Number(e.target.value) })}
-                                />
-                                <Button variant="outlined" onClick={handleAddItem}>Добавить</Button>
-                            </Box>
-                        )}
+                        <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+                            <FormControl sx={{ flex: 2 }} size="small">
+                                <InputLabel>Материал</InputLabel>
+                                <Select
+                                    value={newItem.material_id}
+                                    label="Материал"
+                                    onChange={(e) => setNewItem({ ...newItem, material_id: e.target.value })}
+                                >
+                                    <MenuItem value="">— Выберите материал —</MenuItem>
+                                    {materials.map((m) => (
+                                        <MenuItem key={m.id} value={m.id}>
+                                            {m.code} - {m.name} ({m.unit})
+                                        </MenuItem>
+                                    ))}
+                                </Select>
+                            </FormControl>
+                            <TextField
+                                label="Кол-во"
+                                type="number"
+                                size="small"
+                                sx={{ flex: 1 }}
+                                value={newItem.qty_per_base}
+                                onChange={(e) => setNewItem({ ...newItem, qty_per_base: Number(e.target.value) })}
+                            />
+                            <Button variant="outlined" onClick={handleAddItem}>Добавить</Button>
+                        </Box>
                     </Box>
                 )}
             </DraggableDialog>

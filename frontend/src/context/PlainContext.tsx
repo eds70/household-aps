@@ -10,66 +10,64 @@ export interface PlanVersion {
     is_active: boolean;
     created_at: string;
     comment?: string | null;
-    /**
-     * Итерация 13.15: заполнены ли снапшот-таблицы для этой версии.
-     */
     has_snapshot?: boolean;
-    /**
-     * Итерация 13.21: архивная версия.
-     */
     is_archived?: boolean;
-    /**
-     * Итерация 13.21: ID родительской версии.
-     */
     parent_version_id?: string | null;
+    has_advisor_notes?: boolean;
+    is_draft?: boolean;
 }
 
 export interface CurrentPlan {
     id: string;
     name: string;
     has_snapshot: boolean;
+    has_advisor_notes: boolean;
+    is_draft?: boolean;
+    parent_version_id?: string | null;
 }
 
 interface PlanContextType {
     currentVersionId: string | null;
     currentPlanName: string;
-    /**
-     * Итерация 13.15: есть ли снапшоты у текущего плана.
-     */
     currentPlanHasSnapshot: boolean;
+    currentPlanHasAdvisorNotes: boolean;
+    isCurrentPlanDraft: boolean;
 
-    /**
-     * Итерация 13.19: флаг «план содержит несохранённые изменения».
-     */
     planDirty: boolean;
     markPlanDirty: () => void;
     clearPlanDirty: () => void;
 
-    /**
-     * Итерация 14.2: локальный режим редактирования для Ганта.
-     * Если true — задачи можно таскать/ресайзить.
-     * Используется в GanttPage и MainLayout (для иконки в шапке).
-     */
     localEditMode: boolean;
     setLocalEditMode: (value: boolean) => void;
 
+    // НОВОЕ: Состояние расчета (для прогресс-бара)
+    isCalculating: boolean;
+    setIsCalculating: (value: boolean) => void;
+
     versions: PlanVersion[];
-    setPlan: (versionId: string | null, name: string, hasSnapshot?: boolean) => void;
+    setPlan: (
+        versionId: string | null,
+        name: string,
+        hasSnapshot?: boolean,
+        hasAdvisorNotes?: boolean,
+        isDraft?: boolean,
+        parentVersionId?: string | null,
+    ) => void;
     clearPlan: () => void;
     loadVersions: () => Promise<void>;
     createPlan: (name: string, versionType: string, comment?: string) => Promise<PlanVersion>;
     deletePlan: (versionId: string) => Promise<void>;
+    deleteArchivedVersions: () => Promise<number>;
 
-    /**
-     * Итерация 13.21: показывать ли архивные версии в списке.
-     */
     includeArchived: boolean;
     setIncludeArchived: (value: boolean) => void;
 
-    /**
-     * Итерация 13.21: разархивировать версию плана.
-     */
     unarchiveVersion: (versionId: string) => Promise<void>;
+    archiveVersion: (versionId: string) => Promise<void>;
+
+    startDraft: (versionId: string) => Promise<void>;
+    commitDraft: (versionId: string) => Promise<void>;
+    discardDraft: () => Promise<void>;
 }
 
 export const PlanContext = createContext<PlanContextType | undefined>(undefined);
@@ -88,204 +86,137 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
                         id: parsed.id,
                         name: parsed.name,
                         has_snapshot: parsed.has_snapshot !== false,
+                        has_advisor_notes: parsed.has_advisor_notes === true,
+                        is_draft: parsed.is_draft === true,
+                        parent_version_id: parsed.parent_version_id || null,
                     } as CurrentPlan;
                 }
             }
-        } catch {
-            // ignore
-        }
+        } catch {}
         return null;
     });
     const [versions, setVersions] = useState<PlanVersion[]>([]);
 
-    /**
-     * Итерация 13.21: показывать ли архивные версии.
-     */
     const [includeArchived, setIncludeArchivedState] = useState<boolean>(() => {
-        try {
-            return localStorage.getItem(STORAGE_KEY_INCLUDE_ARCHIVED) === '1';
-        } catch {
-            return false;
-        }
+        try { return localStorage.getItem(STORAGE_KEY_INCLUDE_ARCHIVED) === '1'; } catch { return false; }
     });
 
-    /**
-     * Итерация 13.19: флаг «план содержит несохранённые изменения».
-     */
     const [planDirty, setPlanDirty] = useState<boolean>(false);
-
-    /**
-     * Итерация 14.2: глобальный режим редактирования для Ганта.
-     * По умолчанию — true (когда план не открыт).
-     * Синхронизируется с currentVersionId: при открытии плана
-     * сбрасывается в false (readonly).
-     */
     const [localEditMode, setLocalEditMode] = useState<boolean>(true);
+
+    // НОВОЕ: Флаг расчета
+    const [isCalculating, setIsCalculating] = useState<boolean>(false);
 
     const {isAuthenticated, isLoading} = useAuth();
 
-    // Сохраняем currentPlan в localStorage при каждом изменении
     useEffect(() => {
         try {
-            if (currentPlan) {
-                localStorage.setItem(STORAGE_KEY, JSON.stringify(currentPlan));
-            } else {
-                localStorage.removeItem(STORAGE_KEY);
-            }
-        } catch {
-            // ignore
-        }
+            if (currentPlan) localStorage.setItem(STORAGE_KEY, JSON.stringify(currentPlan));
+            else localStorage.removeItem(STORAGE_KEY);
+        } catch {}
     }, [currentPlan]);
 
-    // Итерация 13.21: сохраняем includeArchived в localStorage
     useEffect(() => {
-        try {
-            localStorage.setItem(
-                STORAGE_KEY_INCLUDE_ARCHIVED,
-                includeArchived ? '1' : '0',
-            );
-        } catch {
-            // ignore
-        }
+        try { localStorage.setItem(STORAGE_KEY_INCLUDE_ARCHIVED, includeArchived ? '1' : '0'); } catch {}
     }, [includeArchived]);
 
-    /**
-     * Итерация 13.19: сохраняем planDirty в localStorage per-plan.
-     */
     useEffect(() => {
         if (!currentPlan?.id) return;
         try {
             const key = `aps_plan_dirty_${currentPlan.id}`;
-            if (planDirty) {
-                localStorage.setItem(key, '1');
-            } else {
-                localStorage.removeItem(key);
-            }
-        } catch {
-            // ignore
-        }
+            if (planDirty) localStorage.setItem(key, '1');
+            else localStorage.removeItem(key);
+        } catch {}
     }, [planDirty, currentPlan?.id]);
 
-    /**
-     * Итерация 13.19: восстанавливаем planDirty при смене плана.
-     */
     useEffect(() => {
-        if (!currentPlan?.id) {
-            setPlanDirty(false);
-            return;
-        }
-        try {
-            const key = `aps_plan_dirty_${currentPlan.id}`;
-            setPlanDirty(localStorage.getItem(key) === '1');
-        } catch {
-            setPlanDirty(false);
-        }
+        if (!currentPlan?.id) { setPlanDirty(false); return; }
+        try { setPlanDirty(localStorage.getItem(`aps_plan_dirty_${currentPlan.id}`) === '1'); } catch { setPlanDirty(false); }
     }, [currentPlan?.id]);
 
-    /**
-     * Итерация 14.2: при открытии плана → readonly по умолчанию.
-     * При закрытии → редактирование.
-     */
     useEffect(() => {
+        // Если открыт черновик — включаем режим редактирования.
+        // Если открыт обычный план — выключаем.
+        // Если план не открыт — включаем (глобальный режим справочников).
         if (currentPlan?.id) {
-            setLocalEditMode(false);
+            setLocalEditMode(currentPlan.is_draft === true);
         } else {
             setLocalEditMode(true);
         }
-    }, [currentPlan?.id]);
+    }, [currentPlan?.id, currentPlan?.is_draft]);
 
-    /**
-     * Итерация 13.21: сеттер для includeArchived.
-     */
-    const setIncludeArchived = useCallback((value: boolean) => {
-        setIncludeArchivedState(value);
-    }, []);
+    const setIncludeArchived = useCallback((value: boolean) => { setIncludeArchivedState(value); }, []);
 
     const loadVersions = useCallback(async () => {
         try {
-            // Итерация 13.21: всегда получаем ВСЕ версии.
-            // Итерация 17.x: используем общий api-клиент вместо голого axios,
-            // чтобы интерцептор нормализовал detail в строку при 403/500.
-            const response = await api.get(
-                '/api/v1/schedule/versions',
-                { params: { include_archived: true } },
-            );
+            // Запрашиваем ВСЕ версии, включая черновики и архивные, чтобы текущий план не потерялся
+            const response = await api.get('/api/v1/schedule/versions', {
+                params: { include_archived: true, include_drafts: true }
+            });
             const list: PlanVersion[] = Array.isArray(response.data) ? response.data : [];
             setVersions(list);
 
             setCurrentPlan((prev) => {
                 if (!prev) return prev;
-                const stillExists = list.some((v) => v.id === prev.id);
-                if (!stillExists) {
+                const fresh = list.find((v) => v.id === prev.id);
+                if (!fresh) {
+                    // Если плана нет даже с черновиками — значит, его удалили
                     return null;
                 }
-                const fresh = list.find((v) => v.id === prev.id);
-                if (fresh) {
-                    const freshHasSnapshot = fresh.has_snapshot !== false;
-                    if (
-                        fresh.name !== prev.name ||
-                        freshHasSnapshot !== prev.has_snapshot
-                    ) {
-                        return {
-                            id: prev.id,
-                            name: fresh.name,
-                            has_snapshot: freshHasSnapshot,
-                        };
-                    }
+                const freshHasSnapshot = fresh.has_snapshot !== false;
+                const freshHasAdvisorNotes = fresh.has_advisor_notes === true;
+                const freshIsDraft = fresh.is_draft === true;
+                if (
+                    fresh.name !== prev.name ||
+                    freshHasSnapshot !== prev.has_snapshot ||
+                    freshHasAdvisorNotes !== prev.has_advisor_notes ||
+                    freshIsDraft !== prev.is_draft
+                ) {
+                    return {
+                        id: prev.id,
+                        name: fresh.name,
+                        has_snapshot: freshHasSnapshot,
+                        has_advisor_notes: freshHasAdvisorNotes,
+                        is_draft: freshIsDraft,
+                        parent_version_id: fresh.parent_version_id || prev.parent_version_id
+                    };
                 }
                 return prev;
             });
         } catch (err: any) {
-            if (err.response?.status !== 401) {
-                console.error("Ошибка загрузки версий планов:", err);
-            }
+            if (err.response?.status !== 401) console.error("Ошибка загрузки версий планов:", err);
         }
     }, []);
 
     useEffect(() => {
-        if (!isLoading && isAuthenticated) {
-            loadVersions();
-        }
+        if (!isLoading && isAuthenticated) loadVersions();
     }, [isLoading, isAuthenticated, loadVersions]);
 
     const setPlan = useCallback((
         versionId: string | null,
         name: string,
         hasSnapshot: boolean = true,
+        hasAdvisorNotes: boolean = false,
+        isDraft: boolean = false,
+        parentVersionId: string | null = null
     ) => {
-        if (!versionId) {
-            setCurrentPlan(null);
-            return;
-        }
+        if (!versionId) { setCurrentPlan(null); return; }
         setCurrentPlan({
             id: versionId,
             name: name || 'План без названия',
             has_snapshot: hasSnapshot,
+            has_advisor_notes: hasAdvisorNotes,
+            is_draft: isDraft,
+            parent_version_id: parentVersionId
         });
     }, []);
 
-    const clearPlan = useCallback(() => {
-        setCurrentPlan(null);
-    }, []);
+    const clearPlan = useCallback(() => { setCurrentPlan(null); }, []);
+    const markPlanDirty = useCallback(() => { setPlanDirty(true); }, []);
+    const clearPlanDirty = useCallback(() => { setPlanDirty(false); }, []);
 
-    const markPlanDirty = useCallback(() => {
-        setPlanDirty(true);
-    }, []);
-
-    const clearPlanDirty = useCallback(() => {
-        setPlanDirty(false);
-    }, []);
-
-    const createPlan = useCallback(async (
-        name: string,
-        versionType: string,
-        comment?: string,
-    ): Promise<PlanVersion> => {
-        const response = await api.post('/api/v1/schedule/versions', {
-            name,
-            version_type: versionType,
-            comment,
-        });
+    const createPlan = useCallback(async (name: string, versionType: string, comment?: string): Promise<PlanVersion> => {
+        const response = await api.post('/api/v1/schedule/versions', { name, version_type: versionType, comment });
         const newVersion: PlanVersion = response.data;
         setVersions((prev) => [newVersion, ...prev]);
         setPlanDirty(false);
@@ -295,57 +226,91 @@ export const PlanProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const deletePlan = useCallback(async (versionId: string): Promise<void> => {
         await api.delete(`/api/v1/schedule/versions/${versionId}`);
         setVersions((prev) => prev.filter((v) => v.id !== versionId));
-
-        setCurrentPlan((prev) => {
-            if (prev && prev.id === versionId) {
-                return null;
-            }
-            return prev;
-        });
-        try {
-            localStorage.removeItem(`aps_plan_dirty_${versionId}`);
-        } catch {
-            // ignore
-        }
+        setCurrentPlan((prev) => (prev && prev.id === versionId ? null : prev));
+        try { localStorage.removeItem(`aps_plan_dirty_${versionId}`); } catch {}
     }, []);
 
-    /**
-     * Итерация 13.21: разархивация версии.
-     */
+    const deleteArchivedVersions = useCallback(async (): Promise<number> => {
+        const archivedIds = versions.filter((v) => v.is_archived).map((v) => v.id);
+        if (archivedIds.length === 0) return 0;
+        let deletedCount = 0;
+        for (const id of archivedIds) {
+            try { await api.delete(`/api/v1/schedule/versions/${id}`); deletedCount++; } catch (err) { console.warn(`Не удалось удалить версию ${id}:`, err); }
+        }
+        setVersions((prev) => prev.filter((v) => !v.is_archived));
+        return deletedCount;
+    }, [versions]);
+
     const unarchiveVersion = useCallback(async (versionId: string): Promise<void> => {
-        await api.put(
-            `/api/v1/schedule/versions/${versionId}/unarchive`,
-        );
+        await api.put(`/api/v1/schedule/versions/${versionId}/unarchive`);
         await loadVersions();
     }, [loadVersions]);
+
+    const archiveVersion = useCallback(async (versionId: string): Promise<void> => {
+        await api.put(`/api/v1/schedule/versions/${versionId}/archive`);
+        await loadVersions();
+    }, [loadVersions]);
+
+    // ==========================================
+    // ЧЕРНОВИКИ (DRAFTS)
+    // ==========================================
+
+    const startDraft = useCallback(async (versionId: string) => {
+        const response = await api.post(`/api/v1/schedule/versions/${versionId}/draft`);
+        const draft = response.data;
+
+        // Если бэкенд вернул "Существующий черновик", переименовываем его для UI
+        const displayName = draft.name === 'Существующий черновик'
+            ? `${currentPlan?.name || 'План'} (черновик)`
+            : draft.name;
+
+        setPlan(draft.id, displayName, true, false, true, versionId);
+        setLocalEditMode(true);
+        await loadVersions();
+    }, [setPlan, loadVersions, currentPlan?.name]);
+
+    const commitDraft = useCallback(async (versionId: string) => {
+        await api.post(`/api/v1/schedule/versions/${versionId}/commit`);
+        await loadVersions();
+        setCurrentPlan((prev) => (prev && prev.id === versionId ? { ...prev, is_draft: false, name: prev.name.replace(' (черновик)', '').replace('📝 ', '') } : prev));
+        setLocalEditMode(false);
+    }, [loadVersions]);
+
+    const discardDraft = useCallback(async () => {
+        if (!currentPlan || !currentPlan.is_draft) return;
+
+        const parentId = currentPlan.parent_version_id;
+        const draftId = currentPlan.id;
+
+        await api.delete(`/api/v1/schedule/versions/${draftId}`);
+
+        if (parentId) {
+            const parentVersion = versions.find(v => v.id === parentId);
+            if (parentVersion) {
+                setPlan(parentVersion.id, parentVersion.name, parentVersion.has_snapshot, parentVersion.has_advisor_notes, false, null);
+            } else {
+                clearPlan();
+            }
+        } else {
+            clearPlan();
+        }
+
+        await loadVersions();
+    }, [currentPlan, versions, setPlan, clearPlan, loadVersions]);
 
     const currentVersionId = currentPlan?.id ?? null;
     const currentPlanName = currentPlan?.name ?? "Режим редактирования";
     const currentPlanHasSnapshot = currentPlan?.has_snapshot ?? true;
+    const currentPlanHasAdvisorNotes = currentPlan?.has_advisor_notes ?? false;
+    const isCurrentPlanDraft = currentPlan?.is_draft ?? false;
 
     return (
         <PlanContext.Provider value={{
-            currentVersionId,
-            currentPlanName,
-            currentPlanHasSnapshot,
-            planDirty,
-            markPlanDirty,
-            clearPlanDirty,
-            versions,
-            setPlan,
-            clearPlan,
-            loadVersions,
-            createPlan,
-            deletePlan,
-            // Итерация 13.21
-            includeArchived,
-            setIncludeArchived,
-            unarchiveVersion,
-            // ==========================================
-            // Итерация 14.2: глобальный режим редактирования
-            // ==========================================
-            localEditMode,
-            setLocalEditMode,
+            currentVersionId, currentPlanName, currentPlanHasSnapshot, currentPlanHasAdvisorNotes, isCurrentPlanDraft,
+            planDirty, markPlanDirty, clearPlanDirty, versions, setPlan, clearPlan, loadVersions, createPlan, deletePlan,
+            deleteArchivedVersions, includeArchived, setIncludeArchived, unarchiveVersion, archiveVersion,
+            localEditMode, setLocalEditMode, startDraft, commitDraft, discardDraft,
+            isCalculating, setIsCalculating,
         }}>
             {children}
         </PlanContext.Provider>

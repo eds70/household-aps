@@ -234,8 +234,6 @@ export const materialsApi = {
 // Recipes API
 // ==========================================
 export const recipesApi = {
-    // Итерация 17.x: поддержка version_id — если задан,
-    // backend читает из recipe_snapshot / recipe_item_snapshot.
     getAll: async (productId?: string, versionId?: string) => {
         const params: Record<string, string> = {};
         if (productId) params.product_id = productId;
@@ -255,7 +253,6 @@ export const recipesApi = {
         const response = await api.delete(`/api/v1/recipes/${id}`);
         return response.data;
     },
-    // JSON body вместо query-параметров
     addItem: async (
         recipeId: string,
         materialId: string,
@@ -267,7 +264,6 @@ export const recipesApi = {
         });
         return response.data;
     },
-    // Inline-edit qty компонента
     updateItem: async (
         recipeId: string,
         itemId: string,
@@ -387,13 +383,28 @@ export const ordersApi = {
         });
         return response.data;
     },
+    autoSplitOptimized: async (
+        orderId: string,
+        data: {
+            strategy?: string;
+            max_fill_percent?: number;
+            equipment_ids?: string[];
+        }
+    ) => {
+        const response = await api.post(`/api/v1/orders/${orderId}/auto-split-optimized`, data);
+        return response.data;
+    },
 };
 
 // ==========================================
 // Schedule API
 // ==========================================
 export const scheduleApi = {
-    build: async (data: { horizon_hours?: number; timeout_seconds?: number }) => {
+    build: async (data: {
+        horizon_hours?: number;
+        timeout_seconds?: number;
+        version_id?: string;
+    }) => {
         const response = await api.post('/api/v1/schedule/build', data);
         return response.data;
     },
@@ -406,14 +417,22 @@ export const scheduleApi = {
         return response.data;
     },
     getVersions: async (_includeArchived: boolean = false) => {
-        // Итерация 13.21 (Вариант B): всегда получаем ВСЕ версии.
         const response = await api.get('/api/v1/schedule/versions', {
-            params: { include_archived: true },
+            params: { include_archived: true, include_drafts: true },
         });
         return response.data;
     },
-    createVersion: async (data: { name: string; version_type: string; comment?: string }) => {
+    createVersion: async (data: {
+        name: string;
+        version_type: string;
+        comment?: string;
+        parent_version_id?: string;
+    }) => {
         const response = await api.post('/api/v1/schedule/versions', data);
+        return response.data;
+    },
+    createDraft: async (versionId: string) => {
+        const response = await api.post(`/api/v1/schedule/versions/${versionId}/draft`);
         return response.data;
     },
     deleteVersion: async (versionId: string) => {
@@ -560,7 +579,6 @@ export const rescheduleApi = {
         );
         return response.data;
     },
-
     moveTaskCascade: async (
         taskId: string,
         newStart: string,
@@ -578,7 +596,6 @@ export const rescheduleApi = {
         );
         return response.data;
     },
-
     resizeTask: async (
         taskId: string,
         newStart: string,
@@ -948,7 +965,6 @@ export const whatifApi = {
 // ==========================================
 
 export const helpApi = {
-    /** Список статей (можно фильтровать по категории). */
     listArticles: async (
         category?: string,
     ): Promise<import('../types').HelpArticlesListResponse> => {
@@ -956,30 +972,18 @@ export const helpApi = {
         const response = await api.get('/api/v1/help/articles', { params });
         return response.data;
     },
-
-    /** Одна статья по slug. */
     getArticle: async (
         slug: string,
     ): Promise<import('../types').HelpArticle> => {
         const response = await api.get(`/api/v1/help/articles/${slug}`);
         return response.data;
     },
-
-    /**
-     * Итерация 15.5: создать новую статью (только ADMIN).
-     * Slug опционален — если не задан, генерируется на бэкенде из title.
-     */
     createArticle: async (
         data: import('../types').HelpArticleCreate,
     ): Promise<import('../types').HelpArticle> => {
         const response = await api.post('/api/v1/help/articles', data);
         return response.data;
     },
-
-    /**
-     * Итерация 15.5: обновить статью (только ADMIN).
-     * Все поля опциональны — передавайте только изменяемые.
-     */
     updateArticle: async (
         slug: string,
         data: import('../types').HelpArticleUpdate,
@@ -987,24 +991,16 @@ export const helpApi = {
         const response = await api.put(`/api/v1/help/articles/${slug}`, data);
         return response.data;
     },
-
-    /**
-     * Итерация 15.5: удалить статью (только ADMIN).
-     */
     deleteArticle: async (
         slug: string,
     ): Promise<import('../types').HelpArticleDeleteResponse> => {
         const response = await api.delete(`/api/v1/help/articles/${slug}`);
         return response.data;
     },
-
-    /** Список категорий. */
     listCategories: async (): Promise<import('../types').HelpCategoriesResponse> => {
         const response = await api.get('/api/v1/help/categories');
         return response.data;
     },
-
-    /** Поиск по статьям. */
     search: async (
         q: string,
         limit: number = 30,
@@ -1014,26 +1010,12 @@ export const helpApi = {
         });
         return response.data;
     },
-
-    /** Получить содержимое файла docs/*.md. */
     getDocFile: async (
         filename: string,
     ): Promise<import('../types').HelpDocFileResponse> => {
         const response = await api.get(`/api/v1/help/docs/${filename}`);
         return response.data;
     },
-
-    // ==========================================
-    // ИТЕРАЦИЯ 15.2: Контекстные подсказки
-    // ==========================================
-
-    /**
-     * Возвращает словарь всех опубликованных подсказок.
-     *
-     * Загружается один раз в HelpHintsContext и кэшируется
-     * на всё время сессии. Компонент <Hint/> читает через
-     * useHint(hintKey).
-     */
     getHints: async (): Promise<import('../types').HelpHintsResponse> => {
         const response = await api.get('/api/v1/help/hints');
         return response.data;
@@ -1044,21 +1026,6 @@ export const helpApi = {
 // Audit API (Итерация 13.3 + 16)
 // ==========================================
 
-/**
- * Преобразует AuditFilterSpec в плоские query-параметры бэкенда.
- *
- * Бэкенд GET /api/v1/audit/log ждёт:
- *   sources=STOCK,LAB     (строка через запятую)
- *   severity=WARNING
- *   date_from=...
- *   date_to=...
- *   search=...
- *   actor_id=...
- *   entity_type=...
- *   delta_qty_from=...
- *   delta_qty_to=...
- *   limit=200
- */
 function _filtersToQuery(filters: import('../types').AuditFilterSpec): Record<string, any> {
     const q: Record<string, any> = {};
 
@@ -1079,32 +1046,19 @@ function _filtersToQuery(filters: import('../types').AuditFilterSpec): Record<st
 }
 
 export const auditApi = {
-    /**
-     * GET /api/v1/audit/log — журнал событий.
-     *
-     * Поддерживает два формата (для обратной совместимости):
-     *   1. Плоские параметры: { sources: "STOCK,LAB", severity: "WARNING", ... }
-     *   2. Расширенные фильтры: { filters: { sources: ["STOCK", "LAB"], ... } }
-     *
-     * Итерация 16.1: добавлены actor_id, entity_type, delta_qty_from/to.
-     */
     getLog: async (params?: {
-        // Старый формат (плоский)
         sources?: string;
         date_from?: string;
         date_to?: string;
         severity?: string;
         search?: string;
         limit?: number;
-        // Итерация 16.1: расширенные фильтры
         actor_id?: string;
         entity_type?: string;
         delta_qty_from?: number;
         delta_qty_to?: number;
-        // Или — единый объект
         filters?: import('../types').AuditFilterSpec;
     }): Promise<import('../types').AuditListResponse> => {
-        // Если передан filters — конвертируем его в query-параметры.
         const query: Record<string, any> = params?.filters
             ? _filtersToQuery(params.filters)
             : {
@@ -1120,7 +1074,6 @@ export const auditApi = {
                 delta_qty_to: params?.delta_qty_to,
             };
 
-        // Убираем undefined — иначе axios сериализует их в строку "undefined".
         Object.keys(query).forEach(
             (k) => query[k] === undefined && delete query[k]
         );
@@ -1129,9 +1082,6 @@ export const auditApi = {
         return response.data;
     },
 
-    /**
-     * GET /api/v1/audit/stats — сводка по источникам за N дней.
-     */
     getStats: async (
         days: number = 7,
     ): Promise<import('../types').AuditStatsResponse> => {
@@ -1141,11 +1091,6 @@ export const auditApi = {
         return response.data;
     },
 
-    /**
-     * Итерация 16.3: GET /api/v1/audit/stats/series — серии для дашборда.
-     *
-     * group_by='day' | 'source' | 'severity'.
-     */
     getStatsSeries: async (
         group_by: import('../types').AuditGroupBy = 'day',
         days: number = 7,
@@ -1156,29 +1101,16 @@ export const auditApi = {
         return response.data;
     },
 
-    /**
-     * GET /api/v1/audit/sources — список источников для UI.
-     */
     getSources: async (): Promise<{ sources: import('../types').AuditSourceInfo[] }> => {
         const response = await api.get('/api/v1/audit/sources');
         return response.data;
     },
 
-    // ==========================================
-    // ИТЕРАЦИЯ 16.2: СОХРАНЁННЫЕ ПРЕДСТАВЛЕНИЯ
-    // ==========================================
-
-    /**
-     * GET /api/v1/audit/saved-views — мои представления.
-     */
     listSavedViews: async (): Promise<import('../types').AuditSavedViewsListResponse> => {
         const response = await api.get('/api/v1/audit/saved-views');
         return response.data;
     },
 
-    /**
-     * POST /api/v1/audit/saved-views — создать представление.
-     */
     createSavedView: async (
         payload: import('../types').AuditSavedViewCreate,
     ): Promise<import('../types').AuditSavedView> => {
@@ -1186,9 +1118,6 @@ export const auditApi = {
         return response.data;
     },
 
-    /**
-     * PUT /api/v1/audit/saved-views/{id} — обновить представление.
-     */
     updateSavedView: async (
         id: string,
         payload: import('../types').AuditSavedViewUpdate,
@@ -1200,9 +1129,6 @@ export const auditApi = {
         return response.data;
     },
 
-    /**
-     * DELETE /api/v1/audit/saved-views/{id} — удалить представление.
-     */
     deleteSavedView: async (
         id: string,
     ): Promise<import('../types').AuditSavedViewDeleteResponse> => {
@@ -1210,16 +1136,6 @@ export const auditApi = {
         return response.data;
     },
 
-    // ==========================================
-    // ИТЕРАЦИЯ 16.4: ЭКСПОРТ В XLSX
-    // ==========================================
-
-    /**
-     * POST /api/v1/audit/export.xlsx — выгрузить события в Excel.
-     *
-     * Возвращает Blob (xlsx). Фронт сам решает, что с ним делать:
-     * сохранить через URL.createObjectURL или отдать пользователю.
-     */
     exportAudit: async (
         payload: import('../types').AuditExportRequest,
     ): Promise<Blob> => {
@@ -1235,28 +1151,11 @@ export const auditApi = {
 // ==========================================
 // License API (Итерация 17.1)
 // ==========================================
-// Эндпоинты для отображения статуса лицензии в UI.
-// Оба публичные — не требуют авторизации.
-
 export const licenseApi = {
-    /**
-     * GET /api/v1/license/info
-     *
-     * Возвращает статус лицензии.
-     * Доступно всегда — даже при невалидной лицензии,
-     * чтобы UI мог показать причину.
-     */
     getInfo: async (): Promise<import('../types').LicenseInfo> => {
         const response = await api.get('/api/v1/license/info');
         return response.data;
     },
-
-    /**
-     * GET /api/v1/license/instance
-     *
-     * Возвращает instance_id текущего сервера.
-     * Используется для генерации привязанной лицензии.
-     */
     getInstance: async (): Promise<import('../types').LicenseInstanceResponse> => {
         const response = await api.get('/api/v1/license/instance');
         return response.data;

@@ -1,8 +1,7 @@
 // frontend/src/pages/ProductsPage.tsx
-// Итерация 13.19: markPlanDirty() при изменениях, влияющих на расчёт.
-// Итерация 17.x: все запросы переведены на общий api-клиент из services/api.ts
-// (вместо голого axios), чтобы интерцептор нормализовал detail в строку
-// при 403/500 и не падало с "Objects are not valid as a React child".
+// Справочник продуктов — ГЛОБАЛЬНЫЙ. Не привязан к плану.
+// Изменения влияют на все планы (через снапшоты, которые обновляются
+// только при построении/пересчёте плана).
 
 import React, {useEffect, useState} from 'react';
 import {
@@ -22,7 +21,7 @@ import {
     Tooltip,
     Typography,
 } from '@mui/material';
-import {Add as AddIcon, Delete as DeleteIcon, Lock as LockIcon} from '@mui/icons-material';
+import {Add as AddIcon, Delete as DeleteIcon, InfoOutlined as InfoIcon,} from '@mui/icons-material';
 import type {ColDef, GridReadyEvent} from 'ag-grid-community';
 import {AllCommunityModule, ModuleRegistry} from 'ag-grid-community';
 import type {Product} from '../types';
@@ -39,8 +38,7 @@ const PRODUCT_TYPE_TRANSLATIONS: Record<string, string> = {
 };
 
 const ProductsPage: React.FC = () => {
-    const {currentVersionId, currentPlanName, markPlanDirty} = usePlan();
-    const isReadOnly = currentVersionId !== null;
+    const {currentVersionId, currentPlanName, isCurrentPlanDraft, markPlanDirty} = usePlan();
 
     const [products, setProducts] = useState<Product[]>([]);
     const [loading, setLoading] = useState(true);
@@ -55,14 +53,13 @@ const ProductsPage: React.FC = () => {
 
     useEffect(() => {
         loadProducts();
-    }, [currentVersionId]);
+    }, []);
 
     const loadProducts = async () => {
         setLoading(true);
         setError(null);
         try {
-            const params = currentVersionId ? { version_id: currentVersionId } : {};
-            const response = await api.get(`/api/v1/products/`, { params });
+            const response = await api.get('/api/v1/products/');
             setProducts(response.data);
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Ошибка загрузки данных');
@@ -80,18 +77,18 @@ const ProductsPage: React.FC = () => {
             valueFormatter: (params) => params.value ? params.value.substring(0, 8) : '',
             cellStyle: { fontFamily: 'monospace', fontSize: '11px', color: '#7f8c8d' },
         },
-        { headerName: 'Код', field: 'code', width: 150, editable: !isReadOnly },
-        { headerName: 'Наименование', field: 'name', flex: 2, minWidth: 200, editable: !isReadOnly },
+        { headerName: 'Код', field: 'code', width: 150, editable: true },
+        { headerName: 'Наименование', field: 'name', flex: 2, minWidth: 200, editable: true },
         {
-            headerName: 'Тип', field: 'type', width: 180, editable: !isReadOnly,
+            headerName: 'Тип', field: 'type', width: 180, editable: true,
             cellEditor: 'agSelectCellEditor',
             cellEditorParams: { values: ['PF', 'GP'] },
             valueFormatter: (params) => PRODUCT_TYPE_TRANSLATIONS[params.value] || params.value,
         },
-        { headerName: 'Коэф. вязкости', field: 'viscosity_coeff', width: 130, editable: !isReadOnly, type: 'numericColumn' },
-        { headerName: 'Требует нагрева', field: 'requires_heating', width: 150, editable: !isReadOnly, cellEditor: 'agCheckboxCellEditor' },
-        { headerName: 'Объем тары (л)', field: 'bottle_volume_l', width: 130, editable: !isReadOnly, type: 'numericColumn' },
-        { headerName: 'Скорость розлива', field: 'fill_speed_per_min', width: 150, editable: !isReadOnly, type: 'numericColumn' },
+        { headerName: 'Коэф. вязкости', field: 'viscosity_coeff', width: 130, editable: true, type: 'numericColumn' },
+        { headerName: 'Требует нагрева', field: 'requires_heating', width: 150, editable: true, cellEditor: 'agCheckboxCellEditor' },
+        { headerName: 'Объем тары (л)', field: 'bottle_volume_l', width: 130, editable: true, type: 'numericColumn' },
+        { headerName: 'Скорость розлива', field: 'fill_speed_per_min', width: 150, editable: true, type: 'numericColumn' },
         {
             headerName: 'Родительский ПФ', field: 'parent_pf_id', width: 200, editable: false,
             valueFormatter: (params) => {
@@ -104,7 +101,7 @@ const ProductsPage: React.FC = () => {
             headerName: 'Действия',
             width: 120,
             cellClass: 'ag-cell-actions',
-            cellRenderer: (params: any) => isReadOnly ? null : (
+            cellRenderer: (params: any) => (
                 <Box
                     sx={{
                         display: 'flex',
@@ -131,13 +128,12 @@ const ProductsPage: React.FC = () => {
 
     const defaultColDef: ColDef = {
         sortable: true, filter: true, resizable: true,
-        editable: !isReadOnly, singleClickEdit: true,
+        editable: true, singleClickEdit: true,
     };
 
     const getRowId = (params: any) => params.data.id;
 
     const handleCellValueChanged = async (params: any) => {
-        if (isReadOnly) return;
         const { data, colDef, newValue } = params;
         const field = colDef.field;
         if (!field || field === 'id') return;
@@ -145,7 +141,6 @@ const ProductsPage: React.FC = () => {
         try {
             await api.put(`/api/v1/products/${data.id}`, { [field]: newValue });
             setProducts((prev) => prev.map((p) => p.id === data.id ? { ...p, [field]: newValue } : p));
-            // Итерация 13.19: пометить план «грязным»
             markPlanDirty();
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Ошибка сохранения');
@@ -154,12 +149,10 @@ const ProductsPage: React.FC = () => {
     };
 
     const handleDelete = async (id: string) => {
-        if (isReadOnly) return;
         if (!window.confirm('Удалить продукт?')) return;
         try {
             await api.delete(`/api/v1/products/${id}`);
             setProducts((prev) => prev.filter((p) => p.id !== id));
-            // Итерация 13.19: пометить план «грязным»
             markPlanDirty();
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Ошибка удаления');
@@ -167,7 +160,6 @@ const ProductsPage: React.FC = () => {
     };
 
     const handleAdd = () => {
-        if (isReadOnly) return;
         setFormData({
             code: '', name: '', type: 'PF', viscosity_coeff: 1.0,
             requires_heating: false, bottle_volume_l: undefined,
@@ -177,14 +169,12 @@ const ProductsPage: React.FC = () => {
     };
 
     const handleSave = async () => {
-        if (isReadOnly) return;
         try {
             const response = await api.post(`/api/v1/products/`, {
                 ...formData, organization_id: '00000000-0000-0000-0000-000000000001',
             });
             setProducts((prev) => [...prev, response.data]);
             setDialogOpen(false);
-            // Итерация 13.19: пометить план «грязным»
             markPlanDirty();
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Ошибка создания');
@@ -210,17 +200,18 @@ const ProductsPage: React.FC = () => {
                             <MenuItem value="GP">Готовая продукция</MenuItem>
                         </Select>
                     </FormControl>
-                    {!isReadOnly && (
-                        <Button variant="contained" startIcon={<AddIcon />} onClick={handleAdd} sx={{ textTransform: 'none', fontWeight: 600 }}>
-                            Добавить продукт
-                        </Button>
-                    )}
+                    <Button variant="contained" startIcon={<AddIcon />} onClick={handleAdd} sx={{ textTransform: 'none', fontWeight: 600 }}>
+                        Добавить продукт
+                    </Button>
                 </Box>
             </Box>
 
-            {isReadOnly && (
-                <Alert severity="info" sx={{ mb: 2 }} icon={<LockIcon fontSize="inherit" />}>
-                    Режим просмотра: <b>{currentPlanName}</b>. Редактирование недоступно.
+            {currentVersionId && (
+                <Alert severity="info" sx={{ mb: 2 }} icon={<InfoIcon />}>
+                    Вы редактируете <b>глобальный справочник</b> «{currentPlanName}».
+                    {isCurrentPlanDraft
+                        ? ' Чтобы изменения попали в черновик, нажмите «Построить план» в шапке.'
+                        : ' Изменения не попадут в активный план без пересчёта.'}
                 </Alert>
             )}
 
@@ -250,100 +241,98 @@ const ProductsPage: React.FC = () => {
                 </CardContent>
             </Card>
 
-            {!isReadOnly && (
-                <DraggableDialog
-                    open={dialogOpen}
-                    onClose={() => setDialogOpen(false)}
-                    title="Добавить продукт"
-                    initialWidth={700}
-                    initialHeight="auto"
-                    minWidth={480}
-                    minHeight={400}
-                    actions={
-                        <>
-                            <Button onClick={() => setDialogOpen(false)}>Отмена</Button>
-                            <Button onClick={handleSave} variant="contained">Сохранить</Button>
-                        </>
-                    }
-                >
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                        <Box sx={{ display: 'flex', gap: 2 }}>
-                            <TextField
-                                label="Код продукта"
-                                fullWidth
-                                value={formData.code}
-                                onChange={(e) => setFormData({ ...formData, code: e.target.value })}
-                            />
-                            <FormControl fullWidth>
-                                <InputLabel>Тип</InputLabel>
-                                <Select value={formData.type} label="Тип" onChange={(e) => setFormData({ ...formData, type: e.target.value })}>
-                                    <MenuItem value="PF">Полуфабрикат</MenuItem>
-                                    <MenuItem value="GP">Готовая продукция</MenuItem>
-                                </Select>
-                            </FormControl>
-                        </Box>
+            <DraggableDialog
+                open={dialogOpen}
+                onClose={() => setDialogOpen(false)}
+                title="Добавить продукт"
+                initialWidth={700}
+                initialHeight="auto"
+                minWidth={480}
+                minHeight={400}
+                actions={
+                    <>
+                        <Button onClick={() => setDialogOpen(false)}>Отмена</Button>
+                        <Button onClick={handleSave} variant="contained">Сохранить</Button>
+                    </>
+                }
+            >
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <Box sx={{ display: 'flex', gap: 2 }}>
                         <TextField
-                            label="Наименование"
+                            label="Код продукта"
                             fullWidth
-                            value={formData.name}
-                            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                            value={formData.code}
+                            onChange={(e) => setFormData({ ...formData, code: e.target.value })}
                         />
+                        <FormControl fullWidth>
+                            <InputLabel>Тип</InputLabel>
+                            <Select value={formData.type} label="Тип" onChange={(e) => setFormData({ ...formData, type: e.target.value })}>
+                                <MenuItem value="PF">Полуфабрикат</MenuItem>
+                                <MenuItem value="GP">Готовая продукция</MenuItem>
+                            </Select>
+                        </FormControl>
+                    </Box>
+                    <TextField
+                        label="Наименование"
+                        fullWidth
+                        value={formData.name}
+                        onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    />
+                    <Box sx={{ display: 'flex', gap: 2 }}>
+                        <TextField
+                            label="Коэф. вязкости"
+                            type="number"
+                            fullWidth
+                            value={formData.viscosity_coeff}
+                            onChange={(e) => setFormData({ ...formData, viscosity_coeff: Number(e.target.value) })}
+                        />
+                        <FormControl fullWidth>
+                            <InputLabel>Требует нагрева</InputLabel>
+                            <Select
+                                value={formData.requires_heating ? 'true' : 'false'}
+                                label="Требует нагрева"
+                                onChange={(e) => setFormData({ ...formData, requires_heating: e.target.value === 'true' })}
+                            >
+                                <MenuItem value="true">Да</MenuItem>
+                                <MenuItem value="false">Нет</MenuItem>
+                            </Select>
+                        </FormControl>
+                    </Box>
+                    {formData.type === 'GP' && (
                         <Box sx={{ display: 'flex', gap: 2 }}>
                             <TextField
-                                label="Коэф. вязкости"
+                                label="Объем тары (л)"
                                 type="number"
                                 fullWidth
-                                value={formData.viscosity_coeff}
-                                onChange={(e) => setFormData({ ...formData, viscosity_coeff: Number(e.target.value) })}
+                                value={formData.bottle_volume_l || ''}
+                                onChange={(e) => setFormData({ ...formData, bottle_volume_l: Number(e.target.value) })}
                             />
-                            <FormControl fullWidth>
-                                <InputLabel>Требует нагрева</InputLabel>
-                                <Select
-                                    value={formData.requires_heating ? 'true' : 'false'}
-                                    label="Требует нагрева"
-                                    onChange={(e) => setFormData({ ...formData, requires_heating: e.target.value === 'true' })}
-                                >
-                                    <MenuItem value="true">Да</MenuItem>
-                                    <MenuItem value="false">Нет</MenuItem>
-                                </Select>
-                            </FormControl>
+                            <TextField
+                                label="Скорость розлива (шт/мин)"
+                                type="number"
+                                fullWidth
+                                value={formData.fill_speed_per_min || ''}
+                                onChange={(e) => setFormData({ ...formData, fill_speed_per_min: Number(e.target.value) })}
+                            />
                         </Box>
-                        {formData.type === 'GP' && (
-                            <Box sx={{ display: 'flex', gap: 2 }}>
-                                <TextField
-                                    label="Объем тары (л)"
-                                    type="number"
-                                    fullWidth
-                                    value={formData.bottle_volume_l || ''}
-                                    onChange={(e) => setFormData({ ...formData, bottle_volume_l: Number(e.target.value) })}
-                                />
-                                <TextField
-                                    label="Скорость розлива (шт/мин)"
-                                    type="number"
-                                    fullWidth
-                                    value={formData.fill_speed_per_min || ''}
-                                    onChange={(e) => setFormData({ ...formData, fill_speed_per_min: Number(e.target.value) })}
-                                />
-                            </Box>
-                        )}
-                        {formData.type === 'GP' && (
-                            <FormControl fullWidth>
-                                <InputLabel>Родительский ПФ</InputLabel>
-                                <Select
-                                    value={formData.parent_pf_id || ''}
-                                    label="Родительский ПФ"
-                                    onChange={(e) => setFormData({ ...formData, parent_pf_id: e.target.value })}
-                                >
-                                    <MenuItem value="">— Не выбран —</MenuItem>
-                                    {products.filter(p => p.type === 'PF').map(p => (
-                                        <MenuItem key={p.id} value={p.id}>{p.code} - {p.name}</MenuItem>
-                                    ))}
-                                </Select>
-                            </FormControl>
-                        )}
-                    </Box>
-                </DraggableDialog>
-            )}
+                    )}
+                    {formData.type === 'GP' && (
+                        <FormControl fullWidth>
+                            <InputLabel>Родительский ПФ</InputLabel>
+                            <Select
+                                value={formData.parent_pf_id || ''}
+                                label="Родительский ПФ"
+                                onChange={(e) => setFormData({ ...formData, parent_pf_id: e.target.value })}
+                            >
+                                <MenuItem value="">— Не выбран —</MenuItem>
+                                {products.filter(p => p.type === 'PF').map(p => (
+                                    <MenuItem key={p.id} value={p.id}>{p.code} - {p.name}</MenuItem>
+                                ))}
+                            </Select>
+                        </FormControl>
+                    )}
+                </Box>
+            </DraggableDialog>
         </Box>
     );
 };

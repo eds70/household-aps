@@ -5,6 +5,33 @@
 // Итерация 15.2: контекстные подсказки:
 //   - settings.system — рядом с системными настройками (🔒)
 //   - планирование: в заголовке шага «Основные» — ссылка на app vs plan
+//
+// Итерация 49 (plan-as-container):
+//   - handleSave(alsoBuild=true) порядок изменён:
+//     1) createVersion / save settings / save metadata;
+//     2) scheduleApi.build({ version_id: targetVersionId }) — пишет
+//        результат в ТОТ ЖЕ план (не создаёт новую версию);
+//     3) onSaved(...) — вызывается ТОЛЬКО после успешного build,
+//        чтобы SchedulePage не навигейтил на Гант раньше времени.
+//   - Пока build идёт, показывается RecalcProgressDialog.
+//
+// Итерация 50 (edit-plan-copy):
+//   - Пропсы baseVersionId и initialName.
+//   - В режиме create с baseVersionId грузим настройки родителя.
+//   - При createVersion передаём parent_version_id.
+//
+// Итерация 51 (fix save settings):
+//   - При создании плана сохраняются ВСЕ настройки (а не только измененные).
+//
+// Итерация 52 (fix build timeout):
+//   - При вызове scheduleApi.build передаём horizon_hours и timeout_seconds
+//     из values. Иначе бэкенд берёт дефолтные 720/600.
+//
+// Итерация 60 (asDraft + Cancel):
+//   - Пропс asDraft?: boolean. Если true — после createVersion создаётся
+//     черновик (createDraft), и onSaved получает draftId.
+//   - Кнопка «Отменить» перенесена в правый блок (рядом с навигацией),
+//     оформлена как outlined. Разделитель визуально отделяет её.
 
 import React, {useCallback, useEffect, useMemo, useState} from 'react';
 import {
@@ -33,6 +60,7 @@ import {
     ArrowBack as ArrowBackIcon,
     ArrowForward as ArrowForwardIcon,
     Check as CheckIcon,
+    Close as CloseIcon,
     InfoOutlined as InfoIcon,
     RestartAlt as ResetIcon,
     Save as SaveIcon,
@@ -40,6 +68,7 @@ import {
 } from '@mui/icons-material';
 import DraggableDialog from '../components/common/DraggableDialog';
 import Hint from '../components/help/Hint';
+import RecalcProgressDialog from '../components/gantt/RecalcProgressDialog';
 import {planSettingsApi, scheduleApi, settingsApi} from '../services/api';
 import {usePlan} from '../context/PlainContext';
 import type {SettingSpec, SettingsSchema} from '../types';
@@ -129,6 +158,10 @@ interface PlanSettingsWizardProps {
     onClose: () => void;
     mode?: WizardMode;
     versionId?: string | null;
+    baseVersionId?: string | null;
+    initialName?: string;
+    /** Итерация 60: если true — после создания плана сразу создаётся черновик. */
+    asDraft?: boolean;
     onSaved?: (
         versionId: string,
         action: 'save' | 'save-and-build' | 'create-and-build',
@@ -144,6 +177,9 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                                                                    onClose,
                                                                    mode = 'edit',
                                                                    versionId,
+                                                                   baseVersionId,
+                                                                   initialName,
+                                                                   asDraft = false,
                                                                    onSaved,
                                                                }) => {
     const isCreateMode = mode === 'create';
@@ -169,6 +205,13 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
     const [error, setError] = useState<string | null>(null);
     const [success, setSuccess] = useState<string | null>(null);
 
+    const [building, setBuilding] = useState(false);
+
+    const buildTimeoutSeconds = useMemo(() => {
+        const raw = values['timeout_seconds'];
+        return typeof raw === 'number' && raw > 0 ? raw : 600;
+    }, [values]);
+
     const [activeStep, setActiveStep] = useState(isCreateMode ? 0 : 1);
 
     const loadData = useCallback(async () => {
@@ -193,9 +236,26 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                 setPlanVersionType(meta.version_type);
                 setOriginalMeta(meta);
             } else {
-                const globalData = await settingsApi.getAll();
-                setValues(globalData);
-                setOriginalValues(globalData);
+                if (baseVersionId) {
+                    const baseData = await planSettingsApi.getForVersion(baseVersionId);
+                    setValues(baseData.settings);
+                    setOriginalValues(baseData.settings);
+
+                    const meta = {
+                        name: baseData.metadata?.name || '',
+                        comment: baseData.metadata?.comment || '',
+                        version_type: baseData.metadata?.version_type || 'MONTHLY',
+                    };
+                    setPlanName(initialName || meta.name);
+                    setPlanComment(meta.comment);
+                    setPlanVersionType(meta.version_type);
+                    setOriginalMeta({ name: '', comment: '', version_type: 'MONTHLY' });
+                } else {
+                    const globalData = await settingsApi.getAll();
+                    setValues(globalData);
+                    setOriginalValues(globalData);
+                    setPlanName(initialName || '');
+                }
             }
         } catch (err: any) {
             const detail = err.response?.data?.detail;
@@ -203,20 +263,21 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
         } finally {
             setLoading(false);
         }
-    }, [isEditMode, versionId]);
+    }, [isEditMode, versionId, baseVersionId, initialName]);
 
     useEffect(() => {
         if (open) {
             setActiveStep(isCreateMode ? 0 : 1);
-            setPlanName('');
+            setPlanName(initialName || '');
             setPlanComment('');
             setPlanVersionType('MONTHLY');
             setOriginalMeta({name: '', comment: '', version_type: 'MONTHLY'});
             setError(null);
             setSuccess(null);
+            setBuilding(false);
             loadData();
         }
-    }, [open, loadData, isCreateMode]);
+    }, [open, loadData, isCreateMode, initialName]);
 
     const handleChange = (key: string, value: any) => {
         setValues((prev) => ({...prev, [key]: value}));
@@ -258,13 +319,17 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
             name: planName.trim(),
             version_type: planVersionType,
             comment: planComment || undefined,
+            parent_version_id: baseVersionId || undefined,
         });
         return newVersion.id;
     };
 
     const handleSaveSettings = async (targetVersionId: string) => {
         const updates: Record<string, any> = {};
-        for (const key of changedKeys) {
+
+        const keysToSave = isCreateMode ? Object.keys(values) : changedKeys;
+
+        for (const key of keysToSave) {
             const spec = schema?.settings.find((s) => s.key === key);
             if (spec?.is_system) continue;
             updates[key] = values[key];
@@ -294,6 +359,7 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
         setSuccess(null);
         try {
             let targetVersionId: string | null = null;
+            let draftId: string | null = null;
 
             if (isCreateMode) {
                 targetVersionId = await handleCreatePlan();
@@ -302,7 +368,14 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                     return;
                 }
                 await handleSaveSettings(targetVersionId);
-                setSuccess(`План "${planName}" создан`);
+
+                // Итерация 60: если asDraft — создаём черновик от нового плана
+                if (asDraft) {
+                    const draftResponse = await scheduleApi.createDraft(targetVersionId);
+                    draftId = draftResponse.id;
+                }
+
+                setSuccess(`План "${planName}" создан${asDraft ? ' (черновик)' : ''}`);
             } else {
                 if (!versionId) {
                     setError('versionId не передан');
@@ -327,15 +400,44 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                 }
             }
 
-            if (onSaved && targetVersionId) {
+            if (!targetVersionId) {
+                return;
+            }
+
+            if (alsoBuild) {
+                setBuilding(true);
+                try {
+                    const buildPayload: Record<string, any> = {
+                        version_id: draftId || targetVersionId,
+                    };
+                    if (typeof values['horizon_hours'] === 'number') {
+                        buildPayload.horizon_hours = values['horizon_hours'];
+                    }
+                    if (typeof values['timeout_seconds'] === 'number') {
+                        buildPayload.timeout_seconds = values['timeout_seconds'];
+                    }
+
+                    await scheduleApi.build(buildPayload);
+                } catch (err: any) {
+                    const detail = err.response?.data?.detail;
+                    setError(
+                        typeof detail === 'string'
+                            ? detail
+                            : 'Ошибка построения плана',
+                    );
+                    setSaving(false);
+                    setBuilding(false);
+                    return;
+                } finally {
+                    setBuilding(false);
+                }
+            }
+
+            if (onSaved) {
                 const action = isCreateMode
                     ? 'create-and-build'
                     : (alsoBuild ? 'save-and-build' : 'save');
-                onSaved(targetVersionId, action);
-            }
-
-            if (alsoBuild && targetVersionId) {
-                await scheduleApi.build({});
+                onSaved(draftId || targetVersionId, action);
             }
         } catch (err: any) {
             const detail = err.response?.data?.detail;
@@ -370,8 +472,6 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
         const isChanged = changedKeys.includes(spec.key);
         const isDisabled = spec.is_system;
 
-        // ⚠️ labelNode вкладывается в <label> (FormControlLabel),
-        // поэтому внутри — только span, никаких div/p.
         const labelNode = (
             <Box
                 component="span"
@@ -395,14 +495,12 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                         <InfoIcon fontSize="small" color="disabled"/>
                     </Tooltip>
                 )}
-                {/* Итерация 15.2: подсказка про системные настройки */}
                 {isDisabled && (
                     <Hint id="settings.system" size="small" />
                 )}
             </Box>
         );
 
-        // Итерация 13.21: auto_archive_on_recalc — bool с расширенной подсказкой
         if (spec.value_type === 'bool') {
             return (
                 <FormControlLabel
@@ -662,7 +760,7 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                         onClick={handleReset}
                         startIcon={<ResetIcon/>}
                         color="warning"
-                        disabled={saving}
+                        disabled={saving || building}
                         sx={{textTransform: 'none'}}
                     >
                         Сбросить к глобальным
@@ -671,8 +769,18 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
             </Box>
             <Box sx={{display: 'flex', gap: 1, alignItems: 'center'}}>
                 <Button
+                    onClick={onClose}
+                    disabled={saving || building}
+                    startIcon={<CloseIcon />}
+                    variant="outlined"
+                    sx={{textTransform: 'none'}}
+                >
+                    Отменить
+                </Button>
+                <Divider orientation="vertical" flexItem sx={{mx: 1}}/>
+                <Button
                     onClick={handleBack}
-                    disabled={activeStep === 0 || saving}
+                    disabled={activeStep === 0 || saving || building}
                     startIcon={<ArrowBackIcon/>}
                     sx={{textTransform: 'none'}}
                 >
@@ -680,7 +788,7 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                 </Button>
                 <Button
                     onClick={handleNext}
-                    disabled={activeStep === WIZARD_STEPS.length - 1 || saving}
+                    disabled={activeStep === WIZARD_STEPS.length - 1 || saving || building}
                     endIcon={<ArrowForwardIcon/>}
                     sx={{textTransform: 'none'}}
                 >
@@ -691,20 +799,20 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
                     onClick={() => handleSave(false)}
                     variant="outlined"
                     startIcon={<SaveIcon/>}
-                    disabled={saving || !canSave}
+                    disabled={saving || building || !canSave}
                     sx={{textTransform: 'none'}}
                 >
-                    {isCreateMode ? 'Создать план' : 'Сохранить'}
+                    {isCreateMode ? (asDraft ? 'Создать черновик' : 'Создать план') : 'Сохранить'}
                 </Button>
                 <Button
                     onClick={() => handleSave(true)}
                     variant="contained"
                     startIcon={saving ? <CircularProgress size={18}/> : <CheckIcon/>}
-                    disabled={saving || !canSave}
+                    disabled={saving || building || !canSave}
                     sx={{textTransform: 'none'}}
                 >
                     {isCreateMode
-                        ? 'Создать и построить план'
+                        ? (asDraft ? 'Создать черновик и построить' : 'Создать и построить план')
                         : 'Сохранить и построить план'}
                 </Button>
             </Box>
@@ -712,122 +820,138 @@ const PlanSettingsWizard: React.FC<PlanSettingsWizardProps> = ({
     );
 
     return (
-        <DraggableDialog
-            open={open}
-            onClose={onClose}
-            draggable
-            resizable
-            closeOnBackdropClick={false}
-            showCloseButton
-            initialWidth={900}
-            initialHeight={640}
-            minWidth={640}
-            minHeight={400}
-            title={
-                <Box sx={{display: 'flex', alignItems: 'center', gap: 1.5}}>
-                    <SettingsIcon color="primary"/>
-                    <Box sx={{flexGrow: 1, minWidth: 0}}>
-                        <Typography variant="h6" component="div" sx={{fontWeight: 600}}>
-                            {isCreateMode ? 'Новый план' : 'Мастер настроек плана'}
-                        </Typography>
-                        <Typography variant="caption" color="text.secondary">
-                            {isCreateMode
-                                ? 'Заполните метаданные и настройки — план создастся сразу.'
-                                : 'Настройки привязаны к конкретному плану и не влияют на другие.'}
-                        </Typography>
-                    </Box>
-                </Box>
-            }
-            titleExtra={
-                <>
-                    {isEditMode && totalChanges > 0 && (
-                        <Chip
-                            label={`Изменено: ${totalChanges}`}
-                            color="warning"
-                            size="small"
-                        />
-                    )}
-                </>
-            }
-            actions={renderActions()}
-        >
-            {loading ? (
-                <Box sx={{display: 'flex', justifyContent: 'center', py: 6}}>
-                    <CircularProgress/>
-                </Box>
-            ) : (
-                <Box sx={{display: 'flex', minHeight: 0}}>
-                    <Box
-                        sx={{
-                            width: 260,
-                            flexShrink: 0,
-                            borderRight: '1px solid #e0e0e0',
-                            bgcolor: '#f8f9fa',
-                            p: 1.5,
-                            overflowY: 'auto',
-                        }}
-                    >
-                        <Stepper activeStep={activeStep} orientation="vertical" nonLinear>
-                            {WIZARD_STEPS.map((step, idx) => (
-                                <Step key={step.key} completed={idx < activeStep}>
-                                    <StepButton onClick={() => setActiveStep(idx)}>
-                                        <StepLabel>
-                                            <Typography
-                                                variant="body2"
-                                                sx={{fontWeight: idx === activeStep ? 700 : 400}}
-                                            >
-                                                {step.label}
-                                            </Typography>
-                                        </StepLabel>
-                                    </StepButton>
-                                </Step>
-                            ))}
-                        </Stepper>
-                    </Box>
-
-                    <Box sx={{flexGrow: 1, p: 3, overflowY: 'auto', minWidth: 0}}>
-                        <Box sx={{display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.5}}>
-                            <Typography variant="h6" sx={{fontWeight: 600}}>
-                                {currentStep?.label}
+        <>
+            <DraggableDialog
+                open={open}
+                onClose={onClose}
+                draggable
+                resizable
+                closeOnBackdropClick={false}
+                showCloseButton
+                initialWidth={900}
+                initialHeight={640}
+                minWidth={640}
+                minHeight={400}
+                title={
+                    <Box sx={{display: 'flex', alignItems: 'center', gap: 1.5}}>
+                        <SettingsIcon color="primary"/>
+                        <Box sx={{flexGrow: 1, minWidth: 0}}>
+                            <Typography variant="h6" component="div" sx={{fontWeight: 600}}>
+                                {isCreateMode
+                                    ? (asDraft ? 'Новый план (черновик)' : 'Новый план')
+                                    : 'Мастер настроек плана'}
                             </Typography>
-                            {/* Итерация 15.2: подсказка на шаге «Основные» */}
-                            {currentStep?.key === 'planning' && (
-                                <Hint id="settings.system" size="small"/>
+                            <Typography variant="caption" color="text.secondary">
+                                {isCreateMode
+                                    ? (asDraft
+                                        ? 'Создайте черновик на основе текущего плана. После создания вы останетесь на текущей странице.'
+                                        : 'Заполните метаданные и настройки — план создастся сразу.')
+                                    : 'Настройки привязаны к конкретному плану и не влияют на другие.'}
+                            </Typography>
+                        </Box>
+                    </Box>
+                }
+                titleExtra={
+                    <>
+                        {isEditMode && totalChanges > 0 && (
+                            <Chip
+                                label={`Изменено: ${totalChanges}`}
+                                color="warning"
+                                size="small"
+                            />
+                        )}
+                    </>
+                }
+                actions={renderActions()}
+            >
+                {loading ? (
+                    <Box sx={{display: 'flex', justifyContent: 'center', py: 6}}>
+                        <CircularProgress/>
+                    </Box>
+                ) : (
+                    <Box sx={{display: 'flex', minHeight: 0}}>
+                        <Box
+                            sx={{
+                                width: 260,
+                                flexShrink: 0,
+                                borderRight: '1px solid #e0e0e0',
+                                bgcolor: '#f8f9fa',
+                                p: 1.5,
+                                overflowY: 'auto',
+                            }}
+                        >
+                            <Stepper activeStep={activeStep} orientation="vertical" nonLinear>
+                                {WIZARD_STEPS.map((step, idx) => (
+                                    <Step key={step.key} completed={idx < activeStep}>
+                                        <StepButton onClick={() => setActiveStep(idx)}>
+                                            <StepLabel>
+                                                <Typography
+                                                    variant="body2"
+                                                    sx={{fontWeight: idx === activeStep ? 700 : 400}}
+                                                >
+                                                    {step.label}
+                                                </Typography>
+                                            </StepLabel>
+                                        </StepButton>
+                                    </Step>
+                                ))}
+                            </Stepper>
+                        </Box>
+
+                        <Box sx={{flexGrow: 1, p: 3, overflowY: 'auto', minWidth: 0}}>
+                            <Box sx={{display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.5}}>
+                                <Typography variant="h6" sx={{fontWeight: 600}}>
+                                    {currentStep?.label}
+                                </Typography>
+                                {currentStep?.key === 'planning' && (
+                                    <Hint id="settings.system" size="small"/>
+                                )}
+                            </Box>
+                            <Typography
+                                variant="caption"
+                                color="text.secondary"
+                                sx={{display: 'block', mb: 2}}
+                            >
+                                {currentStep?.description}
+                            </Typography>
+                            <Divider sx={{mb: 2}}/>
+
+                            {isMetaStep ? renderMetaStep() : (
+                                <Box sx={{display: 'flex', flexDirection: 'column', gap: 2.5}}>
+                                    {currentStepSettings.map(renderField)}
+                                </Box>
                             )}
                         </Box>
-                        <Typography
-                            variant="caption"
-                            color="text.secondary"
-                            sx={{display: 'block', mb: 2}}
-                        >
-                            {currentStep?.description}
-                        </Typography>
-                        <Divider sx={{mb: 2}}/>
-
-                        {isMetaStep ? renderMetaStep() : (
-                            <Box sx={{display: 'flex', flexDirection: 'column', gap: 2.5}}>
-                                {currentStepSettings.map(renderField)}
-                            </Box>
-                        )}
                     </Box>
-                </Box>
-            )}
+                )}
 
-            {error && (
-                <Box sx={{mt: 2}}>
-                    <Alert severity="error" onClose={() => setError(null)}>
-                        {error}
-                    </Alert>
-                </Box>
-            )}
-            {success && (
-                <Box sx={{mt: 2}}>
-                    <Alert severity="success" onClose={() => setSuccess(null)}>
-                        {success}
-                    </Alert>
-                </Box>
-            )}
-        </DraggableDialog>
+                {error && (
+                    <Box sx={{mt: 2}}>
+                        <Alert severity="error" onClose={() => setError(null)}>
+                            {error}
+                        </Alert>
+                    </Box>
+                )}
+                {success && (
+                    <Box sx={{mt: 2}}>
+                        <Alert severity="success" onClose={() => setSuccess(null)}>
+                            {success}
+                        </Alert>
+                    </Box>
+                )}
+            </DraggableDialog>
+
+            <RecalcProgressDialog
+                open={building}
+                operationLabel={
+                    isCreateMode
+                        ? 'Создание плана и расчёт'
+                        : 'Сохранение и расчёт'
+                }
+                operationHint="Solver рассчитывает расписание с учётом ограничений. Пожалуйста, подождите."
+                timeoutSeconds={buildTimeoutSeconds}
+            />
+        </>
     );
 };
 

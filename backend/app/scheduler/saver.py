@@ -30,6 +30,15 @@
     на 19.10 08:00: перенос на ближайший рабочий день»).
   - Колонка comment может отсутствовать в старой БД — проверяем
     через _has_column и добавляем в INSERT только если есть.
+
+Итерация 49 (plan-as-container):
+  - ScheduleSaver принимает version_id. Если задан — _do_save
+    перезаписывает существующий план (удаляет старые задачи и
+    снапшоты, заливает новые, ставит is_active=TRUE), а не создаёт
+    новую версию.
+  - Если version_id не задан — прежнее поведение (создание новой
+    версии), используется what-if / PlanSettingsWizard / старыми
+    клиентами.
 """
 import json
 import logging
@@ -48,22 +57,44 @@ from .snapshot import snapshot_all_catalogs
 
 logger = setup_scheduler_logging(level=logging.INFO)
 
+# Таблицы, которые нужно очистить перед перезаписью существующего плана.
+# advisor_note и plan_settings НЕ трогаем — они привязаны к плану
+# и должны пережить перестройку расписания.
+_REWRITE_CLEANUP_TABLES = (
+    ("scheduled_task", "schedule_version_id"),
+    ("equipment_snapshot", "version_id"),
+    ("product_snapshot", "version_id"),
+    ("operation_snapshot", "version_id"),
+    ("calendar_snapshot", "version_id"),
+    ("recipe_snapshot", "version_id"),
+    ("recipe_item_snapshot", "version_id"),
+)
+
 
 class ScheduleSaver:
     def __init__(
             self,
             org_id: UUID,
             session: Optional[AsyncSession] = None,
+            version_id: Optional[UUID] = None,
     ):
         """
         Итерация 12: опциональная session.
+
+        Итерация 49: опциональный version_id.
+            - Если задан — _do_save перезаписывает этот план
+              (план = контейнер, build пишет результат в него).
+            - Если None — _do_save создаёт новую версию
+              (what-if, PlanSettingsWizard, старые клиенты).
 
         Args:
             org_id: UUID организации.
             session: если передана — используем её (для what-if savepoint).
                      если None — создаём свою (обратная совместимость).
+            version_id: куда писать результат. None — создать новую версию.
         """
         self.org_id = org_id
+        self.version_id = version_id
 
         if session is not None:
             self.async_session = session
@@ -250,6 +281,93 @@ class ScheduleSaver:
         }
 
     # ==========================================
+    # ИТЕРАЦИЯ 49: ПЕРЕЗАПИСЬ СУЩЕСТВУЮЩЕГО ПЛАНА
+    # ==========================================
+
+    async def _prepare_rewrite(
+            self,
+            session: AsyncSession,
+            version_id: UUID,
+    ) -> str:
+        """
+        Готовит существующий план к перезаписи:
+          1. Проверяет, что план существует, не архивный и не черновик.
+          2. Снимает is_active со всех остальных планов.
+          3. Чистит старые задачи и снапшоты этой версии.
+          4. Ставит is_active=TRUE и обновляет created_at.
+
+        Returns:
+            Имя плана (не меняем).
+
+        Raises:
+            ValueError: если план нельзя перезаписывать.
+        """
+        check = await session.execute(
+            text("""
+                SELECT name, is_active, is_archived, is_draft
+                FROM schedule_version
+                WHERE id = :vid AND organization_id = :org_id
+                FOR UPDATE
+            """),
+            {"vid": version_id, "org_id": self.org_id},
+        )
+        row = check.fetchone()
+        if not row:
+            raise ValueError(f"План {version_id} не найден")
+
+        is_archived = bool(getattr(row, "is_archived", False))
+        is_draft = bool(getattr(row, "is_draft", False))
+
+        if is_draft:
+            raise ValueError(
+                "Нельзя строить в черновик. "
+                "Утвердите или отмените черновик."
+            )
+        if is_archived:
+            raise ValueError("Нельзя строить в архивный план.")
+
+        plan_name = row.name
+
+        # 1. Деактивация всех остальных активных
+        await session.execute(
+            text("""
+                UPDATE schedule_version
+                SET is_active = FALSE
+                WHERE organization_id = :org_id
+                  AND is_active = TRUE
+                  AND id <> :vid
+            """),
+            {"org_id": self.org_id, "vid": version_id},
+        )
+
+        # 2. Чистка старых задач и снапшотов
+        for table, column in _REWRITE_CLEANUP_TABLES:
+            await session.execute(
+                text(f"DELETE FROM {table} WHERE {column} = :vid"),
+                {"vid": version_id},
+            )
+
+        # 3. Помечаем активной, обновляем created_at
+        await session.execute(
+            text("""
+                UPDATE schedule_version
+                SET is_active = TRUE,
+                    created_at = NOW()
+                WHERE id = :vid AND organization_id = :org_id
+            """),
+            {"vid": version_id, "org_id": self.org_id},
+        )
+
+        log_with_context(
+            logger, logging.INFO,
+            f"Перезапись плана {str(version_id)[:8]} '{plan_name}': "
+            f"старые задачи и снапшоты очищены",
+            stage="save", org_id=str(self.org_id),
+        )
+
+        return plan_name
+
+    # ==========================================
     # ПУБЛИЧНЫЙ МЕТОД
     # ==========================================
 
@@ -281,73 +399,83 @@ class ScheduleSaver:
             replace_version_id: Optional[UUID] = None,
     ) -> Dict[str, Any]:
         """Основная логика сохранения."""
-        version_id = uuid4()
-        plan_name = f"План от {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-
-        # ==========================================
-        # 0. ИТЕРАЦИЯ 13.21: АРХИВАЦИЯ СТАРОЙ ВЕРСИИ
-        # ==========================================
         archive_result = {
             "archived": False,
             "replace_blocked": False,
             "replace_blocked_reason": None,
             "used_by_whatif": [],
         }
-
-        if replace_version_id is not None:
-            archive_result = await self._archive_version(
-                session, replace_version_id
-            )
+        deactivated_count = 0
 
         # ==========================================
-        # 1. Деактивация старых версий
+        # ИТЕРАЦИЯ 49: РАЗВИЛКА — перезапись или создание
         # ==========================================
-        deactivate_result = await session.execute(
-            text("""
-                UPDATE schedule_version
-                SET is_active = FALSE
-                WHERE organization_id = :org_id AND is_active = TRUE
-            """),
-            {"org_id": self.org_id},
-        )
-        deactivated_count = deactivate_result.rowcount or 0
-        if deactivated_count > 0:
+        if self.version_id is not None:
+            # --- Ветка A: перезапись существующего плана ---
+            version_id = self.version_id
+            plan_name = await self._prepare_rewrite(session, version_id)
             log_with_context(
                 logger, logging.INFO,
-                f"Деактивировано старых версий: {deactivated_count}",
+                f"Режим перезаписи: version={str(version_id)[:8]} "
+                f"'{plan_name}'",
                 stage="save", org_id=str(self.org_id),
             )
-
-        # ==========================================
-        # 2. Создание новой версии плана
-        # ==========================================
-        has_archived_col = await self._has_column(
-            session, "schedule_version", "is_archived"
-        )
-
-        if has_archived_col:
-            await session.execute(
-                text("""
-                    INSERT INTO schedule_version
-                        (id, organization_id, name, version_type,
-                         is_active, is_archived, created_at)
-                    VALUES
-                        (:id, :org_id, :name, 'MONTHLY',
-                         TRUE, FALSE, NOW())
-                """),
-                {"id": version_id, "org_id": self.org_id, "name": plan_name},
-            )
         else:
-            await session.execute(
+            # --- Ветка B: создание новой версии ---
+            version_id = uuid4()
+            plan_name = f"План от {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+
+            # 0. Архивация старой версии (replace_version_id)
+            if replace_version_id is not None:
+                archive_result = await self._archive_version(
+                    session, replace_version_id
+                )
+
+            # 1. Деактивация старых версий
+            deactivate_result = await session.execute(
                 text("""
-                    INSERT INTO schedule_version
-                        (id, organization_id, name, version_type,
-                         is_active, created_at)
-                    VALUES
-                        (:id, :org_id, :name, 'MONTHLY', TRUE, NOW())
+                    UPDATE schedule_version
+                    SET is_active = FALSE
+                    WHERE organization_id = :org_id AND is_active = TRUE
                 """),
-                {"id": version_id, "org_id": self.org_id, "name": plan_name},
+                {"org_id": self.org_id},
             )
+            deactivated_count = deactivate_result.rowcount or 0
+            if deactivated_count > 0:
+                log_with_context(
+                    logger, logging.INFO,
+                    f"Деактивировано старых версий: {deactivated_count}",
+                    stage="save", org_id=str(self.org_id),
+                )
+
+            # 2. Создание новой версии
+            has_archived_col = await self._has_column(
+                session, "schedule_version", "is_archived"
+            )
+
+            if has_archived_col:
+                await session.execute(
+                    text("""
+                        INSERT INTO schedule_version
+                            (id, organization_id, name, version_type,
+                             is_active, is_archived, created_at)
+                        VALUES
+                            (:id, :org_id, :name, 'MONTHLY',
+                             TRUE, FALSE, NOW())
+                    """),
+                    {"id": version_id, "org_id": self.org_id, "name": plan_name},
+                )
+            else:
+                await session.execute(
+                    text("""
+                        INSERT INTO schedule_version
+                            (id, organization_id, name, version_type,
+                             is_active, created_at)
+                        VALUES
+                            (:id, :org_id, :name, 'MONTHLY', TRUE, NOW())
+                    """),
+                    {"id": version_id, "org_id": self.org_id, "name": plan_name},
+                )
 
         # ==========================================
         # 3. Снапшоты справочников
@@ -620,6 +748,7 @@ class ScheduleSaver:
             f"Связей зависимостей: {deps_updated}. "
             f"Архивация старой версии: archived={archive_result['archived']}, "
             f"replace_blocked={archive_result['replace_blocked']}. "
+            f"mode={'rewrite' if self.version_id else 'create'}. "
             f"owns_session={self._owns_session}",
             stage="save", org_id=str(self.org_id),
         )

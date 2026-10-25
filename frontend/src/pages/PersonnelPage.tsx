@@ -1,5 +1,6 @@
 // frontend/src/pages/PersonnelPage.tsx
-// Итерация 13.19: markPlanDirty() при изменении capacity пула.
+// Ресурсные пулы — ГЛОБАЛЬНЫЙ справочник. Не привязаны к плану.
+// Изменения влияют на все планы при следующем пересчёте.
 
 import React, {useCallback, useEffect, useState} from 'react';
 import {
@@ -32,8 +33,8 @@ import {
     Cancel as CancelIcon,
     Edit as EditIcon,
     Factory as FactoryIcon,
+    InfoOutlined as InfoIcon,
     LocalFireDepartment as LocalFireDepartmentIcon,
-    Lock as LockIcon,
     Person as PersonIcon,
     PrecisionManufacturing as PrecisionManufacturingIcon,
     Refresh as RefreshIcon,
@@ -68,8 +69,7 @@ const POOL_TYPE_ICONS: Record<PersonnelPoolType, React.ReactNode> = {
 };
 
 const PersonnelPage: React.FC = () => {
-    const { currentVersionId, currentPlanName, markPlanDirty } = usePlan();
-    const isReadOnly = currentVersionId !== null;
+    const {currentVersionId, currentPlanName, isCurrentPlanDraft, markPlanDirty} = usePlan();
 
     const [data, setData] = useState<PersonnelPoolList | null>(null);
     const [loading, setLoading] = useState(true);
@@ -86,7 +86,7 @@ const PersonnelPage: React.FC = () => {
         setLoading(true);
         setError(null);
         try {
-            const result = await personnelApi.listPools(currentVersionId || undefined);
+            const result = await personnelApi.listPools();
             setData(result);
         } catch (err: any) {
             const detail = err.response?.data?.detail;
@@ -94,12 +94,11 @@ const PersonnelPage: React.FC = () => {
         } finally {
             setLoading(false);
         }
-    }, [currentVersionId]);
+    }, []);
 
     useEffect(() => { loadData(); }, [loadData]);
 
     const handleOpenEdit = (pool: PersonnelPool) => {
-        if (isReadOnly) return;
         setEditingPool(pool);
         setEditCapacity(pool.capacity);
         setEditName(pool.name);
@@ -118,7 +117,6 @@ const PersonnelPage: React.FC = () => {
             });
             setEditDialogOpen(false);
             await loadData();
-            // Итерация 13.19: пометить план
             markPlanDirty();
         } catch (err: any) {
             const detail = err.response?.data?.detail;
@@ -144,10 +142,18 @@ const PersonnelPage: React.FC = () => {
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                     <PersonIcon color="primary" sx={{ fontSize: 32 }} />
                     <Typography variant="h4" component="h1" sx={{ fontWeight: 600, color: '#2c3e50' }}>Персонал</Typography>
-                    {isReadOnly && <Chip icon={<LockIcon />} label={`Просмотр: ${currentPlanName}`} color="info" variant="filled" />}
                 </Box>
                 <Button variant="outlined" startIcon={<RefreshIcon />} onClick={loadData}>Обновить</Button>
             </Box>
+
+            {currentVersionId && (
+                <Alert severity="info" sx={{ mb: 2 }} icon={<InfoIcon />}>
+                    Вы редактируете <b>глобальный справочник</b> «{currentPlanName}».
+                    {isCurrentPlanDraft
+                        ? ' Чтобы изменения попали в черновик, нажмите «Построить план» в шапке.'
+                        : ' Изменения не попадут в активный план без пересчёта.'}
+                </Alert>
+            )}
 
             {error && <Alert severity="warning" sx={{ mb: 2 }} onClose={() => setError(null)}>{error}</Alert>}
 
@@ -219,13 +225,11 @@ const PersonnelPage: React.FC = () => {
                                         </Box>
                                     </TableCell>
                                     <TableCell align="center">
-                                        {!isReadOnly && (
-                                            <Tooltip title="Редактировать">
-                                                <IconButton size="small" color="primary" onClick={() => handleOpenEdit(pool)}>
-                                                    <EditIcon fontSize="small" />
-                                                </IconButton>
-                                            </Tooltip>
-                                        )}
+                                        <Tooltip title="Редактировать">
+                                            <IconButton size="small" color="primary" onClick={() => handleOpenEdit(pool)}>
+                                                <EditIcon fontSize="small" />
+                                            </IconButton>
+                                        </Tooltip>
                                     </TableCell>
                                 </TableRow>
                             );
@@ -236,7 +240,7 @@ const PersonnelPage: React.FC = () => {
 
             <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block', textAlign: 'center' }}>
                 💡 «Пик» — максимальное одновременное использование пула. Не должен превышать Capacity.
-                {isReadOnly ? ' Режим просмотра — редактирование недоступно.' : ' Нажмите ✏ для изменения capacity.'}
+                Нажмите ✏ для изменения capacity.
             </Typography>
 
             <Dialog open={editDialogOpen} onClose={() => setEditDialogOpen(false)} maxWidth="sm" fullWidth>

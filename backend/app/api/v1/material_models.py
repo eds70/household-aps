@@ -22,7 +22,6 @@ class MaterialCreate(MaterialBase):
     organization_id: UUID = Field(
         default=UUID("00000000-0000-0000-0000-000000000001")
     )
-    # Итерация 13.1: начальный остаток при создании
     initial_qty: Optional[float] = Field(
         default=0.0,
         ge=0,
@@ -48,7 +47,6 @@ class MaterialResponse(MaterialBase):
 
     id: UUID
     organization_id: UUID
-    # Итерация 13.1: остатки в ответе (JOIN с material_stock)
     stock_qty: Optional[float] = 0.0
     reserved_qty: Optional[float] = 0.0
 
@@ -77,11 +75,10 @@ class MaterialStockResponse(MaterialStockBase):
 
 
 # ==========================================
-# ИТЕРАЦИЯ 13.2: ЖУРНАЛ ИЗМЕНЕНИЙ ОСТАТКОВ
+# MATERIAL STOCK LOG
 # ==========================================
 
 class MaterialStockLogEntry(BaseModel):
-    """Одна запись журнала изменений остатков."""
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -91,7 +88,7 @@ class MaterialStockLogEntry(BaseModel):
     material_name: Optional[str] = None
     material_unit: Optional[str] = None
 
-    action: str  # INSERT | UPDATE | DELETE
+    action: str
 
     old_qty: Optional[float] = None
     new_qty: Optional[float] = None
@@ -109,17 +106,15 @@ class MaterialStockLogEntry(BaseModel):
 
 
 class MaterialStockLogListResponse(BaseModel):
-    """Список записей журнала + общее количество."""
     entries: List[MaterialStockLogEntry]
     total: int
 
 
 # ==========================================
-# ИТЕРАЦИЯ 13.2: ИМПОРТ ИЗ EXCEL
+# MATERIAL IMPORT
 # ==========================================
 
 class MaterialImportRow(BaseModel):
-    """Результат импорта одной строки Excel."""
     row_number: int
     code: str
     name: Optional[str] = None
@@ -127,12 +122,11 @@ class MaterialImportRow(BaseModel):
     unit: Optional[str] = None
     qty: Optional[float] = None
     reserved_qty: Optional[float] = None
-    status: str  # CREATED | UPDATED | SKIPPED | ERROR
+    status: str
     message: Optional[str] = None
 
 
 class MaterialImportResponse(BaseModel):
-    """Результат импорта из Excel."""
     total_rows: int
     created: int
     updated: int
@@ -143,11 +137,10 @@ class MaterialImportResponse(BaseModel):
 
 
 # ==========================================
-# ИТЕРАЦИЯ 13.3: ROLLBACK + CLEANUP ЖУРНАЛА
+# MATERIAL STOCK LOG ROLLBACK
 # ==========================================
 
 class MaterialStockLogRevertResponse(BaseModel):
-    """Ответ на отмену изменения остатков."""
     log_id: UUID
     material_id: UUID
     material_code: Optional[str] = None
@@ -159,7 +152,6 @@ class MaterialStockLogRevertResponse(BaseModel):
 
 
 class MaterialStockLogCleanupResponse(BaseModel):
-    """Ответ на очистку журнала."""
     deleted: int
     kept: int
     message: str
@@ -257,11 +249,6 @@ class ProductionOrderResponse(ProductionOrderBase):
 # ==========================================
 # BATCH (Итерация 5: лаборатория)
 # ==========================================
-# Итерация 17.5 (fix): продукт партии больше не принимается от клиента.
-# Backend выводит его из заказа: COALESCE(parent_pf_id, product_id).
-# Поле product_id осталось в BatchResponse (для чтения), но убрано из
-# BatchCreate (для создания).
-# ==========================================
 
 class BatchBase(BaseModel):
     volume_kg: float
@@ -276,10 +263,7 @@ class BatchBase(BaseModel):
 
 class BatchCreate(BatchBase):
     """
-    Создание партии.
-
-    Итерация 17.5 (fix): поле product_id убрано. Продукт партии
-    определяется backend'ом из заказа (COALESCE(parent_pf_id, id)).
+    Итерация 17.5 (fix): product_id убран — вычисляется backend'ом.
     """
     organization_id: UUID = Field(
         default=UUID("00000000-0000-0000-0000-000000000001")
@@ -299,10 +283,6 @@ class BatchUpdate(BaseModel):
 
 
 class BatchResponse(BatchBase):
-    """
-    Ответ с партией. product_id — вычисленный backend'ом
-    (ПФ для ГП-заказов), выводится для чтения.
-    """
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -315,3 +295,73 @@ class BatchResponse(BatchBase):
     product_name: Optional[str] = None
     product_code: Optional[str] = None
     equipment_name: Optional[str] = None
+
+
+# ==========================================
+# ИТЕРАЦИЯ 24: AUTO-SPLIT-OPTIMIZED
+# ==========================================
+
+class AutoSplitOptimizedRequest(BaseModel):
+    """
+    Запрос на оптимальное распределение заказа между реакторами.
+
+    Если equipment_ids не задан — используются ВСЕ реакторы,
+    которые могут варить ПФ этого заказа (по equipment_capability).
+
+    Если задан — распределение идёт только между ними (жёсткая
+    привязка к capability всё равно применяется).
+
+    max_fill_percent — доля загрузки реактора (по ТЗ ≤ 0.70).
+    """
+
+    equipment_ids: Optional[List[UUID]] = Field(
+        default=None,
+        description=(
+            "Список реакторов для распределения. Если None — "
+            "все подходящие по equipment_capability."
+        ),
+    )
+    strategy: str = Field(
+        default="greedy_makespan",
+        description=(
+            "Стратегия распределения: greedy_makespan (default), "
+            "round_robin, proportional, equal_split"
+        ),
+    )
+    max_fill_percent: float = Field(
+        default=0.70,
+        ge=0.1,
+        le=1.0,
+        description="Доля загрузки реактора (по ТЗ ≤ 0.70).",
+    )
+
+
+class AutoSplitBatchResult(BaseModel):
+    """Информация об одной созданной партии."""
+    batch_id: UUID
+    volume_kg: float
+    equipment_id: UUID
+    equipment_name: str
+
+
+class AutoSplitReactorSummary(BaseModel):
+    """Сводка по одному реактору: сколько партий, суммарный объём."""
+    equipment_id: UUID
+    equipment_name: str
+    max_batch_volume: float       # volume_kg × max_fill_percent
+    batches_count: int
+    total_volume_kg: float
+    load_percent: float           # total / (volume_kg × max_fill_percent)
+
+
+class AutoSplitOptimizedResponse(BaseModel):
+    """Ответ на оптимальное распределение."""
+    order_id: UUID
+    product_id: UUID
+    product_code: Optional[str] = None
+    target_qty: float
+    strategy: str
+    total_batches_created: int
+    batches: List[AutoSplitBatchResult]
+    per_reactor: List[AutoSplitReactorSummary]
+    message: str

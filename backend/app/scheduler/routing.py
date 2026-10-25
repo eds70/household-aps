@@ -2,60 +2,9 @@
 """
 Модуль построения цепочек операций (routing) для партии.
 
-Итерация 1: корректный расчёт длительности слива.
-Итерация 5: обрезка цепочки после лаборатории (truncate_after_lab).
-Итерация 6: operator_pool для каждого шага.
-
-Итерация 9 (fix #1):
-  - Пулы COOLING_ZONE и BOILER назначаются операциям
-    с needs_cooling_zone=TRUE и needs_boiler=TRUE.
-
-Итерация 9 (fix #2):
-  - Разделены postponed_wash и postponed_pumping.
-
-Итерация 9 (fix #3):
-  - _find_line_for_product использует equipment_capability.
-
-Итерация 9 (fix #4):
-  - Фильтрация линий по связи реактор → линия.
-
-Итерация 10 (разбиение длинных LINE_FILL):
-  - Задачи LINE_FILL длиннее MAX_FILL_PART_DURATION разбиваются
-    на N равных подзадач.
-
-Итерация 11 (Шаг 6):
-  - Максимальная длительность подзадачи слива зависит от
-    режима смен (shift_mode):
-      - 1x8:  6 часов (360 мин)
-      - 3x8:  6 часов (360 мин)
-      - 2x12: 10 часов (600 мин)
-
-Итерация 13.4 (fix C1):
-  - WASH зависит от TANK_TRANSFER (VIA_TANK) или LINE_FILL (DIRECT).
-
-Итерация 13.6 (fix #roles):
-  - PUMPING-операции пропускаются для DIRECT-маршрута.
-
-Итерация 17.5 (fix #silent-skip):
-  - Если у продукта партии нет operation_template — пишем WARNING.
-
-Итерация 18 (fix #gap):
-  - В RoutingStep добавлено поле max_gap_after_minutes.
-  - Для всех технологических переходов внутри партии зазор = 0.
-
-Итерация 18 (fix #parallel-deps):
-  - При выходе из параллельной группы операция вне группы зависит
-    от ВСЕХ операций группы, а не только от последней по порядку.
-
-Итерация 19 (fix #parallel-last):
-  - При выходе из параллельной группы операция вне группы зависит
-    ТОЛЬКО от операции с МАКСИМАЛЬНОЙ длительностью.
-  - Это гарантирует, что зависимость — ровно одна, и gap=0
-    применяется корректно (без пропуска, как при нескольких предках).
-  - Длительности операций детерминированы (calc_duration — чистая
-    функция), поэтому «последняя» операция вычисляется заранее.
-  - Устраняет 38-часовые разрывы между параллельной группой
-    и следующей операцией (например, «Лаб.анализ»).
+Итерация 34 (fix #capability-check):
+  - Добавлена проверка: если реактор, к которому привязана партия,
+    не имеет capability для этого ПФ, партия пропускается.
 """
 
 import logging
@@ -65,18 +14,11 @@ from typing import Dict, List, Optional, Any, Tuple, Union
 
 from .logging_config import setup_scheduler_logging, log_with_context
 
-# --- Логгер модуля ---
-
 logger = setup_scheduler_logging(level=logging.INFO)
-
-
-# --- Константы ---
 
 Number = Union[int, float, Decimal]
 
-
 class TaskRole:
-    """Роли задач в цепочке."""
     REACTOR_OP = "REACTOR_OP"
     TANK_TRANSFER = "TANK_TRANSFER"
     TANK_HOLD = "TANK_HOLD"
@@ -85,15 +27,11 @@ class TaskRole:
     SETUP = "SETUP"
     LAB_BLOCK = "LAB_BLOCK"
 
-
 class RouteType:
-    """Типы маршрутов."""
     DIRECT = "DIRECT"
     VIA_TANK = "VIA_TANK"
 
-
 class OperatorPool:
-    """Пулы ресурсов (операторы и оборудование)."""
     REACTOR_OPERATOR = "REACTOR_OPERATOR"
     LINE_OPERATOR = "LINE_OPERATOR"
     MANUAL_OPERATOR = "MANUAL_OPERATOR"
@@ -101,9 +39,7 @@ class OperatorPool:
     COOLING_ZONE = "COOLING_ZONE"
     BOILER = "BOILER"
 
-
 class DurationFormula:
-    """Формулы для расчета длительности."""
     WATER_LOADING = "water_loading"
     HEATING = "heating"
     MIXING = "mixing"
@@ -112,10 +48,8 @@ class DurationFormula:
     WASHING = "washing"
     LINE_FILLING = "line_filling"
 
-
 @dataclass
 class RoutingStep:
-    """Один шаг в цепочке операций."""
     op_id: str
     op: Dict[str, Any]
     role: str
@@ -127,17 +61,9 @@ class RoutingStep:
     is_first_in_batch: bool = False
     is_last_in_batch: bool = False
     operator_pool: Optional[str] = None
-    # Итерация 18 (fix #gap): максимально допустимый зазор ПОСЛЕ
-    # этой операции до начала следующей зависимой операции.
-    # 0 = следующая операция начинается строго после завершения этой
-    # (по ТЗ: операции внутри партии идут непрерывно).
     max_gap_after_minutes: int = 0
 
-
-# --- Вспомогательные функции ---
-
 def _to_float(value: Any, default: float = 0.0) -> float:
-    """Безопасно приводит значение к float."""
     if value is None:
         return default
     if isinstance(value, (int, float)):
@@ -149,21 +75,15 @@ def _to_float(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
 
-
-def _find_reactor_for_batch(
-        batch: Dict, equipment_map: Dict[str, Dict]
-) -> Optional[str]:
-    """Находит реактор, закрепленный за партией."""
+def _find_reactor_for_batch(batch: Dict, equipment_map: Dict[str, Dict]) -> Optional[str]:
     eq_id = batch.get("assigned_equipment_id")
     return str(eq_id) if eq_id else None
-
 
 def _find_tank_for_reactor(
         reactor_id: str,
         equipment_links: List[Dict],
         equipment_map: Dict[str, Dict],
 ) -> Optional[str]:
-    """Находит накопительную емкость, подключенную к реактору."""
     for link in equipment_links:
         if str(link["from_equipment_id"]) == reactor_id:
             to_id = str(link["to_equipment_id"])
@@ -171,7 +91,6 @@ def _find_tank_for_reactor(
             if target.get("type") == "TANK":
                 return to_id
     return None
-
 
 def _find_line_for_product(
         reactor_id: Optional[str],
@@ -181,14 +100,6 @@ def _find_line_for_product(
         gp_product_id: Optional[str] = None,
         equipment_capability: Optional[List[Dict]] = None,
 ) -> Optional[str]:
-    """
-    Находит линию розлива для партии.
-
-    Итерация 9 (fix #3): приоритет — маппинг ГП → линия через
-    equipment_capability.
-    Итерация 9 (fix #4): из нескольких линий выбираем ту, что
-    физически подключена к реактору партии.
-    """
     if gp_product_id and equipment_capability:
         candidates = [
             cap for cap in equipment_capability
@@ -233,9 +144,7 @@ def _find_line_for_product(
 
     return None
 
-
 def _get_line_operator_pool(line_equipment: Dict) -> Optional[str]:
-    """Определяет пул операторов для линии розлива."""
     line_type = line_equipment.get("type")
     if line_type == "MANUAL_STATION":
         return OperatorPool.MANUAL_OPERATOR
@@ -243,13 +152,11 @@ def _get_line_operator_pool(line_equipment: Dict) -> Optional[str]:
         return OperatorPool.LINE_OPERATOR
     return None
 
-
 def _calc_fill_duration(
         batch: Dict,
         product: Dict,
         gp_product: Optional[Dict] = None,
 ) -> int:
-    """Считает длительность слива партии на линию."""
     volume_kg = _to_float(batch.get("volume_kg"))
     if volume_kg <= 0:
         return 0
@@ -269,12 +176,10 @@ def _calc_fill_duration(
 
     return max(1, int(volume_kg))
 
-
 def _assign_operator_pool(
         op: Dict,
         line_equipment: Optional[Dict] = None,
 ) -> Optional[str]:
-    """Назначает пул ресурса для операции."""
     if line_equipment is not None:
         pool = _get_line_operator_pool(line_equipment)
         if pool:
@@ -291,16 +196,10 @@ def _assign_operator_pool(
 
     return op.get("operator_pool")
 
-
-# ==========================================
-# Итерация 11 (Шаг 6): разбиение длинных задач по режиму смен
-# ==========================================
-
 def _split_fill_duration(
         total_duration: int,
         shift_mode: str = "2x12",
 ) -> List[int]:
-    """Разбивает длительность слива на N частей."""
     if shift_mode == "1x8":
         max_part = 6 * 60
     elif shift_mode == "3x8":
@@ -323,13 +222,7 @@ def _split_fill_duration(
 
     return parts
 
-
-# ==========================================
-# Итерация 18 (fix #gap): проставление зазоров
-# ==========================================
-
 def _apply_gap_defaults(steps: List[RoutingStep]) -> List[RoutingStep]:
-    """Проставляет max_gap_after_minutes для всех шагов цепочки."""
     if not steps:
         return steps
 
@@ -340,11 +233,6 @@ def _apply_gap_defaults(steps: List[RoutingStep]) -> List[RoutingStep]:
         step.max_gap_after_minutes = gap
 
     return steps
-
-
-# ==========================================
-# Основная функция
-# ==========================================
 
 def build_routing(
         batch: Dict,
@@ -377,6 +265,29 @@ def build_routing(
     if reactor_id is None:
         return []
 
+    # ==========================================
+    # Итерация 34 (fix #capability-check):
+    # Проверяем, что реактор может варить этот ПФ.
+    # ==========================================
+    product_id = str(product.get("id", ""))
+    if equipment_capability and product_id:
+        can_produce = any(
+            str(cap.get("equipment_id")) == reactor_id
+            and str(cap.get("product_id")) == product_id
+            for cap in equipment_capability
+        )
+        if not can_produce:
+            log_with_context(
+                logger, logging.WARNING,
+                f"[routing] Пропущена партия {batch.get('id')}: "
+                f"реактор {reactor.get('name', reactor_id)} "
+                f"не предназначен для варки продукта "
+                f"{product.get('code', product_id)}. "
+                f"Партия выпадет из плана.",
+                stage="routing",
+            )
+            return []
+
     route_type = product.get("route_type", RouteType.DIRECT)
     tank_id = (
         _find_tank_for_reactor(reactor_id, equipment_links, equipment_map)
@@ -400,12 +311,9 @@ def build_routing(
     steps: List[RoutingStep] = []
     prev_op_id: Optional[str] = None
     parallel_group_last_op: Dict[str, str] = {}
-
-    # Итерация 19 (fix #parallel-last): храним (op_id, duration) в группе.
     group_ops_by_id: Dict[str, List[Tuple[str, int]]] = {}
 
     lab_seen = False
-
     postponed_wash: Optional[Dict] = None
     postponed_pumping: Optional[Dict] = None
 
@@ -467,9 +375,7 @@ def build_routing(
         prev_op_id = str(postponed_pumping["id"])
         last_op_before_fill = prev_op_id
 
-    # ==========================================
-    # 4. Добавляем слив на линию
-    # ==========================================
+    # 4. Слив на линию
     if line_id:
         fill_duration = _calc_fill_duration(batch, product, gp_product)
         fill_op_id = f"fill_{batch['id']}"
@@ -543,9 +449,7 @@ def build_routing(
 
             prev_op_id = prev_part_id
 
-    # ==========================================
     # 5. Замыв реактора
-    # ==========================================
     if postponed_wash is not None:
         duration = calc_duration(postponed_wash, batch, reactor, product)
 
@@ -567,7 +471,6 @@ def build_routing(
 
     return _finalize_steps(steps)
 
-
 def _calculate_dependencies(
         op,
         prev_op_id,
@@ -575,27 +478,10 @@ def _calculate_dependencies(
         group_ops_by_id,
         current_duration,
 ):
-    """
-    Вычисляет зависимости для операции.
-
-    Итерация 19 (fix #parallel-last):
-      - При выходе из параллельной группы depends_on = [op_id операции
-        с МАКСИМАЛЬНОЙ длительностью] (не все, а ровно одна).
-      - Это гарантирует, что gap=0 применится корректно.
-
-    Args:
-        op: текущая операция (dict).
-        prev_op_id: op_id предыдущей операции.
-        parallel_group_last_op: Dict[group_id → op_id «якоря»].
-        group_ops_by_id: Dict[group_id → List[(op_id, duration)]].
-        current_duration: длительность текущей операции (для регистрации
-            в группе, если она в группе).
-    """
     depends_on, is_parallel_with = [], []
     op_parallel_group = op.get("parallel_group_id")
 
     if op_parallel_group:
-        # Операция внутри параллельной группы.
         if op_parallel_group in parallel_group_last_op:
             is_parallel_with.append(parallel_group_last_op[op_parallel_group])
         elif prev_op_id:
@@ -606,9 +492,7 @@ def _calculate_dependencies(
             (str(op["id"]), int(current_duration))
         )
     else:
-        # Операция вне группы.
         if prev_op_id:
-            # Ищем, в какой группе была prev_op_id.
             prev_group_id: Optional[str] = None
             for gid, ops in group_ops_by_id.items():
                 for (oid, _dur) in ops:
@@ -619,8 +503,6 @@ def _calculate_dependencies(
                     break
 
             if prev_group_id is not None:
-                # Итерация 19: берём операцию с МАКСИМАЛЬНОЙ длительностью
-                # (она закончится последней при параллельном старте).
                 ops_in_group = group_ops_by_id[prev_group_id]
                 if ops_in_group:
                     last_op_id, _last_dur = max(
@@ -634,9 +516,7 @@ def _calculate_dependencies(
 
     return depends_on, is_parallel_with
 
-
 def _finalize_steps(steps: List[RoutingStep]) -> List[RoutingStep]:
-    """Устанавливает флаги is_first_in_batch и is_last_in_batch."""
     if not steps:
         return []
 
@@ -647,9 +527,7 @@ def _finalize_steps(steps: List[RoutingStep]) -> List[RoutingStep]:
 
     return steps
 
-
 def get_routing_summary(steps: List[RoutingStep]) -> Dict[str, Any]:
-    """Возвращает сводку по цепочке."""
     return {
         "total_steps": len(steps),
         "roles": [s.role for s in steps],

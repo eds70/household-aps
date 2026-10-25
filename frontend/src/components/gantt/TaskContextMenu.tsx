@@ -1,17 +1,4 @@
 // frontend/src/components/gantt/TaskContextMenu.tsx
-/**
- * Контекстное меню задачи на диаграмме Ганта (Итерация 13.17).
- *
- * Открывается по клику правой кнопкой мыши на задаче.
- * Содержит действия:
- *  - просмотровые (всегда): открыть карточку, фильтр по партии, операции партии, копирование ID;
- *  - изменяющие (только при !isReadOnly): закрепить/открепить, сдвиг ±1ч.
- *
- * Итерация 13.17 (9b): базовый функционал.
- * Итерация 13.17 (9f): поддержка свёрнутых групп.
- * Итерация 13.17 (9h): readonly-режим — скрываем изменяющие пункты.
- *                    Убран пункт «Отменить задачу» (не реализован на backend).
- */
 import React from 'react';
 import {Divider, ListItemIcon, ListItemText, Menu, MenuItem,} from '@mui/material';
 import {
@@ -23,6 +10,8 @@ import {
     ListAlt as ListAltIcon,
     PushPin as PushPinIcon,
     PushPinOutlined as PushPinOutlinedIcon,
+    UnfoldLess as CollapseIcon,
+    UnfoldMore as ExpandIcon,
 } from '@mui/icons-material';
 import type {TaskData} from './types';
 
@@ -46,6 +35,13 @@ export interface TaskContextMenuProps {
     onUnpinTask: (task: TaskData) => void;
     onShiftTask: (task: TaskData, deltaMinutes: number) => void;
 
+    /** Итерация 40: развернуть/свернуть группу. */
+    onToggleGroup?: (groupKey: string) => void;
+    /** Итерация 41: свернуть раскрытую группу. */
+    onCollapseGroup?: (groupKey: string) => void;
+    /** Ключ группы, если задача является частью раскрытой группы. */
+    currentGroupKey?: string | null;
+
     /** Закрыть меню (без действия). */
     onClose: () => void;
 }
@@ -62,6 +58,9 @@ const TaskContextMenu: React.FC<TaskContextMenuProps> = ({
                                                              onPinTask,
                                                              onUnpinTask,
                                                              onShiftTask,
+                                                             onToggleGroup,
+                                                             onCollapseGroup,
+                                                             currentGroupKey,
                                                              onClose,
                                                          }) => {
     const open = anchorPosition !== null && task !== null;
@@ -89,6 +88,7 @@ const TaskContextMenu: React.FC<TaskContextMenuProps> = ({
     const isRealTask = !isSetup && !isDowntime;
 
     const isGroup = task.id.startsWith('__group__');
+    const groupKey = isGroup ? task.id.substring('__group__'.length) : null;
 
     const hasBatch =
         !!task.batch_id &&
@@ -124,6 +124,42 @@ const TaskContextMenu: React.FC<TaskContextMenuProps> = ({
             </MenuItem>
 
             <Divider />
+
+            {/* ==========================================
+                Итерация 40: Развернуть/Свернуть группу
+            ========================================== */}
+            {isGroup && onToggleGroup && groupKey && (
+                <>
+                    <MenuItem onClick={() => {
+                        onToggleGroup(groupKey);
+                        onClose();
+                    }}>
+                        <ListItemIcon>
+                            <ExpandIcon fontSize="small" />
+                        </ListItemIcon>
+                        <ListItemText>Развернуть группу</ListItemText>
+                    </MenuItem>
+                    <Divider />
+                </>
+            )}
+
+            {/* ==========================================
+                Итерация 41: Свернуть раскрытую группу
+            ========================================== */}
+            {currentGroupKey && onCollapseGroup && (
+                <>
+                    <MenuItem onClick={() => {
+                        onCollapseGroup(currentGroupKey);
+                        onClose();
+                    }}>
+                        <ListItemIcon>
+                            <CollapseIcon fontSize="small" />
+                        </ListItemIcon>
+                        <ListItemText>Свернуть группу</ListItemText>
+                    </MenuItem>
+                    <Divider />
+                </>
+            )}
 
             {/* ==========================================
                 Просмотровые действия (всегда)

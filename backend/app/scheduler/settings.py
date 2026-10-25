@@ -5,15 +5,7 @@
 Итерация 11: централизация настроек в модуле app_settings.
 Итерация 12: категория optimization — веса multi-objective.
 Итерация 13.21: категория planning — auto_archive_on_recalc.
-
-Все настройки описаны в SETTINGS_REGISTRY. UI и API читают
-метаданные оттуда — это обеспечивает единый источник правды.
-
-Использование:
-    from app.scheduler.settings import get_setting, get_all_settings
-
-    mode = await get_setting(session, org_id, "shift_mode", default="2x12")
-    all_settings = await get_all_settings(session, org_id)
+Итерация 35: категория calendar — allow_interrupt_line_fill.
 """
 
 import json
@@ -185,6 +177,19 @@ SETTINGS_REGISTRY: List[SettingSpec] = [
         default=False,
         description="Разрешить работу в субботу и воскресенье",
         display_order=5,
+    ),
+    # Итерация 35: настройка прерывания слива
+    SettingSpec(
+        key="allow_interrupt_line_fill",
+        category="calendar",
+        label="Разрешить прерывать слив на выходные",
+        value_type="bool",
+        default=True,
+        description=(
+            "Если выключено, задачи LINE_FILL не будут разбиваться на части "
+            "при переносе через выходные (перенесутся целиком)."
+        ),
+        display_order=8,
     ),
     SettingSpec(
         key="max_task_hours_for_calendar",
@@ -377,10 +382,6 @@ SETTINGS_REGISTRY: List[SettingSpec] = [
     # ==========================================
     # ОПТИМИЗАЦИЯ (Итерация 12)
     # ==========================================
-    # Multi-objective: взвешенная сумма нормализованных компонентов.
-    # Все веса в [0, 1]. Хотя бы один должен быть > 0.
-    # По умолчанию: только makespan = 1.0 (обратная совместимость).
-    # ==========================================
     SettingSpec(
         key="weight_makespan",
         category="optimization",
@@ -457,7 +458,7 @@ CATEGORY_LABELS: Dict[str, str] = {
     "cz": "Честный Знак",
     "resources": "Персонал",
     "features": "Feature-флаги",
-    "optimization": "Оптимизация",       # Итерация 12
+    "optimization": "Оптимизация",
 }
 
 CATEGORY_ORDER: List[str] = [
@@ -470,7 +471,7 @@ CATEGORY_ORDER: List[str] = [
     "cz",
     "resources",
     "features",
-    "optimization",                       # Итерация 12
+    "optimization",
 ]
 
 
@@ -481,8 +482,6 @@ CATEGORY_ORDER: List[str] = [
 def _parse_value(raw: Any, value_type: Optional[str] = None) -> Any:
     """
     Парсит JSONB-значение из БД в Python-тип.
-
-    Если value_type задан — приводит к нему.
     """
     if raw is None:
         return None
@@ -519,7 +518,6 @@ def _parse_value(raw: Any, value_type: Optional[str] = None) -> Any:
             except json.JSONDecodeError:
                 pass
 
-        # Попытка распарсить число
         try:
             if "." in stripped:
                 return float(stripped)
@@ -540,8 +538,7 @@ async def get_setting(
         default: Any = None,
 ) -> Any:
     """
-    Читает настройку из БД. Если не найдена — возвращает default
-    из реестра или указанный default.
+    Читает настройку из БД.
     """
     spec = _SETTINGS_BY_KEY.get(key)
     value_type = spec.value_type if spec else None
@@ -558,7 +555,6 @@ async def get_setting(
     if row is not None:
         return _parse_value(row.setting_value, value_type)
 
-    # Fallback — из реестра
     if spec is not None:
         return spec.default
 
@@ -570,8 +566,7 @@ async def get_all_settings(
         org_id: UUID,
 ) -> Dict[str, Any]:
     """
-    Возвращает все настройки организации в виде словаря {key: value}.
-    Недостающие заполняются значениями по умолчанию из реестра.
+    Возвращает все настройки организации.
     """
     result = await session.execute(
         text("""
@@ -586,7 +581,6 @@ async def get_all_settings(
         vt = spec.value_type if spec else None
         db_settings[row.setting_key] = _parse_value(row.setting_value, vt)
 
-    # Добавляем значения по умолчанию
     for spec in SETTINGS_REGISTRY:
         if spec.key not in db_settings:
             db_settings[spec.key] = spec.default
@@ -614,7 +608,6 @@ async def get_category_settings(
         vt = spec.value_type if spec else None
         db_settings[row.setting_key] = _parse_value(row.setting_value, vt)
 
-    # Добавляем недостающие из реестра
     for spec in SETTINGS_REGISTRY:
         if spec.category == category and spec.key not in db_settings:
             db_settings[spec.key] = spec.default
@@ -625,7 +618,6 @@ async def get_category_settings(
 def get_settings_schema() -> List[Dict[str, Any]]:
     """
     Возвращает полный реестр настроек для UI.
-    Используется эндпоинтом GET /api/v1/settings/schema.
     """
     return [
         {
@@ -657,9 +649,6 @@ def get_categories() -> List[Dict[str, str]]:
 def validate_setting(key: str, value: Any) -> Any:
     """
     Валидирует значение настройки по реестру.
-
-    Raises:
-        ValueError: если значение не проходит валидацию.
     """
     spec = _SETTINGS_BY_KEY.get(key)
     if spec is None:
@@ -670,7 +659,6 @@ def validate_setting(key: str, value: Any) -> Any:
             f"Настройка '{key}' системная — изменить нельзя через UI"
         )
 
-    # Приведение типа
     if spec.value_type == "int":
         try:
             value = int(value)
@@ -706,7 +694,6 @@ def validate_setting(key: str, value: Any) -> Any:
                 )
 
     elif spec.value_type in ("str", "json"):
-        # Принимаем как есть
         pass
 
     return value
@@ -719,11 +706,10 @@ async def update_setting(
         value: Any,
 ) -> Any:
     """
-    Обновляет одну настройку. Возвращает новое значение.
+    Обновляет одну настройку.
     """
     value = validate_setting(key, value)
 
-    # Сериализация в JSONB
     if isinstance(value, str):
         serialized = json.dumps(value)
     elif isinstance(value, bool):
@@ -766,9 +752,6 @@ async def update_settings_bulk(
 ) -> Dict[str, Any]:
     """
     Обновляет несколько настроек за один раз.
-
-    Returns:
-        Словарь {key: new_value} для успешно обновлённых.
     """
     result = {}
     errors = {}

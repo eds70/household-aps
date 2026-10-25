@@ -32,6 +32,11 @@ Pydantic-модели для API планирования и Ганта.
 Итерация 20 (fix #comment):
 - Добавлено поле comment в GanttTask — причина переноса задачи
   постобработкой календаря (выходные, простой).
+
+Итерация 49 (plan-as-container):
+- В ScheduleBuildRequest добавлено version_id — целевой план,
+  в который пишется результат расчёта. Если задан, POST /build
+  перезаписывает этот план (не создаёт новую версию).
 """
 
 from datetime import datetime
@@ -48,6 +53,11 @@ class ScheduleBuildRequest(BaseModel):
     Итерация 10: horizon_hours уменьшен с 2160 до 720 (30 дней).
     Реальный план укладывается в 30 дней; меньшее число переменных
     ускоряет propagation.
+
+    Итерация 49: version_id — целевой план. Если задан, результат
+    расчёта записывается в него (перезапись), а не создаётся новая
+    версия. Если None — прежнее поведение (создать новую версию),
+    используется what-if / PlanSettingsWizard / старыми клиентами.
     """
     horizon_hours: int = Field(
         default=720,
@@ -56,6 +66,15 @@ class ScheduleBuildRequest(BaseModel):
     timeout_seconds: int = Field(
         default=600,
         description="Таймаут solver'а в секундах",
+    )
+    version_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "ID плана, в который записать результат. "
+            "Если задан — план перезаписывается (is_active=TRUE, "
+            "старые задачи и снапшоты удаляются). "
+            "Если None — создаётся новая версия."
+        ),
     )
 
 

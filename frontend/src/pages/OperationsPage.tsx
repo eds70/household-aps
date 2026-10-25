@@ -1,8 +1,6 @@
 // frontend/src/pages/OperationsPage.tsx
-// Итерация 13.19: markPlanDirty() при изменениях.
-// Итерация 17.x: все запросы переведены на общий api-клиент из services/api.ts
-// (вместо голого axios), чтобы интерцептор нормализовал detail в строку
-// при 403/500 и не падало с "Objects are not valid as a React child".
+// Справочник тех. карт — ГЛОБАЛЬНЫЙ. Не привязан к плану.
+// Изменения влияют на все планы через снапшоты (обновляются при пересчёте).
 
 import React, {useEffect, useState} from 'react';
 import {
@@ -23,7 +21,7 @@ import {
     TextField,
     Typography,
 } from '@mui/material';
-import {Add as AddIcon, Delete as DeleteIcon, Lock as LockIcon} from '@mui/icons-material';
+import {Add as AddIcon, Delete as DeleteIcon, InfoOutlined as InfoIcon,} from '@mui/icons-material';
 import type {ColDef, GridReadyEvent} from 'ag-grid-community';
 import {AllCommunityModule, ModuleRegistry} from 'ag-grid-community';
 import type {Operation, ProductOption} from '../types';
@@ -35,8 +33,7 @@ import AppAgGrid from '../components/common/AppAgGrid';
 ModuleRegistry.registerModules([AllCommunityModule]);
 
 const OperationsPage: React.FC = () => {
-    const { currentVersionId, currentPlanName, markPlanDirty } = usePlan();
-    const isReadOnly = currentVersionId !== null;
+    const {currentVersionId, currentPlanName, isCurrentPlanDraft, markPlanDirty} = usePlan();
 
     const [operations, setOperations] = useState<Operation[]>([]);
     const [products, setProducts] = useState<ProductOption[]>([]);
@@ -51,15 +48,14 @@ const OperationsPage: React.FC = () => {
         needs_lab: false, duration_formula: '', comment: '',
     });
 
-    useEffect(() => { loadData(); }, [currentVersionId]);
+    useEffect(() => { loadData(); }, []);
 
     const loadData = async () => {
         setLoading(true);
         setError(null);
         try {
-            const params = currentVersionId ? { version_id: currentVersionId } : {};
             const [opsRes, prodRes] = await Promise.all([
-                api.get(`/api/v1/operations/`, { params }),
+                api.get(`/api/v1/operations/`),
                 api.get(`/api/v1/operations/products`),
             ]);
             setOperations(opsRes.data);
@@ -81,11 +77,11 @@ const OperationsPage: React.FC = () => {
             cellStyle: { fontFamily: 'monospace', fontSize: '11px', color: '#7f8c8d' },
         },
         { headerName: 'Продукт', field: 'product_name', width: 180, editable: false },
-        { headerName: '№ этапа', field: 'stage_order', width: 100, editable: !isReadOnly, type: 'numericColumn' },
-        { headerName: 'Наименование операции', field: 'name', flex: 2, minWidth: 200, editable: !isReadOnly },
-        { headerName: 'Длительность (мин)', field: 'base_duration_mins', width: 140, editable: !isReadOnly, type: 'numericColumn' },
+        { headerName: '№ этапа', field: 'stage_order', width: 100, editable: true, type: 'numericColumn' },
+        { headerName: 'Наименование операции', field: 'name', flex: 2, minWidth: 200, editable: true },
+        { headerName: 'Длительность (мин)', field: 'base_duration_mins', width: 140, editable: true, type: 'numericColumn' },
         {
-            headerName: 'Формула', field: 'duration_formula', width: 150, editable: !isReadOnly,
+            headerName: 'Формула', field: 'duration_formula', width: 150, editable: true,
             cellEditor: 'agSelectCellEditor',
             cellEditorParams: { values: ['', 'water_loading', 'heating', 'mixing', 'cooling', 'pumping', 'washing'] },
             valueFormatter: (params) => {
@@ -96,14 +92,14 @@ const OperationsPage: React.FC = () => {
                 return labels[params.value] || params.value;
             },
         },
-        { headerName: 'Бойлер', field: 'needs_boiler', width: 90, editable: !isReadOnly, cellEditor: 'agCheckboxCellEditor' },
-        { headerName: 'Охлаждение', field: 'needs_cooling_zone', width: 110, editable: !isReadOnly, cellEditor: 'agCheckboxCellEditor' },
-        { headerName: 'Оператор', field: 'needs_operator', width: 100, editable: !isReadOnly, cellEditor: 'agCheckboxCellEditor' },
-        { headerName: 'Лаборант', field: 'needs_lab', width: 100, editable: !isReadOnly, cellEditor: 'agCheckboxCellEditor' },
-        { headerName: 'Паралл. группа', field: 'parallel_group_id', width: 130, editable: !isReadOnly, valueFormatter: (params) => params.value || '—' },
+        { headerName: 'Бойлер', field: 'needs_boiler', width: 90, editable: true, cellEditor: 'agCheckboxCellEditor' },
+        { headerName: 'Охлаждение', field: 'needs_cooling_zone', width: 110, editable: true, cellEditor: 'agCheckboxCellEditor' },
+        { headerName: 'Оператор', field: 'needs_operator', width: 100, editable: true, cellEditor: 'agCheckboxCellEditor' },
+        { headerName: 'Лаборант', field: 'needs_lab', width: 100, editable: true, cellEditor: 'agCheckboxCellEditor' },
+        { headerName: 'Паралл. группа', field: 'parallel_group_id', width: 130, editable: true, valueFormatter: (params) => params.value || '—' },
         {
             headerName: 'Действия', width: 100, editable: false,
-            cellRenderer: (params: any) => isReadOnly ? null : (
+            cellRenderer: (params: any) => (
                 <IconButton color="error" size="small" onClick={() => handleDelete(params.data.id)}>
                     <DeleteIcon fontSize="small" />
                 </IconButton>
@@ -113,13 +109,12 @@ const OperationsPage: React.FC = () => {
 
     const defaultColDef: ColDef = {
         sortable: true, filter: true, resizable: true,
-        editable: !isReadOnly, singleClickEdit: true,
+        editable: true, singleClickEdit: true,
     };
 
     const getRowId = (params: any) => params.data.id;
 
     const handleCellValueChanged = async (params: any) => {
-        if (isReadOnly) return;
         const { data, colDef, newValue } = params;
         const field = colDef.field;
         if (!field || field === 'id' || field === 'product_name') return;
@@ -127,7 +122,6 @@ const OperationsPage: React.FC = () => {
         try {
             await api.put(`/api/v1/operations/${data.id}`, { [field]: newValue });
             setOperations((prev) => prev.map((op) => op.id === data.id ? { ...op, [field]: newValue } : op));
-            // Итерация 13.19
             markPlanDirty();
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Ошибка сохранения');
@@ -136,12 +130,10 @@ const OperationsPage: React.FC = () => {
     };
 
     const handleDelete = async (id: string) => {
-        if (isReadOnly) return;
         if (!window.confirm('Удалить операцию?')) return;
         try {
             await api.delete(`/api/v1/operations/${id}`);
             setOperations((prev) => prev.filter((op) => op.id !== id));
-            // Итерация 13.19
             markPlanDirty();
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Ошибка удаления');
@@ -149,7 +141,6 @@ const OperationsPage: React.FC = () => {
     };
 
     const handleAdd = () => {
-        if (isReadOnly) return;
         setFormData({
             product_id: products[0]?.id || '', stage_order: 1, name: '', base_duration_mins: 60,
             is_setup: false, is_parallel_group: false, parallel_group_id: '',
@@ -160,14 +151,12 @@ const OperationsPage: React.FC = () => {
     };
 
     const handleSave = async () => {
-        if (isReadOnly) return;
         try {
             const response = await api.post(`/api/v1/operations/`, {
                 ...formData, organization_id: '00000000-0000-0000-0000-000000000001',
             });
             setOperations((prev) => [...prev, response.data]);
             setDialogOpen(false);
-            // Итерация 13.19
             markPlanDirty();
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Ошибка создания');
@@ -194,17 +183,18 @@ const OperationsPage: React.FC = () => {
                             ))}
                         </Select>
                     </FormControl>
-                    {!isReadOnly && (
-                        <Button variant="contained" startIcon={<AddIcon />} onClick={handleAdd} sx={{ textTransform: 'none', fontWeight: 600 }}>
-                            Добавить операцию
-                        </Button>
-                    )}
+                    <Button variant="contained" startIcon={<AddIcon />} onClick={handleAdd} sx={{ textTransform: 'none', fontWeight: 600 }}>
+                        Добавить операцию
+                    </Button>
                 </Box>
             </Box>
 
-            {isReadOnly && (
-                <Alert severity="info" sx={{ mb: 2 }} icon={<LockIcon fontSize="inherit" />}>
-                    Режим просмотра: <b>{currentPlanName}</b>. Редактирование недоступно.
+            {currentVersionId && (
+                <Alert severity="info" sx={{ mb: 2 }} icon={<InfoIcon />}>
+                    Вы редактируете <b>глобальный справочник</b> «{currentPlanName}».
+                    {isCurrentPlanDraft
+                        ? ' Чтобы изменения попали в черновик, нажмите «Построить план» в шапке.'
+                        : ' Изменения не попадут в активный план без пересчёта.'}
                 </Alert>
             )}
 
@@ -237,68 +227,66 @@ const OperationsPage: React.FC = () => {
                 </CardContent>
             </Card>
 
-            {!isReadOnly && (
-                <DraggableDialog
-                    open={dialogOpen}
-                    onClose={() => setDialogOpen(false)}
-                    title="Добавить операцию"
-                    initialWidth={800}
-                    initialHeight="auto"
-                    minWidth={480}
-                    minHeight={400}
-                    actions={
-                        <>
-                            <Button onClick={() => setDialogOpen(false)}>Отмена</Button>
-                            <Button onClick={handleSave} variant="contained">Сохранить</Button>
-                        </>
-                    }
-                >
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                        <Box sx={{ display: 'flex', gap: 2 }}>
-                            <FormControl fullWidth>
-                                <InputLabel>Продукт (ПФ)</InputLabel>
-                                <Select value={formData.product_id} label="Продукт (ПФ)" onChange={(e) => setFormData({ ...formData, product_id: e.target.value })}>
-                                    {products.map((p) => (
-                                        <MenuItem key={p.id} value={p.id}>{p.code} - {p.name}</MenuItem>
-                                    ))}
-                                </Select>
-                            </FormControl>
-                            <TextField label="№ этапа" type="number" fullWidth value={formData.stage_order} onChange={(e) => setFormData({ ...formData, stage_order: Number(e.target.value) })} />
-                        </Box>
-                        <TextField label="Наименование операции" fullWidth value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} />
-                        <Box sx={{ display: 'flex', gap: 2 }}>
-                            <TextField label="Длительность (мин)" type="number" fullWidth value={formData.base_duration_mins} onChange={(e) => setFormData({ ...formData, base_duration_mins: Number(e.target.value) })} />
-                            <FormControl fullWidth>
-                                <InputLabel>Формула расчёта</InputLabel>
-                                <Select value={formData.duration_formula || ''} label="Формула расчёта" onChange={(e) => setFormData({ ...formData, duration_formula: e.target.value })}>
-                                    <MenuItem value="">— Не выбрана —</MenuItem>
-                                    <MenuItem value="water_loading">Загрузка воды</MenuItem>
-                                    <MenuItem value="heating">Нагрев</MenuItem>
-                                    <MenuItem value="mixing">Перемешивание</MenuItem>
-                                    <MenuItem value="cooling">Охлаждение</MenuItem>
-                                    <MenuItem value="pumping">Перекачка</MenuItem>
-                                    <MenuItem value="washing">Промывка</MenuItem>
-                                </Select>
-                            </FormControl>
-                        </Box>
-                        <Typography variant="subtitle2" sx={{ mt: 1 }}>Ресурсы:</Typography>
-                        <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-                            <FormControlLabel control={<Checkbox checked={formData.needs_boiler || false} onChange={(e) => setFormData({ ...formData, needs_boiler: e.target.checked })} />} label="Бойлер" />
-                            <FormControlLabel control={<Checkbox checked={formData.needs_cooling_zone || false} onChange={(e) => setFormData({ ...formData, needs_cooling_zone: e.target.checked })} />} label="Зона охлаждения" />
-                            <FormControlLabel control={<Checkbox checked={formData.needs_operator || false} onChange={(e) => setFormData({ ...formData, needs_operator: e.target.checked })} />} label="Оператор" />
-                            <FormControlLabel control={<Checkbox checked={formData.needs_lab || false} onChange={(e) => setFormData({ ...formData, needs_lab: e.target.checked })} />} label="Лаборант" />
-                        </Box>
-                        <Box sx={{ display: 'flex', gap: 2 }}>
-                            <FormControlLabel control={<Checkbox checked={formData.is_setup || false} onChange={(e) => setFormData({ ...formData, is_setup: e.target.checked })} />} label="Это замывка/переналадка" />
-                            <FormControlLabel control={<Checkbox checked={formData.is_parallel_group || false} onChange={(e) => setFormData({ ...formData, is_parallel_group: e.target.checked })} />} label="Параллельная группа" />
-                        </Box>
-                        {formData.is_parallel_group && (
-                            <TextField label="ID параллельной группы" fullWidth value={formData.parallel_group_id || ''} onChange={(e) => setFormData({ ...formData, parallel_group_id: e.target.value })} helperText="Например: GROUP1, GROUP2" />
-                        )}
-                        <TextField label="Комментарий" fullWidth multiline rows={2} value={formData.comment || ''} onChange={(e) => setFormData({ ...formData, comment: e.target.value })} />
+            <DraggableDialog
+                open={dialogOpen}
+                onClose={() => setDialogOpen(false)}
+                title="Добавить операцию"
+                initialWidth={800}
+                initialHeight="auto"
+                minWidth={480}
+                minHeight={400}
+                actions={
+                    <>
+                        <Button onClick={() => setDialogOpen(false)}>Отмена</Button>
+                        <Button onClick={handleSave} variant="contained">Сохранить</Button>
+                    </>
+                }
+            >
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <Box sx={{ display: 'flex', gap: 2 }}>
+                        <FormControl fullWidth>
+                            <InputLabel>Продукт (ПФ)</InputLabel>
+                            <Select value={formData.product_id} label="Продукт (ПФ)" onChange={(e) => setFormData({ ...formData, product_id: e.target.value })}>
+                                {products.map((p) => (
+                                    <MenuItem key={p.id} value={p.id}>{p.code} - {p.name}</MenuItem>
+                                ))}
+                            </Select>
+                        </FormControl>
+                        <TextField label="№ этапа" type="number" fullWidth value={formData.stage_order} onChange={(e) => setFormData({ ...formData, stage_order: Number(e.target.value) })} />
                     </Box>
-                </DraggableDialog>
-            )}
+                    <TextField label="Наименование операции" fullWidth value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} />
+                    <Box sx={{ display: 'flex', gap: 2 }}>
+                        <TextField label="Длительность (мин)" type="number" fullWidth value={formData.base_duration_mins} onChange={(e) => setFormData({ ...formData, base_duration_mins: Number(e.target.value) })} />
+                        <FormControl fullWidth>
+                            <InputLabel>Формула расчёта</InputLabel>
+                            <Select value={formData.duration_formula || ''} label="Формула расчёта" onChange={(e) => setFormData({ ...formData, duration_formula: e.target.value })}>
+                                <MenuItem value="">— Не выбрана —</MenuItem>
+                                <MenuItem value="water_loading">Загрузка воды</MenuItem>
+                                <MenuItem value="heating">Нагрев</MenuItem>
+                                <MenuItem value="mixing">Перемешивание</MenuItem>
+                                <MenuItem value="cooling">Охлаждение</MenuItem>
+                                <MenuItem value="pumping">Перекачка</MenuItem>
+                                <MenuItem value="washing">Промывка</MenuItem>
+                            </Select>
+                        </FormControl>
+                    </Box>
+                    <Typography variant="subtitle2" sx={{ mt: 1 }}>Ресурсы:</Typography>
+                    <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+                        <FormControlLabel control={<Checkbox checked={formData.needs_boiler || false} onChange={(e) => setFormData({ ...formData, needs_boiler: e.target.checked })} />} label="Бойлер" />
+                        <FormControlLabel control={<Checkbox checked={formData.needs_cooling_zone || false} onChange={(e) => setFormData({ ...formData, needs_cooling_zone: e.target.checked })} />} label="Зона охлаждения" />
+                        <FormControlLabel control={<Checkbox checked={formData.needs_operator || false} onChange={(e) => setFormData({ ...formData, needs_operator: e.target.checked })} />} label="Оператор" />
+                        <FormControlLabel control={<Checkbox checked={formData.needs_lab || false} onChange={(e) => setFormData({ ...formData, needs_lab: e.target.checked })} />} label="Лаборант" />
+                    </Box>
+                    <Box sx={{ display: 'flex', gap: 2 }}>
+                        <FormControlLabel control={<Checkbox checked={formData.is_setup || false} onChange={(e) => setFormData({ ...formData, is_setup: e.target.checked })} />} label="Это замывка/переналадка" />
+                        <FormControlLabel control={<Checkbox checked={formData.is_parallel_group || false} onChange={(e) => setFormData({ ...formData, is_parallel_group: e.target.checked })} />} label="Параллельная группа" />
+                    </Box>
+                    {formData.is_parallel_group && (
+                        <TextField label="ID параллельной группы" fullWidth value={formData.parallel_group_id || ''} onChange={(e) => setFormData({ ...formData, parallel_group_id: e.target.value })} helperText="Например: GROUP1, GROUP2" />
+                    )}
+                    <TextField label="Комментарий" fullWidth multiline rows={2} value={formData.comment || ''} onChange={(e) => setFormData({ ...formData, comment: e.target.value })} />
+                </Box>
+            </DraggableDialog>
         </Box>
     );
 };

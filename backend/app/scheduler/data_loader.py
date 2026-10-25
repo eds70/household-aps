@@ -13,6 +13,7 @@
   (чтобы DataLoader видел незакоммиченные изменения).
 Итерация 13.14: опциональный version_id — настройки читаются из
   plan_settings конкретного плана, а не из глобальных app_settings.
+Итерация 35: чтение allow_interrupt_line_fill.
 """
 
 from typing import List, Dict, Any, Optional
@@ -81,6 +82,17 @@ class DataLoader:
             self, session: AsyncSession
     ) -> Dict[str, Any]:
         """Внутренняя логика загрузки с переданной сессией."""
+        org_settings = await self._load_app_settings(session)
+
+        # Итерация 35: настройка прерывания слива на выходные
+        allow_interrupt_line_fill = True
+        if "allow_interrupt_line_fill" in org_settings:
+            val = org_settings["allow_interrupt_line_fill"]
+            if isinstance(val, str):
+                allow_interrupt_line_fill = val.strip().lower() in ("true", "1", "yes", "on")
+            elif isinstance(val, bool):
+                allow_interrupt_line_fill = val
+
         return {
             "batches": await self._load_batches(session),
             "equipment": await self._load_equipment(session),
@@ -89,7 +101,7 @@ class DataLoader:
             "setup_matrix": await self._load_setup_matrix(session),
             "calendar_events": await self._load_calendar(session),
             "resource_pools": await self._load_resource_pools(session),
-            "org_settings": await self._load_app_settings(session),
+            "org_settings": org_settings,
             "equipment_links": await self._load_equipment_links(session),
             "gp_products": await self._load_gp_products(session),
             "equipment_capability": await self._load_equipment_capability(session),
@@ -99,6 +111,7 @@ class DataLoader:
             "material_stocks": await self._load_material_stocks(session),
             "material_supplies": await self._load_material_supplies(session),
             "recipes": await self._load_recipes(session),
+            "allow_interrupt_line_fill": allow_interrupt_line_fill, # <--- ДОБАВЛЕНО
         }
 
     # ==========================================
@@ -218,11 +231,6 @@ class DataLoader:
         """
         Итерация 13.14: если version_id задан — читаем из plan_settings.
         Иначе — из app_settings.
-
-        Приоритет:
-          1. Если version_id задан → plan_settings этого плана.
-          2. Если plan_settings пуст → app_settings (fallback).
-          3. Если version_id не задан → app_settings.
         """
         if self.version_id is not None:
             result = await session.execute(

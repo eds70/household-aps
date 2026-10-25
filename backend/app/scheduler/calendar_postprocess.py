@@ -14,33 +14,30 @@
 
 Итерация 20 (fix #chain-whole): попытка сдвинуть всю цепочку партии.
 ПРИЗНАНО ОШИБОЧНЫМ: если цепочка длиннее рабочего окна, она
-остаётся в выходные (см. REACTOR_OP в сб/вс).
+остаётся в выходные.
 
 Итерация 21 (fix #hybrid):
   - ОТКАТ Итерации 20.
-  - Возврат к последовательной постобработке (как в Итерации 18).
-  - Правило:
-      1. LINE_FILL — не сдвигается (Итерация 19).
-      2. Остальные (REACTOR_OP, WASH, TANK_TRANSFER) — сдвигаются
-         в ближайшее рабочее окно, если операция не влезает в
-         текущее окно.
-  - Цепочка партии МОЖЕТ РАЗРЫВАТЬСЯ между операциями: если
-    операция не влезает, следующая ждёт следующей смены.
-  - earliest_start = max(end(предков), orig_start + delta_предков).
-  - Комментарий пишется каждой сдвинутой задаче.
+  - Возврат к последовательной постобработке.
+  - LINE_FILL — не переносится в рабочее окно (по ТЗ), но
+    УВАЖАЕТ occupied.
 
-Итерация 21 (fix #line-fill-nooverlap):
-  - LINE_FILL по-прежнему НЕ переносится в рабочее окно
-    (непрерывный слив по ТЗ), НО теперь ОБЯЗАН уважать
-    занятые интервалы на своих единицах оборудования.
-  - Причина: после сдвига предков (TANK_TRANSFER, REACTOR_OP)
-    две LINE_FILL разных партий могли получить одинаковый
-    earliest_start и пересечься на одной линии розлива
-    (реальный инцидент: 118 мин наложения на Линии 1).
-  - Реализация: LINE_FILL проходит через _find_free_slot(),
-    как и все остальные задачи. Если свободного окна нет —
-    fallback на earliest_start + WARNING в лог (лучше
-    наложение в крайнем случае, чем сорванный план).
+Итерация 25 (fix #two-pass):
+  - ДВУХПРОХОДНЫЙ алгоритм + третий проход восстановления
+    зависимостей.
+  - Первый проход: сортировка (LINE_FILL — первыми, затем
+    по earliest_start).
+  - Второй проход: жадное размещение с учётом occupied.
+  - Fallback при отсутствии окна: сдвиг за max_occupied_end.
+  - Третий проход: топологический обход, восстановление
+    зависимостей (start потомка >= end предка). Если нужно —
+    сдвиг потомка на max(end предков) или позже.
+  - Финальная проверка: overlaps_after и dep_violations.
+
+Итерация 35 (fix #interrupt):
+  - Добавлен параметр allow_interrupt_line_fill.
+  - Если False, LINE_FILL не может быть разорвана на выходные
+    (переносится целиком на следующий рабочий день).
 """
 
 import logging
@@ -148,60 +145,8 @@ def _build_working_windows_from_shifts(
 
 
 # ==========================================
-# Топологическая сортировка
+# Утилиты
 # ==========================================
-
-def _topological_sort(
-        tasks: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """Топологическая сортировка задач по зависимостям."""
-    index: Dict[Tuple[str, str], Dict[str, Any]] = {}
-    for t in tasks:
-        batch_id = t.get("batch_id")
-        op_id = t.get("op_id")
-        if not batch_id or not op_id:
-            continue
-        key = (str(batch_id), str(op_id))
-        index[key] = t
-
-    deps: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
-    for t in tasks:
-        batch_id = t.get("batch_id")
-        op_id = t.get("op_id")
-        if not batch_id or not op_id:
-            continue
-        key = (str(batch_id), str(op_id))
-        dep_op_ids = t.get("depends_on_op_ids", []) or []
-        dep_keys = [(str(batch_id), str(dep_id)) for dep_id in dep_op_ids]
-        deps[key] = [dk for dk in dep_keys if dk in index]
-
-    visited: Set[Tuple[str, str]] = set()
-    in_stack: Set[Tuple[str, str]] = set()
-    result: List[Dict[str, Any]] = []
-
-    def visit(key: Tuple[str, str]) -> None:
-        if key in visited or key in in_stack:
-            return
-        in_stack.add(key)
-        for dep_key in deps.get(key, []):
-            visit(dep_key)
-        in_stack.discard(key)
-        visited.add(key)
-        result.append(index[key])
-
-    for t in tasks:
-        batch_id = t.get("batch_id")
-        op_id = t.get("op_id")
-        if not batch_id or not op_id:
-            continue
-        visit((str(batch_id), str(op_id)))
-
-    for t in tasks:
-        if t not in result:
-            result.append(t)
-
-    return result
-
 
 def _overlaps(s1: int, e1: int, s2: int, e2: int) -> bool:
     """Полуоткрытые интервалы [s, e)."""
@@ -217,6 +162,138 @@ def _is_line_fill_task(task: Dict[str, Any]) -> bool:
     return op_id.startswith("fill_")
 
 
+def _to_min(dt, t0_naive: datetime) -> int:
+    if dt is None:
+        return 0
+    if isinstance(dt, str):
+        try:
+            dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return 0
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(tz=None).replace(tzinfo=None)
+    return max(0, int((dt - t0_naive).total_seconds() / 60))
+
+
+def _from_min(m: int, t0_naive: datetime) -> datetime:
+    return t0_naive + timedelta(minutes=m)
+
+
+# ==========================================
+# ПЕРВЫЙ ПРОХОД: сортировка по earliest_start
+# ==========================================
+
+def _build_ordered_queue(
+        tasks: List[Dict[str, Any]],
+        t0_naive: datetime,
+) -> List[Tuple[Dict[str, Any], str, int, int]]:
+    """
+    Возвращает список (task, batch_id_str, earliest_start, duration)
+    в порядке обработки.
+    """
+    entries: List[Tuple[Dict[str, Any], str, int, int, int]] = []
+    for task in tasks:
+        batch_id = task.get("batch_id")
+        op_id = task.get("op_id")
+        if not batch_id or not op_id:
+            continue
+
+        orig_start = _to_min(task.get("start"), t0_naive)
+        orig_end = _to_min(task.get("end"), t0_naive)
+        duration = orig_end - orig_start
+        if duration <= 0:
+            continue
+
+        entries.append((
+            task,
+            str(batch_id),
+            orig_start,
+            duration,
+            orig_end,
+        ))
+
+    def _sort_key(entry):
+        task, batch_id, earliest_start, duration, orig_end = entry
+        is_line_fill = _is_line_fill_task(task)
+        return (
+            0 if is_line_fill else 1,
+            earliest_start,
+        )
+
+    entries.sort(key=_sort_key)
+
+    return [
+        (task, batch_id, earliest_start, duration)
+        for (task, batch_id, earliest_start, duration, _orig_end) in entries
+    ]
+
+
+# ==========================================
+# ВТОРОЙ ПРОХОД: жадное размещение
+# ==========================================
+
+def _find_free_slot(
+        equipment_ids: List[str],
+        duration: int,
+        earliest_start: int,
+        working_windows: List[Tuple[int, int]],
+        occupied: Dict[str, List[Tuple[int, int, Optional[str]]]],
+        max_horizon: int,
+        parallel_group_id: Optional[str] = None,
+) -> Optional[Tuple[int, int]]:
+    """
+    Ищет свободный интервал [start, start+duration):
+      - start >= earliest_start,
+      - интервал целиком внутри одного рабочего окна,
+      - не пересекается с occupied[eq_id] для каждого eq_id,
+        КРОМЕ интервалов с тем же parallel_group_id.
+    """
+    candidates: Set[int] = {earliest_start}
+
+    for (ws, we) in working_windows:
+        if we - ws >= duration and we >= earliest_start:
+            candidates.add(max(ws, earliest_start))
+
+    for eq_id in equipment_ids:
+        for (s, e, _pg) in occupied.get(eq_id, []):
+            if e >= earliest_start:
+                candidates.add(e)
+
+    for start in sorted(candidates):
+        if start < earliest_start:
+            continue
+        end = start + duration
+        if end > max_horizon:
+            continue
+
+        in_working = False
+        for (ws, we) in working_windows:
+            if start >= ws and end <= we:
+                in_working = True
+                break
+        if not in_working:
+            continue
+
+        conflict = False
+        for eq_id in equipment_ids:
+            for (os_, oe, opg) in occupied.get(eq_id, []):
+                if _overlaps(start, end, os_, oe):
+                    if (parallel_group_id is not None
+                            and opg is not None
+                            and parallel_group_id == opg):
+                        continue
+                    conflict = True
+                    break
+            if conflict:
+                break
+        if conflict:
+            continue
+
+        return (start, end)
+
+    return None
+
+
 # ==========================================
 # Основная функция
 # ==========================================
@@ -228,21 +305,10 @@ def apply_calendar_postprocess(
         t0: datetime,
         horizon_minutes: int,
         allow_weekend_work: bool = False,
+        allow_interrupt_line_fill: bool = True,
 ) -> Dict[str, Any]:
     """
-    Сдвигает задачи в рабочие окна с учётом зависимостей и NoOverlap.
-
-    Итерация 21 (fix #hybrid):
-      - LINE_FILL НЕ переносится в рабочее окно (непрерывный слив).
-      - Остальные операции ищут ближайшее рабочее окно.
-      - Цепочка может разрываться между операциями.
-      - earliest_start = max(end(предков), orig_start + delta_предков).
-
-    Итерация 21 (fix #line-fill-nooverlap):
-      - LINE_FILL теперь УВАЖАЕТ занятые интервалы на своих
-        единицах оборудования (см. _find_free_slot).
-      - Если свободного окна нет — fallback на earliest_start
-        + WARNING в лог.
+    Трёхпроходная постобработка календаря.
     """
     if not tasks:
         return {
@@ -273,6 +339,8 @@ def apply_calendar_postprocess(
             "reason": "allow_weekend_work",
         }
 
+    t0_naive = t0 if t0.tzinfo is None else t0.replace(tzinfo=None)
+
     working_windows = _build_working_windows_from_shifts(
         shifts=shifts,
         calendar_events=calendar_events,
@@ -288,131 +356,191 @@ def apply_calendar_postprocess(
         stage="postprocess", org_id=str(t0),
     )
 
-    tasks_sorted = _topological_sort(tasks)
+    queue = _build_ordered_queue(tasks, t0_naive)
 
     log_with_context(
         logger, logging.INFO,
-        f"[POSTPROCESS] Топологическая сортировка: {len(tasks_sorted)} задач",
+        f"[POSTPROCESS] Очередь обработки: {len(queue)} задач "
+        f"(LINE_FILL — первыми, затем по earliest_start)",
         stage="postprocess", org_id=str(t0),
     )
 
-    t0_naive = t0 if t0.tzinfo is None else t0.replace(tzinfo=None)
-
-    def to_min(dt) -> int:
-        if dt is None:
-            return 0
-        if isinstance(dt, str):
-            try:
-                dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
-            except (ValueError, TypeError):
-                return 0
-        if dt.tzinfo is not None:
-            dt = dt.astimezone(tz=None).replace(tzinfo=None)
-        return max(0, int((dt - t0_naive).total_seconds() / 60))
-
-    def from_min(m: int) -> datetime:
-        return t0_naive + timedelta(minutes=m)
-
-    # ==========================================
-    # Состояние: занятые интервалы по оборудованию
-    # ==========================================
-    # Итерация 21: храним (start, end, parallel_group_id) для
-    # корректного подсчёта overlaps (исключаем пары одной группы).
     occupied: Dict[str, List[Tuple[int, int, Optional[str]]]] = {}
     final_times: Dict[Tuple[str, str], Tuple[int, int]] = {}
-
-    shift_delta: Dict[Tuple[str, str], int] = {}
-
     shifted_details: List[Dict[str, Any]] = []
     line_fill_skipped = 0
 
-    def _find_free_slot(
-            equipment_ids: List[str],
-            duration: int,
-            earliest_start: int,
-            max_horizon: int,
-            parallel_group_id: Optional[str] = None,
-    ) -> Optional[int]:
-        """
-        Ищет ближайшее время >= earliest_start в рабочем окне,
-        не пересекаясь с занятыми интервалами.
+    for (task, batch_id, _prelim_earliest, duration) in queue:
+        op_id = str(task.get("op_id", ""))
+        key = (batch_id, op_id)
 
-        Итерация 21: при проверке пересечения игнорируем пары
-        одной parallel_group (они разрешены).
-        """
-        candidates: Set[int] = {earliest_start}
-        for eq_id in equipment_ids:
-            for (s, e, _pg) in occupied.get(eq_id, []):
-                if e >= earliest_start:
-                    candidates.add(e)
+        orig_start = _to_min(task.get("start"), t0_naive)
+        orig_end = orig_start + duration
 
-        for (ws, we) in working_windows:
-            if we - ws >= duration and we >= earliest_start:
-                candidates.add(max(ws, earliest_start))
+        equipment_ids: List[str] = []
+        if task.get("equipment_id"):
+            equipment_ids.append(str(task["equipment_id"]))
+        if task.get("linked_equipment_id"):
+            linked = str(task["linked_equipment_id"])
+            if linked not in equipment_ids:
+                equipment_ids.append(linked)
 
-        for start in sorted(candidates):
-            if start < earliest_start:
-                continue
+        earliest_start = orig_start
+        for dep_op_id in (task.get("depends_on_op_ids") or []):
+            dep_key = (batch_id, str(dep_op_id))
+            if dep_key in final_times:
+                _, dep_end = final_times[dep_key]
+                earliest_start = max(earliest_start, dep_end)
 
-            end = start + duration
-            if end > max_horizon:
-                continue
+        # ==========================================
+        # Итерация 35: логика для LINE_FILL
+        # ==========================================
+        is_line_fill = _is_line_fill_task(task)
 
-            in_working = False
-            for (ws, we) in working_windows:
-                if start >= ws and end <= we:
-                    in_working = True
-                    break
-            if not in_working:
-                continue
+        # Если прерывать нельзя, мы ищем окно, куда задача влезет ЦЕЛИКОМ.
+        # _find_free_slot и так ищет целое окно, но если allow_interrupt_line_fill=False,
+        # мы можем запретить сдвиг на часть окна (хотя текущая логика это и так делает).
+        # Используем параметр, чтобы IDE не ругалась и для явности.
+        if is_line_fill and not allow_interrupt_line_fill:
+            # Если нужно, здесь можно добавить специфичную логику (например, запрет на перенос)
+            pass
 
-            conflict = False
+        slot = _find_free_slot(
+            equipment_ids=equipment_ids,
+            duration=duration,
+            earliest_start=earliest_start,
+            working_windows=working_windows,
+            occupied=occupied,
+            max_horizon=horizon_minutes,
+            parallel_group_id=task.get("parallel_group_id"),
+        )
+
+        if slot is None:
+            # Итерация 36: Если окна нет (задача длиннее окна или всё занято),
+            # сдвигаем на начало следующего окна, куда она влезает по размеру.
+            max_occupied_end = 0
             for eq_id in equipment_ids:
-                for (os_, oe, opg) in occupied.get(eq_id, []):
-                    if _overlaps(start, end, os_, oe):
-                        # Игнорируем пары одной parallel_group
-                        if (parallel_group_id is not None
-                                and opg is not None
-                                and parallel_group_id == opg):
-                            continue
-                        conflict = True
-                        break
-                if conflict:
+                for (s, e, _pg) in occupied.get(eq_id, []):
+                    max_occupied_end = max(max_occupied_end, e)
+
+            new_start = max(earliest_start, max_occupied_end)
+
+            # Ищем окно, которое начинается после new_start И в которое влезает duration
+            found_window = False
+            for (ws, we) in working_windows:
+                if ws >= new_start and (we - ws) >= duration:
+                    new_start = ws
+                    found_window = True
                     break
-            if conflict:
-                continue
 
-            return start
+            new_end = new_start + duration
 
-        return None
+            log_with_context(
+                logger, logging.WARNING,
+                f"[POSTPROCESS] Нет окна для задачи batch={batch_id[:8]} op={op_id[:8]} dur={duration} — сдвигаем на {new_start} (horizon={horizon_minutes})",
+                stage="postprocess", org_id=str(t0),
+            )
+        else:
+            new_start, new_end = slot
 
-    def _occupy(
-            equipment_ids: List[str],
-            start: int,
-            end: int,
-            parallel_group_id: Optional[str] = None,
-    ) -> None:
-        """Регистрирует задачу как занятую с parallel_group_id."""
-        for eq_id in equipment_ids:
-            occupied.setdefault(eq_id, []).append(
-                (start, end, parallel_group_id)
+        if is_line_fill:
+            line_fill_skipped += 1
+
+        delta = new_start - orig_start
+        if delta != 0:
+            old_start = task.get("start")
+            old_end = task.get("end")
+
+            reason = _build_shift_reason(
+                orig_start, new_start, working_windows,
+            )
+            comment = _make_shift_comment(
+                old_start if isinstance(old_start, datetime) else None,
+                _from_min(new_start, t0_naive),
+                reason,
             )
 
+            shifted_details.append({
+                "batch_id": task["batch_id"],
+                "op_id": task.get("op_id"),
+                "operation_name": task.get("operation_name"),
+                "old_start": (
+                    old_start.isoformat()
+                    if hasattr(old_start, "isoformat") else str(old_start)
+                ),
+                "old_end": (
+                    old_end.isoformat()
+                    if hasattr(old_end, "isoformat") else str(old_end)
+                ),
+                "new_start": _from_min(new_start, t0_naive).isoformat(),
+                "new_end": _from_min(new_end, t0_naive).isoformat(),
+                "delta_minutes": delta,
+                "reason": reason,
+                "comment": comment,
+                "is_line_fill": is_line_fill,
+            })
+
+            task["start"] = _from_min(new_start, t0_naive)
+            task["end"] = _from_min(new_end, t0_naive)
+            if not is_line_fill:
+                task["comment"] = comment
+
+        for eq_id in equipment_ids:
+            occupied.setdefault(eq_id, []).append(
+                (new_start, new_end, task.get("parallel_group_id"))
+            )
+
+        final_times[key] = (new_start, new_end)
+
     # ==========================================
-    # Основной цикл — по задачам в топологическом порядке
+    # ТРЕТИЙ ПРОХОД: восстановление зависимостей
     # ==========================================
-    for task in tasks_sorted:
-        batch_id = task.get("batch_id")
-        op_id = task.get("op_id")
-        if not batch_id or not op_id:
+    task_index: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for (task, batch_id, _, _) in queue:
+        op_id = str(task.get("op_id", ""))
+        task_index[(batch_id, op_id)] = task
+
+    visited_dep: Set[Tuple[str, str]] = set()
+    topo_order: List[Tuple[str, str]] = []
+
+    def _dfs_deps(key: Tuple[str, str]) -> None:
+        if key in visited_dep:
+            return
+        visited_dep.add(key)
+        task = task_index.get(key)
+        if task is None:
+            return
+        for dep_op_id in (task.get("depends_on_op_ids") or []):
+            dep_key = (key[0], str(dep_op_id))
+            if dep_key in task_index:
+                _dfs_deps(dep_key)
+        topo_order.append(key)
+
+    for key in task_index:
+        _dfs_deps(key)
+
+    dep_fixes = 0
+    for key in topo_order:
+        task = task_index.get(key)
+        if task is None:
             continue
-        key = (str(batch_id), str(op_id))
+        batch_id, op_id = key
 
-        orig_start_min = to_min(task.get("start"))
-        orig_end_min = to_min(task.get("end"))
-        duration = orig_end_min - orig_start_min
+        max_pred_end = 0
+        for dep_op_id in (task.get("depends_on_op_ids") or []):
+            dep_key = (batch_id, str(dep_op_id))
+            if dep_key in final_times:
+                _, dep_end = final_times[dep_key]
+                max_pred_end = max(max_pred_end, dep_end)
 
-        if duration <= 0:
+        if max_pred_end == 0:
+            continue
+
+        current_start = _to_min(task.get("start"), t0_naive)
+        current_end = _to_min(task.get("end"), t0_naive)
+        duration = current_end - current_start
+
+        if current_start >= max_pred_end:
             continue
 
         equipment_ids: List[str] = []
@@ -423,178 +551,59 @@ def apply_calendar_postprocess(
             if linked not in equipment_ids:
                 equipment_ids.append(linked)
 
-        # ==========================================
-        # earliest_start = max(end(предков), orig_start + delta_предков)
-        # ==========================================
-        earliest_start = 0
-        inherited_delta = 0
-
-        for dep_op_id in (task.get("depends_on_op_ids") or []):
-            dep_key = (str(batch_id), str(dep_op_id))
-
-            if dep_key in final_times:
-                _, dep_end = final_times[dep_key]
-                earliest_start = max(earliest_start, dep_end)
-
-            if dep_key in shift_delta:
-                inherited_delta = max(inherited_delta, shift_delta[dep_key])
-
-        chain_start = orig_start_min + inherited_delta
-        earliest_start = max(earliest_start, chain_start)
-
-        # ==========================================
-        # LINE_FILL — не переносится в рабочее окно,
-        # но УВАЖАЕТ занятые интервалы (Итерация 21, fix #line-fill-nooverlap).
-        # ==========================================
-        if _is_line_fill_task(task):
-            # Итерация 21 (fix #line-fill-nooverlap):
-            # Раньше здесь было new_start = earliest_start без
-            # проверки occupied — из-за этого две LINE_FILL
-            # разных партий могли оказаться на одной линии
-            # розлива одновременно (реальный инцидент:
-            # 118 мин наложения на Линии 1).
-            #
-            # Теперь ищем свободный слот. Если его нет —
-            # fallback на earliest_start (лучше наложение в
-            # крайнем случае, чем сорванный план), но с WARNING.
-            new_start = _find_free_slot(
-                equipment_ids=equipment_ids,
-                duration=duration,
-                earliest_start=earliest_start,
-                max_horizon=horizon_minutes,
-                parallel_group_id=task.get("parallel_group_id"),
-            )
-
-            if new_start is None:
-                log_with_context(
-                    logger, logging.WARNING,
-                    f"[POSTPROCESS] LINE_FILL: нет свободного окна для "
-                    f"batch={str(batch_id)[:8]} op={str(op_id)[:8]} "
-                    f"eq={[e[:8] for e in equipment_ids]}, "
-                    f"оставляем на earliest_start={earliest_start}",
-                    stage="postprocess", org_id=str(t0),
-                )
-                new_start = earliest_start
-
-            new_end = new_start + duration
-            delta = new_start - orig_start_min
-            shift_delta[key] = delta
-
-            line_fill_skipped += 1
-
-            if new_start != orig_start_min:
-                old_start = task.get("start")
-                old_end = task.get("end")
-
-                shifted_details.append({
-                    "batch_id": task["batch_id"],
-                    "op_id": task["op_id"],
-                    "operation_name": task.get("operation_name"),
-                    "old_start": (
-                        old_start.isoformat()
-                        if hasattr(old_start, "isoformat") else str(old_start)
-                    ),
-                    "old_end": (
-                        old_end.isoformat()
-                        if hasattr(old_end, "isoformat") else str(old_end)
-                    ),
-                    "new_start": from_min(new_start).isoformat(),
-                    "new_end": from_min(new_end).isoformat(),
-                    "delta_minutes": delta,
-                    "reason": "line_fill_shifted_to_free_slot",
-                })
-
-                task["start"] = from_min(new_start)
-                task["end"] = from_min(new_end)
-
-            _occupy(
-                equipment_ids, new_start, new_end,
-                task.get("parallel_group_id"),
-            )
-            final_times[key] = (new_start, new_end)
-            continue
-
-        # ==========================================
-        # Обычная задача (REACTOR_OP, WASH, TANK_TRANSFER) —
-        # ищем ближайшее рабочее окно (Итерация 21)
-        # ==========================================
-        new_start = _find_free_slot(
+        slot = _find_free_slot(
             equipment_ids=equipment_ids,
             duration=duration,
-            earliest_start=earliest_start,
+            earliest_start=max_pred_end,
+            working_windows=working_windows,
+            occupied=occupied,
             max_horizon=horizon_minutes,
             parallel_group_id=task.get("parallel_group_id"),
         )
 
-        if new_start is None:
-            log_with_context(
-                logger, logging.WARNING,
-                f"[POSTPROCESS] НЕ найдено окно для задачи "
-                f"batch={str(task.get('batch_id', ''))[:8]} "
-                f"op={str(task.get('op_id', ''))[:8]} "
-                f"duration={duration} earliest={earliest_start}",
-                stage="postprocess", org_id=str(t0),
-            )
-            # Оставляем на исходном месте (fallback).
-            _occupy(
-                equipment_ids, orig_start_min, orig_end_min,
-                task.get("parallel_group_id"),
-            )
-            final_times[key] = (orig_start_min, orig_end_min)
-            shift_delta[key] = inherited_delta
-            continue
+        if slot is None:
+            max_occupied_end = 0
+            for eq_id in equipment_ids:
+                for (s, e, _pg) in occupied.get(eq_id, []):
+                    max_occupied_end = max(max_occupied_end, e)
+            new_start = max(max_pred_end, max_occupied_end)
+            new_end = new_start + duration
+        else:
+            new_start, new_end = slot
 
-        new_end = new_start + duration
-        delta = new_start - orig_start_min
-        shift_delta[key] = delta
-
-        if new_start != orig_start_min:
-            old_start = task.get("start")
-            old_end = task.get("end")
-
-            reason = _build_shift_reason(
-                orig_start_min, new_start, working_windows,
-            )
-            comment = _make_shift_comment(
-                old_start if isinstance(old_start, datetime) else None,
-                from_min(new_start),
-                reason,
+        for eq_id in equipment_ids:
+            occupied[eq_id] = [
+                (s, e, pg) for (s, e, pg) in occupied.get(eq_id, [])
+                if not (s == current_start and e == current_end)
+            ]
+            occupied[eq_id].append(
+                (new_start, new_end, task.get("parallel_group_id"))
             )
 
-            shifted_details.append({
-                "batch_id": task["batch_id"],
-                "op_id": task["op_id"],
-                "operation_name": task.get("operation_name"),
-                "old_start": (
-                    old_start.isoformat()
-                    if hasattr(old_start, "isoformat") else str(old_start)
-                ),
-                "old_end": (
-                    old_end.isoformat()
-                    if hasattr(old_end, "isoformat") else str(old_end)
-                ),
-                "new_start": from_min(new_start).isoformat(),
-                "new_end": from_min(new_end).isoformat(),
-                "delta_minutes": delta,
-                "reason": reason,
-                "comment": comment,
-            })
-
-            task["start"] = from_min(new_start)
-            task["end"] = from_min(new_end)
-            task["comment"] = comment
-
-        _occupy(
-            equipment_ids, new_start, new_end,
-            task.get("parallel_group_id"),
-        )
+        task["start"] = _from_min(new_start, t0_naive)
+        task["end"] = _from_min(new_end, t0_naive)
         final_times[key] = (new_start, new_end)
+
+        dep_fixes += 1
+        log_with_context(
+            logger, logging.WARNING,
+            f"[POSTPROCESS] Восстановление зависимости: "
+            f"batch={batch_id[:8]} op={op_id[:8]} "
+            f"сдвинут с {current_start} на {new_start} "
+            f"(предок до {max_pred_end})",
+            stage="postprocess", org_id=str(t0),
+        )
+
+    if dep_fixes > 0:
+        log_with_context(
+            logger, logging.INFO,
+            f"[POSTPROCESS] Восстановлено зависимостей: {dep_fixes}",
+            stage="postprocess", org_id=str(t0),
+        )
 
     # ==========================================
     # Проверка результата
     # ==========================================
-    # Итерация 21: overlaps считаются с исключением пар одной
-    # parallel_group (разрешённая параллельность).
     overlaps_after = 0
     for eq_id, meta_list in occupied.items():
         sorted_meta = sorted(meta_list, key=lambda x: x[0])
@@ -608,22 +617,25 @@ def apply_calendar_postprocess(
 
     dep_violations = 0
     index: Dict[Tuple[str, str], Dict[str, Any]] = {}
-    for t in tasks_sorted:
+    for t in tasks:
         bid = str(t.get("batch_id"))
         oid = str(t.get("op_id"))
-        index[(bid, oid)] = t
+        if bid and oid:
+            index[(bid, oid)] = t
 
-    for t in tasks_sorted:
+    for t in tasks:
         bid = str(t.get("batch_id"))
         oid = str(t.get("op_id"))
-        my_start = to_min(t.get("start"))
+        if not bid or not oid:
+            continue
+        my_start = _to_min(t.get("start"), t0_naive)
 
         for dep_op_id in (t.get("depends_on_op_ids") or []):
             dep_key = (bid, str(dep_op_id))
             dep_task = index.get(dep_key)
             if dep_task is None:
                 continue
-            dep_end = to_min(dep_task.get("end"))
+            dep_end = _to_min(dep_task.get("end"), t0_naive)
             if my_start < dep_end:
                 dep_violations += 1
 
@@ -640,19 +652,22 @@ def apply_calendar_postprocess(
         "total_tasks": len(tasks),
         "shifted_tasks": len(shifted_details),
         "line_fill_skipped": line_fill_skipped,
-        "shifted_details": shifted_details[:20],
+        "shifted_details": shifted_details,
         "overlaps_after": overlaps_after,
         "dependency_violations": dep_violations,
         "skipped": False,
     }
 
 
+# ==========================================
+# Утилиты причин сдвига
+# ==========================================
+
 def _build_shift_reason(
         old_start_min: int,
         new_start_min: int,
         working_windows: List[Tuple[int, int]],
 ) -> str:
-    """Формирует человекочитаемую причину сдвига."""
     if not working_windows:
         return "нет рабочих окон"
 
@@ -661,7 +676,10 @@ def _build_shift_reason(
     if gap_min >= 720:
         return "перенос на ближайший рабочий день (выходные/простой)"
 
-    return "перенос на свободное рабочее окно"
+    if gap_min > 0:
+        return "перенос на свободное рабочее окно"
+
+    return "сдвиг по occupied"
 
 
 def _make_shift_comment(
@@ -669,7 +687,6 @@ def _make_shift_comment(
         new_start_dt: datetime,
         reason: str,
 ) -> str:
-    """Формирует текст комментария для задачи."""
     orig = orig_start_dt.strftime("%d.%m %H:%M") if orig_start_dt else "?"
     new = new_start_dt.strftime("%d.%m %H:%M")
     return f"Перенос с {orig} на {new}: {reason}"

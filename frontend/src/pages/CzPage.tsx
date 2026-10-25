@@ -63,8 +63,8 @@ const STATUS_COLORS: Record<CzStatus, 'default' | 'warning' | 'info' | 'success'
 // ==========================================
 
 const CzPage: React.FC = () => {
-    const {currentVersionId, currentPlanName} = usePlan();
-    const isReadOnly = currentVersionId !== null;
+    const {currentVersionId, currentPlanName, localEditMode} = usePlan();
+    const isReadOnly = currentVersionId !== null && !localEditMode;
 
     const [stats, setStats] = useState<CzStats | null>(null);
     const [pending, setPending] = useState<CzPendingBatch[]>([]);

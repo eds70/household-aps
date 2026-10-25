@@ -9,8 +9,11 @@ Advisor — модуль подсказок планировщика.
   4. EQUIPMENT_GAP — простой оборудования.
   5. COOLING_DEGRADATION — охлаждение с деградацией (Итерация 7).
   6. CZ_INCOMPLETE — партия слита, но не промаркирована (Итерация 8).
-
-Подсказки возвращаются в порядке приоритета: CRITICAL → WARNING → INFO.
+  7. OVER_HORIZON — план выходит за горизонт (Итерация 26).
+  8. SHIFTED_TASKS — задачи сдвинуты календарём (Итерация 26).
+  9. SKIPPED_BATCHES — партии выпали из плана (Итерация 26).
+ 10. OVERLAPS_AFTER — остаточные наложения (Итерация 26).
+ 11. DEPENDENCY_VIOLATIONS — нарушения зависимостей (Итерация 26).
 """
 
 from dataclasses import dataclass, field
@@ -38,6 +41,11 @@ class TipCode:
     NO_REACTOR = "NO_REACTOR"
     COOLING_DEGRADATION = "COOLING_DEGRADATION"     # Итерация 7
     CZ_INCOMPLETE = "CZ_INCOMPLETE"                 # Итерация 8
+    OVER_HORIZON = "OVER_HORIZON"                   # Итерация 26
+    SHIFTED_TASKS = "SHIFTED_TASKS"                 # Итерация 26
+    SKIPPED_BATCHES = "SKIPPED_BATCHES"             # Итерация 26
+    OVERLAPS_AFTER = "OVERLAPS_AFTER"               # Итерация 26
+    DEPENDENCY_VIOLATIONS = "DEPENDENCY_VIOLATIONS" # Итерация 26
 
 
 @dataclass
@@ -68,7 +76,11 @@ class AdvisorResult:
             self.info_count += 1
 
     def sort_by_severity(self) -> None:
-        order = {TipSeverity.CRITICAL: 0, TipSeverity.WARNING: 1, TipSeverity.INFO: 2}
+        order = {
+            TipSeverity.CRITICAL: 0,
+            TipSeverity.WARNING: 1,
+            TipSeverity.INFO: 2,
+        }
         self.tips.sort(key=lambda t: order.get(t.severity, 99))
 
 
@@ -77,7 +89,6 @@ class AdvisorResult:
 # ==========================================
 
 def check_material_shortage(analysis: MaterialAnalysis) -> List[AdvisorTip]:
-    """Превращает MaterialAnalysis в подсказки."""
     tips: List[AdvisorTip] = []
 
     for req in analysis.shortages:
@@ -148,7 +159,6 @@ def check_underload(
         max_fill_percent: float = 0.70,
         threshold: float = 0.50,
 ) -> List[AdvisorTip]:
-    """Проверяет партии с загрузкой реактора < threshold от max_fill."""
     tips: List[AdvisorTip] = []
 
     for batch in batches:
@@ -208,7 +218,6 @@ def check_route_mismatch(
         equipment_map: Dict[str, Dict],
         equipment_links: List[Dict],
 ) -> List[AdvisorTip]:
-    """Проверяет: продукт VIA_TANK, но у реактора нет танка."""
     tips: List[AdvisorTip] = []
 
     reactor_has_tank: Dict[str, bool] = {}
@@ -266,7 +275,6 @@ def check_equipment_gaps(
         equipment_map: Dict[str, Dict],
         min_gap_hours: float = 8.0,
 ) -> List[AdvisorTip]:
-    """Проверяет простои оборудования > min_gap_hours."""
     if not schedule_result or "tasks" not in schedule_result:
         return []
 
@@ -328,19 +336,6 @@ def check_cooling_degradation(
         schedule_result: Optional[Dict],
         cooling_degradation_factor: float = 1.3,
 ) -> List[AdvisorTip]:
-    """
-    Проверяет операции охлаждения с деградацией.
-
-    Логика:
-      - Смотрим задачи с cooling_mode.
-      - fast: обычная скорость.
-      - slow: замедление ×factor.
-
-    Возвращает:
-      - WARNING, если есть slow (есть замедление).
-      - INFO, если все fast, но были cooling-операции.
-      - Пусто, если cooling нет.
-    """
     if not schedule_result or "tasks" not in schedule_result:
         return []
 
@@ -416,24 +411,6 @@ def check_cz_incomplete(
         schedule_result: Optional[Dict],
         cz_completion_threshold: float = 0.95,
 ) -> List[AdvisorTip]:
-    """
-    Проверяет задачи слива (LINE_FILL), которые уже DONE,
-    но партия не достигла порога маркировки ЧЗ.
-
-    Логика (Итерация 8):
-      - Смотрим задачи с task_role = 'LINE_FILL' и status = 'DONE'.
-      - Для каждой проверяем связанную партию:
-          batch.cz_status != 'COMPLETED' И task помечена как DONE.
-      - Если партия не завершена по маркировке → WARNING.
-
-    ВАЖНО: поля cz_status, cz_marked_qty, planned_qty должны быть
-    переданы в schedule_result["tasks"]. Это делается в API-слое
-    (advisor.py — эндпоинт /schedule/advice), который читает
-    scheduled_task JOIN batch из активной версии.
-
-    Если поля отсутствуют (например, для in-memory результата
-    без ЧЗ) — проверка молча пропускается.
-    """
     if not schedule_result or "tasks" not in schedule_result:
         return []
 
@@ -444,7 +421,6 @@ def check_cz_incomplete(
     tips: List[AdvisorTip] = []
 
     for task in tasks:
-        # Интересуют только завершённые задачи слива на линию
         role = task.get("role") or task.get("task_role")
         status = task.get("status")
         if role != "LINE_FILL":
@@ -452,17 +428,13 @@ def check_cz_incomplete(
         if status != "DONE":
             continue
 
-        # Проверяем поля ЧЗ — они могут отсутствовать
         cz_status = task.get("cz_status")
         if cz_status is None:
-            # В schedule_result нет информации о ЧЗ —
-            # пропускаем проверку (нечего анализировать)
             continue
 
         if cz_status == "COMPLETED":
             continue
 
-        # Не завершено → формируем подсказку
         marked_qty = float(task.get("cz_marked_qty") or 0)
         planned_qty = task.get("planned_qty")
         if planned_qty is not None:
@@ -509,6 +481,193 @@ def check_cz_incomplete(
 
 
 # ==========================================
+# ПРОВЕРКА 7: ПЕРЕГРУЗКА ГОРИЗОНТА (Итерация 26)
+# ==========================================
+
+def check_over_horizon(
+        schedule_result: Optional[Dict],
+        horizon_minutes: int = 30 * 24 * 60,
+) -> List[AdvisorTip]:
+    if not schedule_result or "tasks" not in schedule_result:
+        return []
+
+    tasks = schedule_result["tasks"]
+    if not tasks:
+        return []
+
+    starts: List[datetime] = []
+    ends: List[datetime] = []
+    for t in tasks:
+        s = t.get("start")
+        e = t.get("end")
+        if isinstance(s, datetime):
+            starts.append(s)
+        if isinstance(e, datetime):
+            ends.append(e)
+
+    if not starts or not ends:
+        return []
+
+    plan_start = min(starts)
+    plan_end = max(ends)
+    actual_span_min = (plan_end - plan_start).total_seconds() / 60.0
+    over_min = actual_span_min - horizon_minutes
+
+    tips: List[AdvisorTip] = []
+    if over_min > 60:
+        over_days = over_min / 1440
+        tips.append(AdvisorTip(
+            code=TipCode.OVER_HORIZON,
+            severity=TipSeverity.WARNING,
+            title=f"План выходит за горизонт на {over_days:.1f} дн.",
+            message=(
+                f"Горизонт: {horizon_minutes // 1440} дней. "
+                f"Фактически: {actual_span_min / 1440:.1f} дней "
+                f"(перегрузка {over_min:.0f} мин ≈ {over_days:.1f} дн.). "
+                f"Задачи выходят за плановый период — рассмотрите "
+                f"уменьшение объёма, вторую смену или расширение горизонта."
+            ),
+            details={
+                "horizon_minutes": horizon_minutes,
+                "actual_span_minutes": actual_span_min,
+                "over_minutes": over_min,
+                "over_days": over_days,
+                "plan_start": plan_start.isoformat(),
+                "plan_end": plan_end.isoformat(),
+            },
+        ))
+
+    return tips
+
+
+# ==========================================
+# ПРОВЕРКА 8: СДВИНУТЫЕ ЗАДАЧИ (Итерация 26)
+# ==========================================
+
+def check_shifted_tasks(
+        postprocess_result: Optional[Dict],
+) -> List[AdvisorTip]:
+    if not postprocess_result:
+        return []
+
+    shifted_count = int(postprocess_result.get("shifted_tasks", 0))
+    if shifted_count == 0:
+        return []
+
+    details = postprocess_result.get("shifted_details", []) or []
+    moved_to_next_day = sum(
+        1 for d in details
+        if "выходные" in str(d.get("reason", "")).lower()
+    )
+
+    severity = TipSeverity.INFO
+    if shifted_count > 10:
+        severity = TipSeverity.WARNING
+    if shifted_count > 100:
+        severity = TipSeverity.CRITICAL
+
+    return [AdvisorTip(
+        code=TipCode.SHIFTED_TASKS,
+        severity=severity,
+        title=f"Сдвинуто задач календарём: {shifted_count}",
+        message=(
+            f"При переносе в рабочие окна сдвинуто {shifted_count} задач. "
+            f"Из них «на следующий рабочий день»: {moved_to_next_day}. "
+            f"Смотрите историю сдвигов в деталях."
+        ),
+        details={
+            "shifted_count": shifted_count,
+            "moved_to_next_day_count": moved_to_next_day,
+            # Итерация 30: отдаём ВСЕ задачи, фронт сам ограничит отображение
+            "sample": details,
+        },
+    )]
+
+# ==========================================
+# ПРОВЕРКА 9: ЗАБЛОКИРОВАННЫЕ ПАРТИИ (Итерация 26)
+# ==========================================
+
+def check_skipped_batches(
+        skipped_batches: Optional[List[Dict]],
+) -> List[AdvisorTip]:
+    """
+    Партии, выпавшие из плана (лаборатория / проверки).
+
+    Итерация 27 (fix #reason-in-title): в title пишется причина
+    (reason), а не только batch_id. Пример:
+      «Партия 0556f302 выпала: pH=4.2, вне нормы».
+    """
+    if not skipped_batches:
+        return []
+
+    tips: List[AdvisorTip] = []
+    for sb in skipped_batches:
+        batch_id = str(sb.get("batch_id", ""))
+        reason = sb.get("reason") or "неизвестно"
+        reason_short = reason[:80]
+
+        tips.append(AdvisorTip(
+            code=TipCode.SKIPPED_BATCHES,
+            severity=TipSeverity.WARNING,
+            title=f"Партия {batch_id[:8]} выпала: {reason_short}",
+            message=(
+                f"Партия {batch_id[:8]} не попала в план: {reason}. "
+                f"Освободите блокировку и пересчитайте план."
+            ),
+            details={
+                "batch_id": batch_id,
+                "reason": reason,
+                "lab_status": sb.get("lab_status"),
+                "product_id": sb.get("product_id"),
+                "equipment_id": sb.get("equipment_id"),
+            },
+        ))
+
+    return tips
+
+# ==========================================
+# ПРОВЕРКА 10: НАЛОЖЕНИЯ / НАРУШЕНИЯ ЗАВИСИМОСТЕЙ (Итерация 26)
+# ==========================================
+
+def check_overlaps_after(
+        postprocess_result: Optional[Dict],
+) -> List[AdvisorTip]:
+    if not postprocess_result:
+        return []
+
+    overlaps = int(postprocess_result.get("overlaps_after", 0))
+    dep_violations = int(postprocess_result.get("dependency_violations", 0))
+
+    tips: List[AdvisorTip] = []
+
+    if overlaps > 0:
+        tips.append(AdvisorTip(
+            code=TipCode.OVERLAPS_AFTER,
+            severity=TipSeverity.CRITICAL,
+            title=f"Наложения в плане: {overlaps}",
+            message=(
+                f"После календарной постобработки осталось {overlaps} "
+                f"наложений. План технически некорректен — обратитесь к разработчику."
+            ),
+            details={"overlaps_after": overlaps},
+        ))
+
+    if dep_violations > 0:
+        tips.append(AdvisorTip(
+            code=TipCode.DEPENDENCY_VIOLATIONS,
+            severity=TipSeverity.CRITICAL,
+            title=f"Нарушения зависимостей: {dep_violations}",
+            message=(
+                f"После постобработки {dep_violations} задач начинаются "
+                f"раньше своих предков. План технически некорректен."
+            ),
+            details={"dependency_violations": dep_violations},
+        ))
+
+    return tips
+
+
+# ==========================================
 # ГЛАВНАЯ ФУНКЦИЯ
 # ==========================================
 
@@ -524,11 +683,14 @@ def analyze(
         schedule_result: Optional[Dict] = None,
         max_fill_percent: float = 0.70,
         cooling_degradation_factor: float = 1.3,
-        cz_completion_threshold: float = 0.95,     # Итерация 8
+        cz_completion_threshold: float = 0.95,
         enable_material_constraints: bool = True,
         enable_advisor: bool = True,
+        # Итерация 26:
+        postprocess_result: Optional[Dict] = None,
+        skipped_batches: Optional[List[Dict]] = None,
+        horizon_minutes: int = 30 * 24 * 60,
 ) -> AdvisorResult:
-    """Главная функция Advisor'а."""
     result = AdvisorResult()
 
     if not enable_advisor:
@@ -582,6 +744,16 @@ def analyze(
             schedule_result=schedule_result,
             cz_completion_threshold=cz_completion_threshold,
     ):
+        result.add(tip)
+
+    # 7-10. Итерация 26
+    for tip in check_over_horizon(schedule_result, horizon_minutes):
+        result.add(tip)
+    for tip in check_shifted_tasks(postprocess_result):
+        result.add(tip)
+    for tip in check_skipped_batches(skipped_batches):
+        result.add(tip)
+    for tip in check_overlaps_after(postprocess_result):
         result.add(tip)
 
     result.sort_by_severity()
