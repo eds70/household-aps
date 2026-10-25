@@ -500,7 +500,6 @@ const GanttPage: React.FC = () => {
                 sx={{ flexGrow: 1, minHeight: 0, position: 'relative', border: '1px solid #e0e0e0', borderRadius: 1, overflow: 'hidden', bgcolor: 'white' }}
             >
                 <Box
-                    key={`gantt-container-${showAllDependencies}-${showDependencies}-${groupByMode}`}
                     data-tour-id="gantt-timeline"
                     ref={containerRef}
                     className={isReadOnly ? 'gantt-readonly' : ''}

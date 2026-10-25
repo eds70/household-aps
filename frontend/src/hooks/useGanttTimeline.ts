@@ -714,12 +714,8 @@ export const useGanttTimeline = (
                     setTimeout(() => tryDrawDeps(attempt + 1), 100);
                 }
             };
-            setTimeout(() => {
-                if (timelineRef.current) {
-                    tryDrawDeps(1);
-                }
-            }, 100);
-            
+            requestAnimationFrame(() => tryDrawDeps(1));
+
             try { scheduleDrawBatchBrackets(tasksData); }
             catch (err) { console.warn('[GanttPage] drawBatchBrackets failed:', err); }
 
