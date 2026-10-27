@@ -92,7 +92,7 @@ export const useGanttTimeline = (
         expandedGroups, onToggleGroup, viewportRef, suppressViewportSyncRef, minimapSyncingRef,
         saveViewportToStorage, persistCurrentViewport, deps, filters, onTaskEdit, onBatchClick,
         onMoveTask, onError, setFilteredCount, onItemChange, groupByMode, showBatchBrackets,
-        highlightedBatchId, onBracketClick, hoveredLinkTaskIds = [],
+        highlightedBatchId, onBracketClick, hoveredLinkTaskIds = []
     } = params;
 
     const clickTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -494,16 +494,13 @@ export const useGanttTimeline = (
         [drawBatchBrackets],
     );
 
-    // ЭФФЕКТ ДЛЯ ПОДСВЕТКИ ЗАДАЧ
     useEffect(() => {
         const container = containerRef.current;
         if (!container) return;
 
-        // Убираем класс со всех задач
         const allItems = container.querySelectorAll('.vis-item.link-highlight');
         allItems.forEach((el) => el.classList.remove('link-highlight'));
 
-        // Добавляем класс на нужные задачи
         if (hoveredLinkTaskIds.length > 0) {
             const idsSet = new Set(hoveredLinkTaskIds);
             const items = container.querySelectorAll('.vis-item.vis-range');
@@ -594,11 +591,6 @@ export const useGanttTimeline = (
             const newTimeline = new Timeline(containerRef.current, items as any, groups as any, options);
             timelineRef.current = newTimeline;
 
-            // ==========================================
-            // Принудительный redraw, чтобы vis-timeline
-            // пересчитал координаты после того, как контейнер
-            // получил финальные размеры (иначе задачи "слипаются").
-            // ==========================================
             requestAnimationFrame(() => {
                 if (timelineRef.current) {
                     try { timelineRef.current.redraw(); } catch {}
@@ -708,7 +700,6 @@ export const useGanttTimeline = (
                 if (renderedCount > 0) {
                     deps.drawDependencies(tasksData);
                     scheduleDrawBatchBrackets(tasksData);
-                    // <--- ПРИНУДИТЕЛЬНЫЙ REDRAW, когда задачи уже в DOM
                     try { timelineRef.current.redraw(); } catch {}
                 } else if (attempt < 30) {
                     setTimeout(() => tryDrawDeps(attempt + 1), 100);

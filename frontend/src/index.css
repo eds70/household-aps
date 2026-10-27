@@ -656,3 +656,11 @@ polygon.link-highlight {
   transition: fill 0.15s;
   z-index: 100;
 }
+
+/* AG Grid: растягивание на всю высоту родителя (для модалки «История сдвигов») */
+.ag-theme-fullheight .ag-root-wrapper {
+  height: 100% !important;
+}
+.ag-theme-fullheight .ag-body-viewport {
+  overflow: auto !important;
+}

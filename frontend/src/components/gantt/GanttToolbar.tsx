@@ -23,6 +23,7 @@ import {
     Lock,
     LockOpen,
     PlayArrow,
+    Psychology as AdvisorIcon,
     Refresh,
     Search,
     Settings as SettingsIcon,
@@ -73,6 +74,12 @@ interface GanttToolbarProps {
     onLocalEditModeChange: (value: boolean) => void;
 
     onOpenDisplaySettings: () => void;
+
+    // Итерация 21.2: бейдж Advisor 2.0
+    /** Количество заметок Advisor для текущего плана (0 — бейдж не показывается). */
+    advisorNotesCount?: number;
+    /** Клик по бейджу — открыть панель Advisor (переход на «Планирование»). */
+    onOpenAdvisor?: () => void;
 }
 
 const GanttToolbar: React.FC<GanttToolbarProps> = ({
@@ -104,7 +111,11 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
                                                        localEditMode,
                                                        onLocalEditModeChange,
                                                        onOpenDisplaySettings,
+                                                       advisorNotesCount,
+                                                       onOpenAdvisor,
                                                    }) => {
+    const hasAdvisorNotes = (advisorNotesCount ?? 0) > 0;
+
     return (
         <AppBar
             position="static"
@@ -162,6 +173,21 @@ const GanttToolbar: React.FC<GanttToolbarProps> = ({
                 <Chip size="small" label={`${makespanHours.toFixed(1)} ч`} variant="outlined" />
                 <Chip size="small" label={`${equipmentCount} ед.`} variant="outlined" />
                 <Chip size="small" label={`${batchCount} парт.`} color="secondary" variant="outlined" />
+
+                {/* Итерация 21.2: бейдж Advisor 2.0 */}
+                {hasAdvisorNotes && onOpenAdvisor && (
+                    <Tooltip title={`Advisor: ${advisorNotesCount} заметок. Нажмите, чтобы открыть панель.`}>
+                        <Chip
+                            size="small"
+                            icon={<AdvisorIcon />}
+                            label={advisorNotesCount}
+                            color="secondary"
+                            variant="filled"
+                            onClick={onOpenAdvisor}
+                            sx={{ cursor: 'pointer', fontWeight: 600 }}
+                        />
+                    </Tooltip>
+                )}
 
                 <Box sx={{ flexGrow: 1 }} />
 

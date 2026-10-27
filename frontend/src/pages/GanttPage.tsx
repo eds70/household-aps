@@ -2,13 +2,14 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useNavigate, useSearchParams} from 'react-router-dom';
 import {Alert, Box, Button, Chip, CircularProgress, Paper, Snackbar, Typography} from '@mui/material';
-import {Archive as ArchiveIcon, WarningAmber as WarningIcon,} from '@mui/icons-material';
+import {Archive as ArchiveIcon, WarningAmber as WarningIcon} from '@mui/icons-material';
 
 import type {Timeline} from 'vis-timeline/standalone';
 import 'vis-timeline/styles/vis-timeline-graph2d.min.css';
 import {API_BASE_URL} from '../config';
 import {usePlan} from '../context/PlainContext';
-import type {GroupByMode, RescheduleResponse, TaskData, ValidationErrorState,} from '../types';
+import {advisorApi} from '../services/api';
+import type {AdvisorResponse, GroupByMode, RescheduleResponse, TaskData, ValidationErrorState,} from '../types';
 import GanttToolbar from '../components/gantt/GanttToolbar';
 import GanttFiltersBar from '../components/gantt/GanttFiltersBar';
 import GanttFiltersPopover from '../components/gantt/GanttFiltersPopover';
@@ -84,7 +85,6 @@ const GanttPage: React.FC = () => {
         loading, error, setError, stats, tasks, setTasks, equipmentList, productList, refresh: loadGanttData,
     } = useGanttData(currentVersionId);
 
-    // Итерация 49: флаг готовности таймлайна (чтобы не показывать "кашу")
     const [isTimelineReady, setIsTimelineReady] = useState(false);
 
     const [filteredCount, setFilteredCount] = useState(0);
@@ -145,6 +145,8 @@ const GanttPage: React.FC = () => {
     const [showBatchBrackets, setShowBatchBrackets] = useState<boolean>(() => readShowBatchBracketsFromStorage());
     const [highlightedBatchId, setHighlightedBatchId] = useState<string | null>(null);
 
+    const [advisorNotesCount, setAdvisorNotesCount] = useState<number>(0);
+
     useEffect(() => { saveGroupByModeToStorage(groupByMode); }, [groupByMode]);
     useEffect(() => { saveShowBatchBracketsToStorage(showBatchBrackets); }, [showBatchBrackets]);
 
@@ -166,6 +168,25 @@ const GanttPage: React.FC = () => {
     const handleResetGroupByMode = useCallback(() => { setGroupByMode('equipment'); setHighlightedBatchId(null); }, []);
     const handleEnableBatchBrackets = useCallback(() => { setShowBatchBrackets(true); }, []);
     const handleBracketClick = useCallback((batchId: string) => { setHighlightedBatchId((prev) => (prev === batchId ? null : batchId)); }, []);
+
+    useEffect(() => {
+        let cancelled = false;
+        if (!currentVersionId) {
+            setAdvisorNotesCount(0);
+            return;
+        }
+        (async () => {
+            try {
+                const data: AdvisorResponse = await advisorApi.getAdvice(currentVersionId);
+                if (!cancelled) {
+                    setAdvisorNotesCount(Array.isArray(data.tips) ? data.tips.length : 0);
+                }
+            } catch {
+                if (!cancelled) setAdvisorNotesCount(0);
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [currentVersionId]);
 
     const deps = useGanttDependencies({
         containerRef, svgRef: svgOverlayRef, timelineRef, tasks, showDependencies, showAllDependencies,
@@ -246,6 +267,10 @@ const GanttPage: React.FC = () => {
     const handleToggleFilters = (event: React.MouseEvent<HTMLElement>) => { setFiltersAnchorEl(event.currentTarget); };
     const handleCloseFilters = () => { setFiltersAnchorEl(null); };
 
+    const handleOpenAdvisor = useCallback(() => {
+        navigate('/schedule');
+    }, [navigate]);
+
     const handleTaskEdit = useCallback(
         (taskId: string) => {
             if (isReadOnly) return;
@@ -305,14 +330,18 @@ const GanttPage: React.FC = () => {
     };
 
     const handleNavigateToTask = useCallback(
-        (taskId: string) => {
+        (taskId: string, options?: { zoom?: boolean }) => {
             const timeline = timelineRef.current;
             if (!timeline) return;
             const task = tasks.find((t) => t.id === taskId);
             if (!task) { setError(`Задача ${taskId.substring(0, 8)} не найдена на текущем Ганте`); return; }
 
-            try { timeline.focus(taskId, { animation: {duration: 500, easingFunction: 'easeInOutQuad'}, zoom: false }); }
-            catch {
+            try {
+                timeline.focus(taskId, {
+                    animation: {duration: 500, easingFunction: 'easeInOutQuad'},
+                    zoom: options?.zoom ?? false
+                });
+            } catch {
                 const start = new Date(task.start).getTime();
                 const end = new Date(task.end).getTime();
                 const center = (start + end) / 2;
@@ -326,7 +355,7 @@ const GanttPage: React.FC = () => {
                     const vi = (item as any)['vis-item'];
                     if (vi && String(vi.id) === taskId) {
                         item.classList.add('task-flash-highlight');
-                        setTimeout(() => item.classList.remove('task-flash-highlight'), 2000);
+                        setTimeout(() => item.classList.remove('task-flash-highlight'), 10000);
                     }
                 });
             }, 550);
@@ -390,7 +419,6 @@ const GanttPage: React.FC = () => {
 
         renderedRef.current = key;
 
-        // При первом рендере (или смене плана) скрываем таймлайн, чтобы избежать "каши"
         setIsTimelineReady(false);
         renderTimelineRef.current(tasks, equipmentList);
     }, [
@@ -408,9 +436,8 @@ const GanttPage: React.FC = () => {
             if (timelineRef.current) {
                 timelineRef.current.redraw();
             }
-            // Как только таймлайн отрисован и пересчитан — показываем его
             setIsTimelineReady(true);
-        }, 150); // 150 мс достаточно для завершения layout и redraw
+        }, 150);
         return () => clearTimeout(timer);
     }, [groupByMode, showBatchBrackets, highlightedBatchId, localEditMode, tasks, equipmentList]);
 
@@ -467,6 +494,8 @@ const GanttPage: React.FC = () => {
                 localEditMode={localEditMode}
                 onLocalEditModeChange={setLocalEditMode}
                 onOpenDisplaySettings={() => setDisplaySettingsOpen(true)}
+                advisorNotesCount={advisorNotesCount}
+                onOpenAdvisor={handleOpenAdvisor}
             />
 
             {error && <Alert severity="warning" sx={{mb: 1, flexShrink: 0}} onClose={() => setError(null)}>{error}</Alert>}
@@ -513,14 +542,12 @@ const GanttPage: React.FC = () => {
                         '& .vis-item.vis-range:hover': {boxShadow: '0 0 0 2px #e67e22'},
                         '& .task-flash-highlight': {zIndex: 25, boxShadow: '0 0 0 3px #f39c12, 0 4px 16px rgba(243, 156, 18, 0.6)', transition: 'box-shadow 0.3s'},
                         '& .vis-item.item-group': {borderStyle: 'dashed', borderWidth: 2},
-                        // Скрываем контейнер, пока идёт рендеринг (чтобы не было "каши")
                         visibility: isTimelineReady ? 'visible' : 'hidden',
                         opacity: isTimelineReady ? 1 : 0,
                         transition: 'opacity 0.2s ease-in',
                     }}
                 />
 
-                {/* Спиннер-заглушка, пока таймлайн не готов */}
                 {!isTimelineReady && (
                     <Box sx={{
                         position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',

@@ -15,11 +15,13 @@ export const AppAgGrid: React.FC<AppAgGridProps> = ({
                                                         ...rest
                                                     }) => {
     return (
-        <AgGridReact
-            theme={theme ?? agGridTheme}
-            localeText={localeText ?? AG_GRID_LOCALE_RU}
-            {...rest}
-        />
+        <div style={{ height: '100%', width: '100%' }} className="ag-theme-fullheight">
+            <AgGridReact
+                theme={theme ?? agGridTheme}
+                localeText={localeText ?? AG_GRID_LOCALE_RU}
+                {...rest}
+            />
+        </div>
     );
 };
 

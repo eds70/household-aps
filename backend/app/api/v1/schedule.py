@@ -38,8 +38,16 @@ API планирования производства.
   - При копировании plan_settings из родителя передаются ВСЕ поля,
     а не только setting_key / setting_value. Иначе падает NOT NULL
     на value_type / category / display_order.
+
+Итерация 21.3 (fix advisor_note):
+  - После build_schedule сохраняем advisor_note в БД (SHIFTED_TASKS,
+    OVER_HORIZON, SKIPPED_BATCHES, OVERLAPS_AFTER). Это нужно,
+    чтобы «История сдвигов» на фронтенде показывала данные,
+    а не пустую таблицу.
 """
 
+import json
+import logging
 from datetime import datetime
 from typing import List, Dict, Any
 from uuid import UUID, uuid4
@@ -52,6 +60,8 @@ from app.auth.dependencies import get_current_org_id, get_db_session
 from app.scheduler.snapshot import snapshot_all_catalogs
 from .models import ScheduleBuildRequest, ScheduleBuildResponse
 from .reschedule_models import UnarchiveVersionResponse
+
+logger = logging.getLogger("app.api.schedule")
 
 router = APIRouter(prefix="/api/v1/schedule", tags=["Планирование"])
 
@@ -160,6 +170,58 @@ async def build_schedule(
             "postprocess_result": result.get("calendar_postprocess"),
             "skipped_batches": result.get("skipped_batches", []),
         })
+
+        # ==========================================
+        # Итерация 21.3 (fix): сохранение Advisor в БД
+        # (только те проверки, которые зависят от result)
+        # ==========================================
+        try:
+            from app.scheduler.advisor import (
+                check_shifted_tasks, check_over_horizon,
+                check_skipped_batches, check_overlaps_after,
+            )
+
+            postprocess_result = result.get("calendar_postprocess")
+            skipped_batches = result.get("skipped_batches", [])
+            horizon_minutes = int(request.horizon_hours * 60) if request.horizon_hours else 30 * 24 * 60
+
+            advisor_tips: list = []
+            advisor_tips.extend(check_over_horizon(result, horizon_minutes))
+            advisor_tips.extend(check_shifted_tasks(postprocess_result))
+            advisor_tips.extend(check_skipped_batches(skipped_batches))
+            advisor_tips.extend(check_overlaps_after(postprocess_result))
+
+            # Удаляем старые заметки для этой версии
+            await db.execute(
+                text("DELETE FROM advisor_note WHERE schedule_version_id = :vid"),
+                {"vid": save_stats["version_id"]},
+            )
+
+            # Вставляем новые
+            for tip in advisor_tips:
+                await db.execute(
+                    text("""
+                        INSERT INTO advisor_note
+                            (organization_id, schedule_version_id, severity, code, title, message, details)
+                        VALUES
+                            (:org_id, :vid, :severity, :code, :title, :message, CAST(:details AS jsonb))
+                    """),
+                    {
+                        "org_id": org_id,
+                        "vid": save_stats["version_id"],
+                        "severity": tip.severity,
+                        "code": tip.code,
+                        "title": tip.title,
+                        "message": tip.message,
+                        "details": json.dumps(tip.details, default=str),
+                    },
+                )
+
+            await db.commit()
+            logger.info(f"[build_schedule] Сохранено advisor_note: {len(advisor_tips)}")
+        except Exception as adv_err:
+            logger.warning(f"[build_schedule] Не удалось сохранить advisor_note: {adv_err}")
+            await db.rollback()
 
         return ScheduleBuildResponse(
             status="success",

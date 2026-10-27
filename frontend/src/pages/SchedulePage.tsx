@@ -859,9 +859,19 @@ const SchedulePage: React.FC = () => {
                 )}
             </DraggableDialog>
 
-            <DraggableDialog open={shiftHistoryOpen} onClose={() => setShiftHistoryOpen(false)} title="История сдвигов" initialWidth={1100} initialHeight={600} minWidth={800} minHeight={400} actions={<Button onClick={() => setShiftHistoryOpen(false)}>Закрыть</Button>}>
+            <DraggableDialog
+                open={shiftHistoryOpen}
+                onClose={() => setShiftHistoryOpen(false)}
+                title="История сдвигов"
+                initialWidth={1100}
+                initialHeight={600}
+                minWidth={800}
+                minHeight={400}
+                contentSx={{ p: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
+                actions={<Button onClick={() => setShiftHistoryOpen(false)}>Закрыть</Button>}
+            >
                 {shiftHistoryData ? (
-                    <Box sx={{ display: 'flex', flexDirection: 'column', height: 480, width: '100%' }}>
+                    <Box sx={{ flexGrow: 1, minHeight: 0, height: '100%', width: '100%', display: 'flex', flexDirection: 'column' }}>
                         <AppAgGrid
                             rowData={(shiftHistoryData.details?.sample || []).map((row: any, index: number) => ({ ...row, _rowIndex: index }))}
                             columnDefs={shiftHistoryColDefs}
@@ -870,11 +880,14 @@ const SchedulePage: React.FC = () => {
                             pagination={true}
                             paginationPageSize={20}
                             paginationPageSizeSelector={[20, 50, 100]}
+                            onGridReady={(params: any) => {
+                                setTimeout(() => { try { params.api.sizeColumnsToFit(); } catch {} }, 150);
+                            }}
                         />
                     </Box>
                 ) : null}
             </DraggableDialog>
-
+            
             <RecalcProgressDialog
                 open={isCalculating}
                 operationLabel="Построение плана (Solver)"

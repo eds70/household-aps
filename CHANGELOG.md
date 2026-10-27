@@ -9,7 +9,61 @@
 
 ### Added
 
-- Заготовка для Итерации 18: см. Roadmap и BACKLOG.
+#### Итерация 17.5 — Черновики (план-контейнер + песочница)
+
+**Подтверждено по коду** (верификация 2026-10-25):
+- `backend/app/scheduler/saver.py` — `ScheduleSaver(version_id=...)`,
+  `_do_save` с ветками A (rewrite) и B (create),
+  `_REWRITE_CLEANUP_TABLES` (7 таблиц), `_prepare_rewrite`.
+- `backend/app/api/v1/schedule.py` — `create_draft_from_version`
+  (идемпотентный), `commit_draft` (переименование + архивация родителя),
+  `_copy_plan_settings` (все поля, кроме `default_value`;
+  `ON CONFLICT DO NOTHING`). `ScheduleBuildRequest.version_id`,
+  `build_schedule` берёт `version_id` из body.
+- `frontend/src/components/layout/MainLayout.tsx` — кнопки ✏️ (для
+  обычного плана), 💾/✖ (для черновика), `handleCommitDraft`,
+  `handleDiscardDraft`, `handleWizardSaved`.
+- `frontend/src/pages/PlanSettingsWizard.tsx` — пропс `asDraft`,
+  кнопка «Отменить» (outlined, справа, с разделителем),
+  при `asDraft` вызывается `scheduleApi.createDraft`.
+
+**Поведение:**
+- **План = контейнер.** `POST /build` с `version_id` перезаписывает
+  существующий план (удаляет старые задачи и снапшоты, заливает новые,
+  ставит `is_active=TRUE`). `advisor_note` и `plan_settings`
+  **не трогаются**.
+- **Черновик = песочница.** ✏️ в шапке `MainLayout` открывает
+  `PlanSettingsWizard` с `asDraft=true` → `createDraft(parentId)`.
+  Черновик создаётся **без `scheduled_task`** (копируются только
+  снапшоты + `plan_settings`). Задачи появляются после
+  «Создать черновик и построить» / «Сохранить и построить» →
+  `scheduleApi.build({ version_id: draftId })` →
+  `ScheduleSaver(version_id=draftId)` → ветка A (rewrite).
+- **Утверждение.** 💾 → `POST /versions/{id}/commit`:
+  `is_draft=FALSE`, `is_active=TRUE`, имя очищается от префикса
+  `📝 Черновик: `, родитель архивируется (`is_archived=TRUE`).
+- **Отмена.** ✖ → `DELETE /versions/{id}` → возврат к родителю
+  (если есть) или `clearPlan()`.
+
+**Ограничения:**
+- Черновик **пустой до build** — задачи не копируются из родителя.
+  Если нужен «клон с задачами» — использовать `POST /versions` с
+  `parent_version_id` (создаёт обычный план-клон со снапшотами, но
+  тоже без задач) + build.
+- «Черновик от черновика» запрещён (`build` в черновик → 400).
+- Скрыты из `GET /versions` по умолчанию (`include_drafts=false`).
+
+### Changed
+
+- **`CHAT_CONTEXT.md`** — синхронизирован с фактическим состоянием
+  проекта (v4.10.2, Итерации 0–20 + 17.5). Пометка «требует
+  верификации» снята с трека «Черновики» — подтверждено по коду.
+  Добавлен нюанс «черновик пустой до build».
+- **`docs/ROADMAP.md`** — трек C переименован в «Итерация 17.5 —
+  Черновики», статус ✅. Добавлена в таблицу итераций.
+- **`README.md`** — раздел «Известные ограничения»: пункт про
+  черновики переписан (снята пометка «требует верификации»,
+  добавлен нюанс «пустой до build»). Roadmap-таблица: трек C → 17.5 ✅.
 
 ---
 
@@ -208,10 +262,10 @@ Patch-релиз: исправление бага, найденного при �
 3. Заказ на `TEST_E` → «Разбить» →
    `batch.product_id = TEST_1` (PF), а не `TEST_E` (GP).
 4. Пересчёт → 4 задачи в плане:
-  - `Загрузка сырья (вода)` — `REACTOR_OP` на `REACTOR_1`
-  - `Перемешивание` — `REACTOR_OP` на `REACTOR_1`
-  - `Слив на линию розлива` — `LINE_FILL` на `LINE_1`
-  - `Промывка реактора` — `WASH` на `REACTOR_1`
+- `Загрузка сырья (вода)` — `REACTOR_OP` на `REACTOR_1`
+- `Перемешивание` — `REACTOR_OP` на `REACTOR_1`
+- `Слив на линию розлива` — `LINE_FILL` на `LINE_1`
+- `Промывка реактора` — `WASH` на `REACTOR_1`
 
 ### Migration
 
@@ -919,7 +973,7 @@ docker compose -f docker-compose.prod.yml restart backend
   - `gantt-toolbar`, `gantt-edit-toggle`, `gantt-recalc-button`,
     `gantt-timeline` (диаграмма Ганта);
   - `shift-date-picker`, `shift-selector`, `shift-tasks-list`,
-    `task-material-load`, `task-complete`, `task-lab-block`
+    `task-material-load`, `task-complete`, `task-lab-assign`
     (рабочее место мастера).
 - ✅ В `App.tsx` добавлен глобальный `TutorialProvider` и компонент
   `TutorialRunner`, который рендерит `<Joyride/>` поверх всего приложения.
